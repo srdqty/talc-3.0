@@ -1,0 +1,39 @@
+
+#include "core.h"
+
+void stat_op_tick(int x, int y) {
+  ;
+}
+
+void stat_output(FILE f, Cstring name) {
+  ;
+}
+
+void stat_alloc_pages(int x) {
+  ; 
+}
+
+struct timer {
+  int x;
+}
+
+timer syscall_timer;
+
+void stat_timer(timer t, unsigned int x1, unsigned int x2, 
+		unsigned int x3, unsigned int x4) {
+  ;
+}
+
+void stat_segment_info(int t,int d, int s) {
+  ;
+}
+
+
+void rtcg_stat_output(FILE f, Cstring s) { ; } 
+void rtcg_stat_genblock(int n) { ; }
+
+
+
+
+
+

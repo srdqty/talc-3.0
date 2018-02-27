@@ -1,0 +1,1086 @@
+/* 
+  Function inlining works on the ast described in popil.h
+
+  Things to watch out for when inlining:
+  1. The callee and the caller may be the same.
+  2. All predecessor and successor edges in the graph must be maintained.
+  3. Handler edges too!
+
+*/
+
+// XXX - the following line causes a popcorn bug. Something to do with
+// Dict::empty I believe
+// b.refined_locals = Dict::inserts(Dict::empty(intcmp), refined_locals);
+
+/* Index:
+     Pre-processor directives
+     Prefixes
+     Types
+     Global Constants
+     Debugging Aides
+     Utilities
+     Inlining
+     Call-site/function evaluation
+     Analysis
+     Entry point
+
+   Whenever possible without violating above index we try to maintain
+   only forward references. (uses should occur after definitions)
+
+ */
+
+/* Inlining in perspective.
+
+Reasons to inline:
+  1. space savings for functions smaller than function setup cost.
+  2. better register allocation
+  3. constant parameters may get folded into the function
+  4. may specialize function based on parameters(same as above but more general)
+  5. save the parameter copy if the variables are not modified in the body.
+  6. loop unrolling for recursive functions (although this is not the
+  right way to achieve this optimization)
+  7. null-check elimination!
+
+Reasons not to inline:
+  1. Inlining large functions, or small functions frequently will bloat
+     the code.
+  2. Inlining may create large instruction sequences and blow the I-cache.
+
+There is reason to expect that when we have constant-folding, copy
+propagation, and common-sub-expression elimination, inlining will be
+much more effective, and the heuristics for when to inline should be
+retuned.
+
+In the future, we will probably want to iterate inlining several times
+wuth other optimizations to achieve their combined full benefit. A
+damping parameter that makes inlining more difficult on subsequent
+iterations would help keep the code size in hand, while tracking the
+overall program size could ensure that we terminate.
+Knobs:
+  (1) Cutoff threshold size above which inlining stops.
+  (2) Fudge factor -- assumed instructions saved on a call (fixed constant)
+  (3) Various weights governing value of known parameters.
+Statistics:
+  (1) Number of call-sites inlined with ranking.
+  (2) Number of call-sites remaining for inlined functions
+  (3) Actual code size (Pessimist)
+  (4) Predicted code size (Optimist)
+  (5) Number of no-brainer inlines. (guaranteed wins!)
+High-level algorithm:
+  Compute the function/call-site information.
+  Using this information rank each call-site in instructions saved.
+  Sort them by ranking.
+  Inline until either
+    (a) Cutoff threshold is exceeded.
+    (b) No profitable inlining remains to be done. (rankings>0)
+
+The units of the ranking is instructions saved.  Of course we may in
+fact not save any instructions, so our optimism regarding saving
+instructions mediates the tension between time and space.  */
+/*
+The above requires fairly detailed analysis.  I am extremely lazy, so
+I will use the following completely half-assed heuristics.  Of
+course, in the future the above ruminations might be of help.
+
+(1) The only facts that matter about a function are its size, whether it is a leaf function or not, number of local vars, # of blocks it contains, and median block size (MBS).  If there are very few locals then the register allocator will love inlining this so we save.
+
+(2) For arguments the following count:
+    (a) For each integer, save MBS (arbitrary). We will tune these numbers!
+    (b) For each option type, save MBS.
+
+So the ranking for a call-site is computed by:  
+   (size of function) + (# arguments) 
+   - cost_of_call - (argument savings) - (Leaf savings) - (local savings).
+
+   Call-sites created by inlining should not be given the same ranking as their parents had.  In one sense they are worse candidates because there are more instructions.  In another sense they are better candidates because we get compound savings if in fact savings are achieved.  Because we are being optimistic about savings, my intuition tells me to make these copies slightly worse then the originals by some amount.
+*/
+
+// Pre-processor directives ***********************************************
+
+#include "core.h"
+#include "xarray.h"
+#include "dict.h"
+#include "id.h"
+#include "set.h"
+#include "bitvec.h"
+open Core;
+
+#include "poperr.h"
+#include "popsyntax.h"
+#include "popil.h"
+#include "popilprint.h"
+
+#define cf_var     string
+#define cf_typname string
+
+#define list List::list
+#define dict Dict::dict
+#define Opt Core::Opt
+#define id Id::id
+#define xarray Xarray::xarray
+
+// Total hack for lazy typists!
+#define cf_i cf_instruction
+
+open Popil;
+
+prefix Popinline;
+open   Popinline;
+
+// Types *****************************************************************
+
+// For use while inlining a call-site
+struct env {
+  cf_function f;
+  cf_function f_in;
+  cf_block call_succ;         // Block to patch returns with.
+  <cf_block>xarray return_blks; // returning blocks
+  <cf_block>xarray raise_blks; // possibly raising (not returning) blocks.
+  <cf_block>Opt call_catch; //If nested in try add catch to successor.
+  <int,cf_refinement>dict refined_locals;
+  <int,*(int[],int)>dict  partial_inits;
+  <cf_operand>Opt result; // Operand at call-site if any.
+  <cf_block,cf_block>dict blocks; // original block --> new block
+  int inc_operands; // Amount to increment integer representation of X by.
+  int inc_consts;
+  int inc_blocks;
+  <cf_var,cf_typ> dict ty_subst; // Type substitution.
+  string prefx; // prepend to all bound type-vars for capture-avoiding subst.
+}
+
+// Global state of the inliner when processing a single file.
+struct inline_state {
+  int original_fs; // fs = File Size!
+  int maximum_fs;
+  int current_fs;
+  int predicted_fs;
+  <*(cf_var,int)>list inlined_sites; // (function,ranking)list. STATS only
+  int no_brainers; // Number of no-brainer inlines.
+}
+
+struct fun_info { 
+  cf_function f;
+  <site_info>list sites;
+  int sz;
+  int mbs; // mean block size.
+  int blocks; // # of blocks
+  int call_sites; //# of sites calling this function.
+  bool leaf; // is it a leaf function -- contains no function calls.
+}
+
+union arg_info { // argument information.
+  void Unknown; // Not a constant
+  void Constant; // Int, bool, float, ...
+  void NonNull; //Only for option types.
+}
+
+struct site_info { // call-site information.
+  fun_info callee_info;
+  fun_info caller_info;
+  cf_block call_site;
+  <arg_info>list args;
+}
+
+// For use during analysis
+struct inline_env {
+  <id,fun_info>dict funs;
+  <site_info>xarray sites;
+  fun_info current_fun;
+}
+
+
+// Constants **************************************************************
+
+int cost_call = 4; // XXX - correct/tune these.
+int leaf_savings = 5; 
+int operand_savings[4] = {15,10,5,3}; //For functions w/ only x operands, num of instructions saved.
+int dup_penalty = 15; // penalty for inlining the same call-site twice.
+
+inline_state state; // Statistics and control.
+
+// Debugging **************************************************************
+
+// When you want to fail return impos(?).  Please use!
+// All bugs during optimization are impossible.  No intentional failures!
+a impos<a>(string msg) {
+
+  string msg2 = strconcat("Popinline::",msg);
+
+  printf("%s\n",msg);
+  fflush(tal_stdout);
+  raise Core::Impossible(msg2);
+}
+
+static void print_state() {
+ printf("FS: orig = %d \t max = %d \t curr = %d, pred = %d \n",
+	state.original_fs, state.maximum_fs, 
+	state.current_fs, state.predicted_fs);
+ printf("Inlines: total = %d, obvious = %d \n",
+	List::length(state.inlined_sites),
+	state.no_brainers);
+}
+
+static void print_block(cf_block b) {
+  print_string(Id::id_to_string(b.label));
+}
+
+static void print_block_pair(cf_block b1,cf_block b2) {
+  print_string("(");
+  print_block(b1);
+  print_string(", ");
+  print_block(b2);
+  print_string(") ");
+}
+
+static void print_dict<a,b>(void pr(a,b), <a,b>dict x) {
+  Dict::iter(pr,x);
+}
+
+static void print_site_info(site_info si) {
+  fun_info   fi = si.callee_info;
+  cf_function f = fi.f;
+  
+  printf(" [%s into %s @ %s] ",
+	 f.name,si.call_site.fn.name,Id::id_to_string(si.call_site.label));
+}
+
+static void print_fun_info(fun_info fi) {
+  printf(" %s : sz=%d sites=%d \n",fi.f.name,fi.sz,fi.call_sites);
+}
+
+// Called whenever we are done inlining. Message = reason for stopping.
+static void done(string msg) {  
+  // print_state();
+  return;
+}
+
+// Utilities **************************************************************
+
+/* Compute a prefix not present in the list. */
+string gen_prefix(<string>list s) {
+
+  bool seen[32];
+  string prefx = "";
+
+  for(int i=0;true;i++) {
+
+    for(<string>list x=s; x!=null; x=x.tl) {
+      if(size(x.hd)>i) {
+	int index = x.hd[i] - ord('a');
+        seen[index] = (index>=0 && index<32);
+      }
+    }
+
+    for(int j=0;j<32;j++) {
+      if(!seen[j]) {
+	string pre = "a";
+	pre[0] = 'a' + j;
+	if(i==0) return pre;
+	return strconcat(prefx,pre);
+      }
+    }
+
+    prefx = strconcat(prefx,"a");
+  }
+  return prefx;
+}
+
+<a,b>dict insert_zip<a,b>(<a,b>dict d, <a>list a, <b>list b) {
+  for(;a!=null && b!=null;a=a.tl,b=b.tl) {
+    d = Dict::insert(d,a.hd,b.hd);
+  }
+  return d;
+}
+
+// Inlining ***************************************************************
+
+ /* Get the associated copy from the environment. */
+ cf_block get_block(env e,cf_block b) {
+    try
+     return Dict::lookup(e.blocks,b);
+   handle y switch y {
+   case Dict::Absent: {
+     printf("\n Failing getblock(%s)\n",Id::id_to_string(b.label));
+     print_dict(print_block_pair,e.blocks);
+    return impos("get_block");
+   }
+   }
+ }
+
+ // HELPER for typ
+ cf_typ var2typ (cf_var v) { return ^cf_typ.Var(v); }
+
+cf_sing sing(*(env,<cf_var,cf_typ>dict) es, cf_sing s) {
+  _ subst = es.2;
+  switch s {
+  case Var(v) :
+    try { 
+      _ t = Dict::lookup(subst,v);
+      switch t {
+      case Var(v2) : return ^cf_sing.Var(v2);
+      default: return impos("Cannot substitute non-tyvar for singleton.");
+      }
+    } handle y { 
+      return impos("sing");
+    }
+  case Int(_) : return s;
+  }
+}
+
+cf_typ typ(*(env,<cf_var,cf_typ>dict) es, cf_typ t) {
+   env e = es.1;
+   <cf_var,cf_typ>dict subst = es.2;
+   switch t {
+   case Var(v): 
+     try return (Dict::lookup(subst,v));
+     handle y switch y {
+     case Dict::Absent: return impos("typ");
+     }
+   case Fn *(conv,tyvs,ret,args): {
+
+     // We must be capture avoiding!
+     <cf_var>list tyvs_renamed = List::map_c(strconcat,e.prefx,tyvs);
+     <cf_typ>list tyvs_inst    = List::map  (var2typ,tyvs_renamed);
+     subst = insert_zip(subst,tyvs,tyvs_inst);
+
+     *(env,<cf_var,cf_typ>dict) es2 = ^(e,subst);
+
+     <cf_typ>Opt ret2 = (ret==null ? ret : ^Opt(typ(es2,ret.v)));
+     cf_typ res = ^cf_typ.Fn(^(conv,tyvs_renamed,
+			       ret2,
+			       List::map_c(typ,es2,args)));
+     return res;
+   }
+   case Array *(szopt,tt): return ^cf_typ.Array(^(szopt,typ(es,tt)));
+   case UnpackedArray(st): return ^cf_typ.UnpackedArray(^(sing(es,st.1),
+							  typ(es,st.2)));
+   case Sing(s)          : return ^cf_typ.Sing(sing(es,s));
+   case Named(ni)        : return ^cf_typ.Named(^(ni.1,List::map_c(typ,es,ni.2)));
+   case Tuple(els):
+     int sz = size(els);
+     if(sz==0) return t;
+     cf_field res[] = new_array(sz,els[0]);
+     for(int i=0; i<sz;++i) {
+       _ f = els[i];
+       res[i]=^cf_field(typ(es,f.typ),f.cap,f.offset);     
+     }
+     return ^cf_typ.Tuple(res);
+   case Option(t):
+     return ^cf_typ.Option(typ(es,t));
+   default: return t;
+   }
+ }
+
+cf_var var2var(env e,cf_var v) {
+  <cf_typ>Opt t = Dict::lookup_opt(e.ty_subst,v);
+  
+  if(t==null) return impos("var2var: no such variable.");
+  else switch t.v {
+  case Var(x): return x;
+  default: return impos("var2var: type not a var.");
+  }
+}
+
+cf_typedcopy typedcopy(env e,cf_typedcopy t) {
+  switch t {
+  case InitRoll: return t;
+  case Instantiation(ts): 
+    *(env,<cf_var,cf_typ>dict) es = ^(e,e.ty_subst);
+    return ^cf_typedcopy.Instantiation(List::map_c(typ,es,ts));
+  case Unpacking(ts):
+    // This is a binding occurrence.  What should we do?
+    // Our invariant is that ts's do not shadow any other variables,
+    // and have already been tracked at the top-level.  So we're done.
+    return ^cf_typedcopy.Unpacking(List::map_c(var2var,e,ts));
+  case Packing(ts):
+    *(env,<cf_var,cf_typ>dict) es = ^(e,e.ty_subst);
+    return ^cf_typedcopy.Packing(List::map_c(typ,es,ts));
+  }
+}
+
+cf_use use(env e, cf_use u) {
+  switch u {
+  case Param(vi): return ^cf_use.FromAbove(vi.1);
+  default:        return u;
+  }
+}
+
+cf_idinfo idinfo(env e, cf_idinfo i) {
+  return ^cf_idinfo(typ(^(e,e.ty_subst),i.typ), use(e,i.usage));
+}
+
+cf_constinfo constinfo(env e,cf_constinfo c) {
+  return ^cf_constinfo(c.val, typ(^(e,e.ty_subst),c.typ));
+}
+ 
+cf_operand operand(env e,cf_operand o) {
+  switch o {
+  case Const(i): return ^cf_operand.Const(i+e.inc_consts);
+  case Local(i): return ^cf_operand.Local(i+e.inc_operands);
+  default      : return o;
+  }
+}
+
+//HELPERs for transfer
+
+// Cyclone +
+static cf_dest dest(env e,cf_dest d) {
+  switch d {
+  case Known(b):   return ^cf_dest.Known(Dict::lookup(e.blocks,b));
+  case Unknown(_): return impos("cf_dest: Unimplemented templates.");
+  }
+}
+
+static cf_hole hole(env e,cf_hole h) {
+  return impos("popil.h: templates unimplemented");
+}
+
+static cf_template template(env e,cf_template t) {
+  return impos("popil.h: templates unimplemented");
+}
+
+// Cyclone -
+
+static *(a,cf_dest) cf_a_block<a>(env e, *(a,cf_dest) x) {
+  try { return ^(x.1,dest(e,x.2)); }
+  handle y switch y {
+  case Dict::Absent : return impos("cf_a_block");
+  }
+}
+
+// This function does not manage the control-flow graph -- just the transfer!
+static cf_transfer transfer(env e,cf_transfer t) {
+  try {
+    switch t {
+    case Abort     : return ^cf_transfer.Abort;
+    case Uncond(d) : return ^cf_transfer.Uncond(dest(e,d));
+    case Raise(o)  : return ^cf_transfer.Raise(operand(e,o));
+    case Retn(o)   : return ^cf_transfer.Retn(o==null ? o : 
+						^Opt(operand(e,o.v)));
+    case Call(x)   : 
+      return ^cf_transfer.Call(^(x.1==null ? x.1 : ^Opt(operand(e,x.1.v)),
+				 operand(e,x.2),
+				 List::map_c(typ,^(e,e.ty_subst),x.3),
+				 List::map_c(operand,e,x.4),
+				 dest(e,x.5)));
+    case TailCall(x):
+      return ^.TailCall(^(operand(e,x.1),List::map_c(typ,^(e,e.ty_subst),x.2),
+			  List::map_c(operand,e,x.3)));
+    case Cond(x) :
+      return ^cf_transfer.Cond(^(dest(e,x.1), 
+				 dest(e,x.2),
+				 operand(e,x.3), operand(e,x.4),
+				 x.5));
+    case NumSwitch(x) :       
+      return ^cf_transfer.NumSwitch(^(operand(e,x.1),
+				      List::map_c(cf_a_block@<int>,e,x.2),
+				      dest(e,x.3)));
+    case SumSwitch(x) :
+      return ^cf_transfer.SumSwitch(^(operand(e,x.1),
+				      List::map_c(cf_a_block@<int>,e,x.2),
+				      List::map_c(cf_a_block@<int>,e,x.3),
+				      (x.4==null ? x.4 : 
+				       ^Opt(dest(e,x.4.v)))));
+    case ExnSwitch(x) :
+      return ^cf_transfer.ExnSwitch(^(operand(e,x.1),
+				      List::map_c(cf_a_block@<id>,e,x.2),
+				      dest(e,x.3)));
+    case NullCheck(x) :
+      return ^cf_transfer.NullCheck(^(operand(e,x.1),dest(e,x.2)));
+    case UnionCheck(x) :
+      return ^cf_transfer.UnionCheck(^(operand(e,x.1),
+				       x.2,x.3,
+				       dest(e,x.4)));
+    case NullBranch(x) :
+      return ^cf_transfer.NullBranch(^(operand(e,x.1),
+				       dest(e,x.2),
+				       dest(e,x.3)));
+    }
+  } handle y switch y {
+  case Dict::Present: return impos("transfer");
+  }
+}
+
+static cf_i instruction(env e,cf_i i) {
+  switch i {
+  case Nop: 
+    return i;
+  case Copy(oo): 
+    return ^cf_i.Copy(^(operand(e,oo.1),operand(e,oo.2)));
+  case Nullop *(p,o):
+    return ^cf_i.Nullop(^(p,operand(e,o)));
+  case Unop(poo): 
+    return ^cf_i.Unop(^(poo.1,operand(e,poo.2),operand(e,poo.3)));
+  case Binop(pooo): 
+    return ^cf_i.Binop(^(pooo.1,operand(e,pooo.2),
+			 operand(e,pooo.3),operand(e,pooo.4)));
+  case TypedCopy(oot): 
+    return ^cf_i.TypedCopy(^(operand(e,oot.1), operand(e,oot.2), 
+			     typedcopy(e,oot.3)));
+  case SelectField(ioo):
+    return ^cf_i.SelectField(^(ioo.1,operand(e,ioo.2),operand(e,ioo.3)));
+  case AssignField(ioo):
+    return ^cf_i.AssignField(^(ioo.1,operand(e,ioo.2),operand(e,ioo.3)));
+  case ArrayCheck(oo):
+    return ^cf_i.ArrayCheck(^(operand(e,oo.1),operand(e,oo.2)));
+  case CArrayCheck(oi):
+    return ^cf_i.CArrayCheck(^(operand(e,oi.1),oi.2));
+  case ArraySub(ooo): 
+    return ^cf_i.ArraySub(^(operand(e,ooo.1),operand(e,ooo.2),
+			    operand(e,ooo.3)));
+  case ArrayUpd *(o1,o2,o3): 
+    return ^cf_i.ArrayUpd(^(operand(e,o1),operand(e,o2),
+			    operand(e,o3)));
+  case New(o):
+    return ^cf_i.New(operand(e,o));
+  case Rdtsc *(o1,o2):
+    return ^cf_i.Rdtsc(^(operand(e,o1),operand(e,o2)));
+    // Cyclone +
+  case Start(o):
+    return ^cf_i.Start(operand(e,o));
+  case Dump *(o1,o2,tmpl):
+    return ^cf_i.Dump(^(operand(e,o1),operand(e,o2),template(e,tmpl)));
+  case Hole *(i,o): return impos("Templates unimplemented");
+  case Fill *(o1,o2,h,o3): 
+    return ^cf_i.Fill(^(operand(e,o1),operand(e,o2),hole(e,h),operand(e,o3)));
+  case FillJmp *(o1,o2,h,o3,b): 
+    return ^cf_i.FillJmp(^(operand(e,o1),operand(e,o2),hole(e,h),
+			   operand(e,o3),get_block(e,b)));
+  case End *(o1,o2): 
+    return ^cf_i.End(^(operand(e,o1),operand(e,o2)));
+    // Cyclone -
+  }
+}
+
+
+// HELPER for cf_block
+*(int,cf_refinement) refine_local(env e, *(int,cf_refinement) x) {
+  return ^(x.1 + e.inc_operands, x.2);
+}
+
+// HELPER for cf_block
+*(int,*(int[],int)) partial_init(env e, *(int,*(int[],int)) x) {
+  return ^(x.1 + e.inc_operands, ^(x.2.1,x.2.2));
+}
+
+// Cannot modify caller blocks in e directly because the callee may be the 
+// caller.  Instead propagate information back through e.
+// WARNING: modifies e.ty_subst!
+cf_block block(env e, cf_block bmodel) {
+  try {
+    cf_block b = get_block(e,bmodel); 
+    
+    // INV: b.fn, b.label, and b.num have been initialized. */
+
+    if(bmodel.handler_var==null) b.handler_var = null;
+    else b.handler_var = ^Opt(bmodel.handler_var.v + e.inc_operands);     
+    
+    b.insts = Xarray::map_c(instruction,e,bmodel.insts);
+    
+    // Call site may be in caller's local handler
+    if(bmodel.handler==null) b.handler = e.call_succ.handler;
+    else                     b.handler = ^Opt(get_block(e,bmodel.handler.v));
+
+    b.pred = Xarray::map_c(get_block,e,bmodel.pred);
+    b.succ = Xarray::map_c(get_block,e,bmodel.succ);
+    
+    switch bmodel.trans {
+    case Retn(x): // Turn returns into unconditional jumps!
+      b.trans = ^cf_transfer.Uncond(^cf_dest.Known(e.call_succ));
+      Xarray::add(e.return_blks,b);
+      Xarray::add(b.succ,e.call_succ);
+      if(e.result!=null) { // Copy return result
+	if(x!=null) {
+	  Xarray::add(b.insts,^cf_i.Copy(^(e.result.v,operand(e,x.v))));
+	}
+	else {
+	  // x may be null for empty blocks!
+	  if(Xarray::length(b.insts)!=0) {
+	    return impos("block. void return where result expected.");
+	  }
+	}	
+      }
+    default: b.trans = transfer(e,bmodel.trans);
+    }
+
+    {add_catch_succ:
+  if(bmodel.handler==null && // Not in a try-catch in the callee
+     e.call_catch!=null )    // In a try-catch in the caller
+    { 
+      switch bmodel.trans { // If bmodel.trans could raise an exception.
+      case Raise(_):;
+      case Call(_): ;
+      case TailCall(_): ;
+      case NullCheck(_): ;
+      case UnionCheck(_): ;
+      default: break add_catch_succ;
+      }
+      Xarray::add(b.succ,e.call_catch.v);
+      Xarray::add(e.raise_blks,b);
+    }
+    }
+
+    <*(int,cf_refinement)>list refined_locals = 
+       List::map_c(refine_local,e,Dict::to_list(bmodel.refined_locals));
+ 
+     b.refined_locals = Dict::inserts(e.refined_locals, refined_locals);    
+     b.ltes = List::copy(bmodel.ltes); // XXX - ltes currently unused!
+     
+     // <*(var,*(bitvec,length))>list p_i 
+     <*(int,*(int[],int))>list p_i = 
+	List::map_c(partial_init,e,Dict::to_list(bmodel.partial_inits));
+     b.partial_inits = Dict::inserts(e.partial_inits, p_i);
+
+     // XXX - must copy over RTCG fields too!
+     // XXX - don't forget bmodel.template either.
+
+     if(!Dict::is_empty(bmodel.regions))
+       return impos("popinline.pop: Templates unimplemented");
+     
+     if(!Dict::is_empty(bmodel.filled))
+       return impos("popinline.pop: Templates unimplemented");
+
+     return b;     
+
+   } handle y switch y { 
+   case Dict::Absent : return impos("block"); 
+   }
+ }
+
+// creates a partially initialized dummy block.
+cf_block make_block(cf_function f,int num, id i) {
+  return ^cf_block(f, i, num,
+		   // The rest don't need to be initialized.
+		   null,
+		   Xarray::create_empty(),     // inst
+		   ^cf_transfer.Retn(null),    // trans
+		   null,                       // handler
+		   Xarray::create_empty(),     // pred
+		   Xarray::create_empty(),     // succ
+		   Dict::empty@<int,cf_refinement>(intcmp), // refined_locals
+		   null,                       // ltes
+		   Dict::empty(intcmp),        // partial_inits
+		   // Cyclone +
+		   null,
+		   Dict::empty(intcmp),        // List of dumped templates
+		   Dict::empty(intcmp)         // Filled holes.
+		   // Cyclone -
+		   );
+}
+
+// HELPER : inline
+static cf_var add_prefix(string p,cf_var v) {
+  return strconcat(p,v);
+}
+
+// Inline the call_site.
+env inline(cf_file file, cf_block call_site) {
+
+  cf_function caller = call_site.fn;
+  cf_function callee;
+  <cf_operand>list args;
+  <cf_operand>Opt result;
+  <cf_var,cf_typ>dict subst = Dict::empty(strcmp);
+  string prefx;
+
+  cf_block      site_return;
+  <cf_block>Opt site_catch = null;
+
+  // Switch initializes all the above.
+  switch call_site.trans {
+  case Call(x) : 
+               result = x.1;
+    cf_operand      f = x.2;
+    <cf_typ>list inst = x.3;
+                 args = x.4;
+	_ return_dest = x.5;
+
+    //Extract the callee
+    switch f {
+    case Global(i): try { callee = Dict::lookup(file.funs,i); }
+      handle y switch y {
+      case Dict::Absent: 
+	return impos("inline: call-site to unknown function.\n");
+      }
+    default : return impos("inline: call-site to local.\n");
+    }
+
+    // Used to initialize ty_subst.
+    // The lists below are disjoint! (enforced by type-checker!)
+
+    <cf_var>list caller_tyvars = List::append(caller.tyvars,
+					      List::append(caller.exist_tyvars,
+							   caller.sing_tyvars));
+    prefx = gen_prefix(caller_tyvars);
+
+    <cf_var>list tyvars        = callee.tyvars;
+    <cf_var>list exist_vs      = callee.exist_tyvars;
+    <cf_var>list sing_vs       = callee.sing_tyvars;
+
+    <cf_var>list new_exist_vs  = List::map_c(add_prefix,prefx,exist_vs);
+    <cf_var>list new_sing_vs   = List::map_c(add_prefix,prefx,sing_vs);
+
+    <cf_typ>list inst_exist_vs = List::map(var2typ,new_exist_vs);
+    <cf_typ>list inst_sing_vs  = List::map(var2typ,new_sing_vs);
+    // Update the caller's type variables.
+
+    caller.exist_tyvars = List::append(caller.exist_tyvars,new_exist_vs);
+    caller.sing_tyvars = List::append(caller.sing_tyvars,new_sing_vs);
+
+    subst = insert_zip(subst,tyvars,inst);
+    subst = insert_zip(subst,exist_vs,inst_exist_vs);
+    subst = insert_zip(subst,sing_vs,inst_sing_vs);
+    
+    switch return_dest {
+    case Known(bb): 
+      site_return = bb;
+    case Unknown(_):
+      BUG("Call with unkonwn successor block.");
+    }
+
+    site_catch = call_site.handler;
+    
+  default: return impos("inline: no call at call-site.");
+  }
+
+  env e = ^env(caller,callee,site_return,
+	       Xarray::create_empty(),Xarray::create_empty(),
+	       site_catch,
+	       call_site.refined_locals,
+	       site_return.partial_inits,
+	       result,
+	       Dict::empty(cf_block_cmp),
+	       Xarray::length(caller.all_operands),
+	       Xarray::length(caller.all_consts),
+	       Xarray::length(caller.blocks),
+	       subst,prefx);
+
+
+  // Copy callee's blocks into dummy blocks we will initialize.
+  int num_blocks = Xarray::length(callee.blocks);
+  for(int i=0; i<num_blocks; ++i) {
+    cf_block this = Xarray::get(callee.blocks,i);
+    cf_block bb = make_block(caller,e.inc_blocks + i,Id::id_renew(this.label));
+    e.blocks = Dict::insert(e.blocks,this,bb);
+  }
+
+  // Update the caller's blocks with the translated callee blocks
+  // Although we update the caller here, it is okay because num_blocks does
+  // not change.
+  for(int i=0;i<num_blocks; ++i) {    
+    Xarray::add(caller.blocks,
+		block(e,Xarray::get(callee.blocks,i)));
+    e.ty_subst = subst; // block updates ty_subst!
+  }
+
+  int num_operands = Xarray::length(callee.all_operands);
+  for(int i=0; i<num_operands; ++i) {
+    Xarray::add(caller.all_operands,
+		idinfo(e,Xarray::get(callee.all_operands,i)));
+  }
+
+  int num_consts = Xarray::length(callee.all_consts);
+  for(int i=0; i<num_consts; ++i) {
+    Xarray::add(caller.all_consts,
+		constinfo(e,Xarray::get(callee.all_consts,i)));
+  }
+
+  // All updates to the caller must be done after inlining the callee
+  // because they could be the same function.
+
+  // Copy the arguments appropriately.
+  <int>       list p = callee.params;
+  <cf_operand>list a = List::rev(args);
+  for(; p != null; p=p.tl,a=a.tl) { // XXX - a and p must be the same length!
+    cf_operand po = operand(e,localoperand(p.hd));
+    cf_i copy_arg = ^cf_i.Copy(^(po,a.hd));
+
+    Xarray::add(call_site.insts,copy_arg);
+  }
+
+  cf_block new_site_succ = get_block(e,callee.entry);
+  
+  // Do the following after transforming blocks! They update pred too!
+  // site_succ == f_in.entry
+  call_site.trans = ^cf_transfer.Uncond(^cf_dest.Known(new_site_succ));
+  call_site.succ = Xarray::singleton(1,new_site_succ);
+  Xarray::add(new_site_succ.pred,call_site);
+
+  site_return.pred = e.return_blks;
+
+  if(site_catch!=null) {
+    cf_block site_catch = site_catch.v;
+      site_catch.pred = Xarray::append(site_catch.pred,e.raise_blks);
+  }
+
+  caller.df_order = null;
+
+  // Cyclone +
+  // FMS : Must update new fields too.
+  if(caller.templates != null              ||
+     Xarray::length(caller.all_holes) != 0 ||
+     (Xarray::length(caller.code_regions)!=0)  ||
+     (Xarray::length(caller.template_pointers)!=0))
+    return impos("Templates unimplemented");
+  // Cyclone -
+
+  return e; //Needed to update block pointers after update.
+}
+
+// Analysis ***************************************************************
+
+arg_info analyze_arg(cf_function f, cf_operand op) {
+  cf_typ t = operand_type(f,op);
+
+  switch op {
+  case Const(i):
+    switch t {
+    case Num(c): return ^arg_info.Constant;
+    case Bool  : return ^arg_info.Constant;
+    default    : return ^arg_info.Unknown;
+    }
+  case Local(i):
+    if (is_nullable(f.file, t)) return ^arg_info.NonNull;
+    else                        return ^arg_info.Unknown;
+  default: return ^arg_info.Unknown;
+  }
+}
+
+void analyze_site(inline_env e, cf_block b, cf_operand fn, 
+		  <cf_typ>list tyargs, <cf_operand>list args) {
+  switch fn {
+  case Global(i): 
+    <fun_info>Opt f = Dict::lookup_opt(e.funs,i);
+  if(f!=null) {
+    fun_info f=f.v;
+    <arg_info>list x = List::map_c(analyze_arg,e.current_fun.f,args);
+    site_info si = ^site_info(f,e.current_fun,b,x);
+    f.call_sites++;
+    e.current_fun.sites = ^list(si,e.current_fun.sites);
+    Xarray::add(e.sites,si);
+  }
+  default: ;
+  }
+}
+
+// Return the block_size.
+// STATE: Update call_sites in env appropriately.
+int analyze_block(inline_env e, cf_block b) {
+
+  int block_size = Xarray::length(b.insts) + 1; // XXX - refine this please!
+
+  switch b.trans {
+  case Call(x) :
+    analyze_site(e,b,x.2,x.3,x.4);
+  default: ;
+  }
+
+  return block_size;
+}
+
+void analyze_fun(inline_env e, id f, fun_info fi) {
+  //Invariant, fi is uninitialized except for the function.
+
+  e.current_fun = fi;
+
+  int call_sites = Xarray::length(e.sites);
+
+  <int>xarray block_sizes = Xarray::map_c(analyze_block,e,fi.f.blocks);
+  int blocks = Xarray::length(block_sizes);
+  
+  int b[] = Xarray::to_array(block_sizes);
+  int sz=0;
+
+  for(int i=0;i<blocks;i++) {
+    sz+=b[i];
+  }
+
+  fi.mbs = sz / blocks;
+  fi.leaf = (Xarray::length(e.sites)==call_sites);
+  fi.blocks = blocks;
+  fi.sz = sz; 
+
+}
+
+// HELPER generate_env
+fun_info fun2info(cf_function f) {
+  return ^fun_info(f,null,0,0,0,0,false);
+}
+
+// Generate complete env
+//May raise Absent if file has no functions.
+inline_env generate_env(cf_file f) {
+
+  *(id,cf_function) dummy = Dict::choose(f.funs); 
+  fun_info fi = fun2info(dummy.2);
+  
+  inline_env e = ^inline_env(Dict::empty(Id::id_compare),
+			     Xarray::create_empty(),fi);
+  
+  e.funs = Dict::map(fun2info, f.funs);
+  
+  Dict::iter_c(analyze_fun,e,e.funs);
+  
+  return e;
+}
+
+// Return a tuple containing (actual cost for inlining, estimated cost)
+*(int,int) evaluate_site(site_info s) {
+  fun_info callee_info = s.callee_info;
+  int actual_cost = callee_info.sz - 1;
+  
+  int savings = cost_call;
+  int mbs = callee_info.mbs;
+
+  for(<arg_info>list x = s.args;x!=null;x = x.tl) {
+    switch(x.hd) {
+    case Constant: savings += mbs;
+    case NonNull: savings += mbs;
+    case Unknown: ;
+    }
+  }
+
+  if(callee_info.leaf) savings += leaf_savings;
+
+  cf_function f = callee_info.f;
+  int operands = Xarray::length(f.all_operands);
+  if(operands<4 && operands>=0) savings += operand_savings[operands];
+
+  if(callee_info.call_sites==1 && f.is_static) {
+    savings = callee_info.sz; // This should always get inlined!
+  }
+
+  // print_fun_info(callee_info);
+
+  //print_string("Eval");
+  //print_site_info(s);
+  //printf(" = %d > %d\n",actual_cost, actual_cost - savings);
+
+  return ^(actual_cost,actual_cost - savings);
+}
+
+void set_initial_state(int fs) {
+  state.original_fs = fs;
+  state.predicted_fs = fs;
+  state.current_fs = fs;
+  
+  if(fs<1024) state.maximum_fs = 1536;
+  else state.maximum_fs = fs + fs/5; // 20% increase.
+}
+
+// HELPER doit.
+int less_rank(*(int,int,site_info) a,*(int,int,site_info) b) {
+  return (a.2 - b.2);
+}
+
+// HELPER doit
+int sum_sz(id i,fun_info fi, int accum) {
+  return fi.sz + accum;
+}
+
+// Entry point ************************************************************
+void doit(cf_file file) {
+
+  try {
+  inline_env e = generate_env(file);
+  
+  <site_info>list ss = List::from_array(Xarray::to_array(e.sites));
+
+  <*(int,int,site_info)>list rankings = null;
+  for(<site_info>list x = ss; x!=null; x=x.tl) {
+    *(int,int) r = evaluate_site(x.hd);
+    rankings = ^list(^(r.1,r.2,x.hd),rankings);
+  }
+
+  int original_fs = Dict::fold(sum_sz, e.funs, 0);
+  
+  set_initial_state(original_fs);
+
+  <*(int,int,site_info)>list rankings = List::merge_sort(less_rank,rankings);
+
+  for(<*(int,int,site_info)>list x = rankings;x!=null;x=x.tl) {
+    int  realist = x.hd.1;
+    int optimist = x.hd.2;
+    site_info  s = x.hd.3;
+    cf_block    call_site = s.call_site;
+    fun_info  caller_info = s.caller_info;
+    fun_info  callee_info = s.callee_info;
+
+    
+    if(optimist>0) {
+      done("Remaining functions cannot be profitably inlined.\n");
+      return; // No more sites are worth optimizing.
+    }
+
+    if(realist<0) state.no_brainers++;
+
+    // print_string("Inlining ");
+    // print_site_info(s);
+    // print_string("\n");
+
+    // Perform the actual inlining!
+    // the env is used to remap blocks of inlined sites.
+    env e = inline(file,call_site);
+    callee_info.call_sites--;
+    // Now update inlined call-sites.
+    <*(int,int,site_info)>list r_new=null;
+    <site_info>list x = callee_info.sites;
+    for(;x!=null;x=x.tl) {
+      site_info s_old = x.hd;
+
+      <cf_block>Opt new_site = Dict::lookup_opt(e.blocks,s_old.call_site);
+
+      if(new_site == null) impos("doit. No such block");
+
+      s_old.callee_info.call_sites++;
+
+      site_info s_new = ^site_info(s_old.callee_info,
+				   caller_info,
+				   new_site.v,
+				   s_old.args);
+
+      caller_info.sites = ^list(s_new,caller_info.sites);      
+      r_new = ^list(^(realist,optimist+dup_penalty,s_new),r_new);
+    }
+
+    r_new = List::merge_sort(less_rank,r_new);
+    rankings = List::merge(less_rank,rankings,r_new);
+    
+    // Remove the processed site from its caller's site list.
+    <site_info>list x = caller_info.sites;
+    if(x==null) impos("inline: Inlined into caller without call-sites?");
+    <site_info>list lead = x.tl;
+    if(x.hd==s) { caller_info.sites = lead; }
+    else {
+      for(;true;x=x.tl,lead=lead.tl) {
+
+	if(lead==null) impos("inline: Call-site not present.");
+	if(lead.hd == s) {
+	  x.tl = lead.tl;
+	  break;
+	}
+      }
+    }
+    
+    state.current_fs += realist;
+    state.predicted_fs += optimist;
+    state.inlined_sites = ^list(^(callee_info.f.name,optimist),
+                                state.inlined_sites);
+
+    if(state.current_fs > state.maximum_fs) {
+      done("Maximum file_size exceeded");
+      return;
+    }
+  }
+
+  done("Inlined every call-site.\n");
+
+  } handle y switch y {
+  case Dict::Absent: 
+    done("No functions in file\n");
+    return;
+  }
+
+}
+
+

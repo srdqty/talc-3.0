@@ -1,0 +1,25 @@
+#include "core.h"
+
+extern int tal_load<a> (string, string, <a>rep);
+extern int tal_cast<a,b> (a x, <a>rep t1, <b>rep t2);
+
+prefix Poploader;
+open   Poploader;
+
+int pop_load<a>(string talbuf, string tobuf, <a>rep trep) {
+  int x;
+  x = tal_load (talbuf, tobuf, trep);
+  if (x == 0)
+    raise (^Core::Failure("pop_load"));
+  else
+    return x;
+}
+
+int pop_cast<a,b>(b v, <b>rep t1, <a>rep t2) {
+  int x;
+  x = tal_cast (v, t1, t2);
+  if (x == 0)
+    raise (^Core::Failure("pop_cast"));
+  else
+    return x;
+}

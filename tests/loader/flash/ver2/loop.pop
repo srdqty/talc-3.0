@@ -1,0 +1,666 @@
+#include "unixlib.h"
+#include "core.h"
+
+#include "config.h"             /* move early to define FD_SETSIZE */
+#include "libhttpd.h"
+/* #include "loop.h" */
+#include "conn.h"
+#include "timer.h"
+#include "accept.h"
+#include "file.h"
+#include "cold.h"
+#include "readreq.h"
+#include "common.h"
+#include "handy.h"
+#include "maint.h"
+#include "name.h"
+
+static int highestFDInvolvedWithRW = -1;
+/* <int (httpd_conn, int, int)>array allHandlers; */
+static int allHandlers[](httpd_conn,int,int);
+static fd_set masterReadFDSet = null;
+static fd_set masterWriteFDSet = null;
+char freeConnBits [];
+int firstFreeConnHint = 0;
+int numConnects;
+
+static bool newClientsDisallowed = false;
+
+union DCRCode {
+  void DCR_READMORE;
+  void DCR_READYFORWRITE;
+  void DCR_CLOSED;
+  void DCR_PRIVATE;
+  void DCR_NUMCODES;
+}
+
+union SRCode {
+  void SR_READY;
+  void SR_DONOTHING;
+  void SR_CGI;
+  void SR_ERROR;
+  void SR_NOMEM;
+}
+
+#define SSH_NOTHING 0x0
+#define SSH_READ 0x1
+#define SSH_WRITE 0x2
+extern int fdToConnMap[];
+
+/* ---------------------------------------------------------------- */
+void
+InitFDSets()
+{
+  allHandlers = new_array(FD_SETSIZE,bogus_handler);
+  freeConnBits = new_array(FD_SETSIZE/8,'\000');
+  masterReadFDSet = unix_empty_set();
+  masterWriteFDSet = unix_empty_set();
+}
+/* ---------------------------------------------------------------- */
+/* XXX
+ConnStats mainStats;
+PermStats permStats;
+static void
+PrintMainStats(void)
+*/
+/* ---------------------------------------------------------------- */
+void
+DisallowNewClients()
+{
+  /* if we get too many connections,
+     we turn off checking for new requests */
+  unix_fd_clr(HS.fd, masterReadFDSet);
+  newClientsDisallowed = true;
+  fprintf(tal_stderr, "new connects disallowed\n");
+}
+/* ---------------------------------------------------------------- */
+static void
+ReenableNewClients()
+{
+  unix_fd_set(HS.fd, masterReadFDSet);
+  newClientsDisallowed = false;
+
+  fprintf(tal_stderr, "new connects re-enabled\n");
+}
+/* ---------------------------------------------------------------- */
+void 
+MainLoop()
+{
+  fd_set rfdset;
+  fd_set wfdset;
+  int r;
+  timeval selectTimeout;
+  int i;
+  int lastRealSelectTime = 0;
+  int globalTimeStrVal = 0;
+  Buffer::t timeBuf;
+
+  /* local variable initializations */
+  rfdset = unix_empty_set ();
+  wfdset = unix_empty_set ();
+  selectTimeout = ^timeval{tv_sec = 1, tv_usec = 0};
+  timeBuf = Buffer::create(40);
+  
+  /* figure out all resource usage until this point */
+  /*
+  if (getrusage(RUSAGE_SELF, &permStats.ps_lastUsage) < 0) 
+    fprintf(stderr, "couldn't get resource usage info\n");
+  */
+
+  /* For the first time we enter the loop */
+  if (highestFDInvolvedWithRW == -1) {
+    unix_fd_set(HS.fd, masterReadFDSet);
+    unix_fd_set(HS.maint_fd, masterReadFDSet);
+    highestFDInvolvedWithRW = HS.fd > HS.maint_fd ? HS.fd : HS.maint_fd;
+    numConnects = 0;
+  }
+
+  /* Main loop. */
+  while (true) {
+
+    try {
+
+      /* check timers _before_ copying rd/wr sets, 
+	 since a connection timing out shouldn't
+	 be included in the sets sent to select */
+      if (lastTimerCheckTime != globalTimeOfDay.tv_sec)
+	CheckTimers();
+
+      /* Set up the fdsets. */
+      unix_copy_fd_set(rfdset, masterReadFDSet);
+      unix_copy_fd_set(wfdset, masterWriteFDSet);
+      /*
+      fprintf(tal_stderr,"fds used in select():\n");
+      for (i = 0; i <= highestFDInvolvedWithRW; i++) {
+	if (unix_fd_isset(i,rfdset))
+	  fprintf(tal_stderr,"  %d : reading\n",i);
+	if (unix_fd_isset(i,wfdset))
+	  fprintf(tal_stderr,"  %d : writing\n",i);
+      }
+      */
+      /* #ifdef __linux__ */
+      selectTimeout.tv_sec = 1;
+      selectTimeout.tv_usec = 0;
+      /* #endif */
+
+      /* Do the select. */
+      r = unix_select(highestFDInvolvedWithRW+1,
+		      rfdset, wfdset, null, selectTimeout);
+
+      unix_gettimeofday(globalTimeOfDay);
+      if (globalTimeOfDay.tv_sec != globalTimeStrVal) {
+	globalTimeStrVal = globalTimeOfDay.tv_sec;
+	MakeHTTPDate(timeBuf, globalTimeStrVal);
+	/* fprintf(tal_stderr,"MakeHTTPDate returned %s\n",
+	   Buffer::contents(timeBuf)); */
+	Buffer::copy_contents(timeBuf,globalTimeOfDayStr,0);
+	Buffer::clear(timeBuf);
+	/*
+	  if (accessLoggingEnabled)
+	  FlushAccessLog();
+	*/
+      }
+      
+      if (r != 0)
+	lastRealSelectTime = globalTimeOfDay.tv_sec;
+      else {
+	if ((lastRealSelectTime != 0) && 
+	    (globalTimeOfDay.tv_sec - lastRealSelectTime > 2)) {
+	  /* PrintMainStats(); */
+	  lastRealSelectTime = 0;
+	}
+	continue;		/* No fd's are ready - run the timers. */
+      }
+      /*
+	mainStats.cs_numSelects++;
+	mainStats.cs_totSelectsReady += r;
+      */
+      if (unix_fd_isset(HS.fd, rfdset)) {
+	/* fprintf(tal_stderr,"got a connection\n"); */
+	r--;
+	unix_fd_clr(HS.fd, rfdset);
+      }
+
+      /* got a maintenance message--go process it */
+      if (unix_fd_isset(HS.maint_fd, rfdset)) {
+	r--;
+	unix_fd_clr(HS.maint_fd, rfdset);
+	/* if maintenance command succeeded, restart the loop.  If we
+	   had any other activity on active file descriptors, the
+	   next select() will get them */
+	if (ProcessMaintMessage(HS.maint_fd))
+	  break; 
+      }
+
+      /* If we get here there may be writable file descriptors for one or
+      ** more connections.  Find 'em and service 'em.
+      */
+      
+      for (i = 0; r != 0 && i <= highestFDInvolvedWithRW; i++) {
+	bool doRead, doWrite;
+	
+	doRead = unix_fd_isset(i, rfdset);
+	doWrite = unix_fd_isset(i, wfdset);
+	
+	if (doRead || doWrite) {
+	  int cnum;
+	  int handler(httpd_conn, int, int);
+	  httpd_conn tempConn;
+	  
+	  cnum = fdToConnMap[i];
+	  handler = allHandlers[i];
+	  if (doRead)
+	    r--;
+	  if (doWrite)
+	    r--;
+	  if (cnum < 0)
+	    tempConn = null;
+	  else
+	    tempConn = allConnects[cnum];
+	  /* fprintf(tal_stderr,"calling handler for fd %d\n",i); */
+	  handler(tempConn, i, 
+		  ((doRead) ? SSH_READ : 0) | ((doWrite) ? SSH_WRITE : 0));
+	}
+      }
+      
+      if (r != 0) {
+	fprintf(tal_stderr, "have %d connections not serviced\n", r);
+	exit(-1);
+      }
+      
+      if (!newClientsDisallowed) {
+	AcceptConnections(-1, true);
+      }
+    } handle e {
+      switch e {
+      case Unix_error *(code,syscall):
+	if (code == EINTR)
+	  continue;
+	else {
+	  fprintf(tal_stderr,"%s:%s\n",syscall,unix_error_string(code));
+	  exit(1);
+	}
+      }
+    }
+  }
+}
+/* ---------------------------------------------------------------- */
+static SRCode
+StartRequest(httpd_conn hc)
+{
+  SRCode r;
+  
+  /* if we don't recognize the request method, it's an error */
+  if (hc.hc_method == METHOD_ERROR) {
+    HttpdSendErr(hc, 501, err501title, err501form, 
+		 methodStrings[hc.hc_method]);
+    return(^SRCode.SR_ERROR);
+  }
+  hc.hc_hne = FindMatchInHotNameCache(hc.hc_encodedurl);
+
+  if (hc.hc_hne != null) {
+    switch(hc.hc_hne.hne_type) {
+    case HNT_FILE:
+      r = RegularFileStuff(hc, ^(hc.hc_hne), false, 0, 0);
+      /* XXX will this get nulled in the original implementation? */
+      /* break; */
+    case HNT_REDIRECT:
+      SendDirRedirect(hc);
+      r = ^SRCode.SR_ERROR;
+      /* break; */
+    case HNT_LS:
+      fprintf(tal_stderr,"directory strings not supported\n");
+      HttpdSendErr(hc, 501, err501title, err501form, hc.hc_encodedurl);
+      return (^SRCode.SR_ERROR);
+      /*
+      ScheduleDirHelp(hc);
+      return(SR_CGI);
+      break;
+      */
+    }
+  }
+  else
+    r = ProcessColdRequest(hc);
+  
+  return r;
+}
+/* ---------------------------------------------------------------- */
+int
+DoConnReading(httpd_conn c, int fd, int forRW)
+{
+  /* xxx note: doing an optimistic write after the DoConnReading seems
+     to hurt degrade the performance of persistent connects on small
+     files. I'm not sure why. */
+
+  if (DoConnReadingBackend(c, fd, true) == ^DCRCode.DCR_READYFORWRITE) {
+    /*
+    fprint_string(tal_stderr,"DoConnReading: doing optimistic write\n");
+    */
+    DoSingleWriteBackend(c, fd, true);
+  }
+
+  return(0);
+}
+/* ---------------------------------------------------------------- */
+void
+ResumeAfterConnReading(httpd_conn c)
+{
+  /* this function picks up right after the conn reading
+     is done - it's used to continue processing after
+     name conversion has taken place */
+
+  if (DoConnReadingBackend(c, c.hc_fd, false) == 
+      ^DCRCode.DCR_READYFORWRITE) {
+    DoSingleWriteBackend(c, c.hc_fd, true);
+  }
+}
+/* ---------------------------------------------------------------- */
+DCRCode 
+DoConnReadingBackend(httpd_conn c, int fd, bool doReqReading)
+{
+  /* this function tries to read the request either when a connection
+     is first opened, or whenever the connection is available for
+     reading. It returns DCR_READMORE if more data needs to be
+     read. It returns DCR_READYFORWRITE if it's set the connection
+     state to CS_SENDING. If it's closed the connection, the state should
+     have been set by clear_connection, and the function returns DCR_CLOSED
+     */
+
+  SRCode srRes;
+
+  if (doReqReading) {
+    switch(ProcessRequestReading(c)) {
+    case PRR_DONE:
+      /* mainStats.cs_numRequests++; */
+      ;
+      /* break; */			/* switch connection to sending */
+    case PRR_READMORE:
+      SetTimer(c, IDLEC_TIMELIMIT, IdleTimeout);
+      return(^DCRCode.DCR_READMORE);	/* keep in read state */
+    case PRR_CLOSED:		/* not sure what we should do on close */
+      DoneWithConnection(c, true);
+      return(^DCRCode.DCR_CLOSED);
+    case PRR_ERROR:
+      DoneWithConnection(c, true);
+      return(^DCRCode.DCR_CLOSED);
+    default:
+      fprintf(tal_stderr, "got weird PRR_\n");
+      exit(-1);
+    }
+  }
+
+  SetSelectHandler(fd, DoSingleWrite, SSH_WRITE);
+
+  srRes = StartRequest(c);
+  
+  if (srRes == ^SRCode.SR_ERROR) {
+    /* Something went wrong.  Close down the connection. */
+    DoneWithConnection(c, true);
+    return(^DCRCode.DCR_CLOSED);
+  }
+
+  if (srRes == ^SRCode.SR_CGI) {
+    /* we've gotten a script - temporarily disable the client's
+       socket and let the cgi-handling code take over. At some
+       point, the code will finish and re-enable the socket */
+    SetSelectHandler(fd, bogus_handler, SSH_NOTHING);
+    return(^DCRCode.DCR_PRIVATE);	/* requestor does nothing */
+  }
+  
+  if (srRes == ^SRCode.SR_DONOTHING) {
+    /* It's all handled.  Close down the connection. */
+    DoneWithConnection(c, false);
+    return(^DCRCode.DCR_CLOSED);
+  }
+  /* Cool, we have a valid connection and a file to send to it.
+   ** Make an idle timer for it.
+   */
+  SetTimer(c, IDLEC_TIMELIMIT, IdleTimeout);
+  
+  c.hc_sndbuf = defaultSendBufSize; 
+
+  return(^DCRCode.DCR_READYFORWRITE);
+}
+/* ---------------------------------------------------------------- */
+static void
+FlushAccessLog()
+{
+  /*
+  if (!logHoldBufUsed)
+    return;
+  write(accessLogFD, logHoldBuf, logHoldBufUsed);
+  logHoldBufUsed = 0;
+  */
+  return;
+}
+/* ---------------------------------------------------------------- */
+#ifdef notdef
+static string tstr;
+static bool inittstr = false;
+static int tstrLen = 0;
+static int tt = 0;
+static void
+DoAccessLogging(httpd_conn c)
+{
+  int temp;
+
+  if (!inittstr)
+    tstr = Core::new_string(100);
+
+  /* calculate the time only if needed */
+  if (tt != globalTimeOfDay.tv_sec) {
+    struct tm gmt;
+    struct tm *t;
+    int days, hours, timz;
+    char sign;
+
+    /* much of this code is taken from mod_log_config.c in Apache */
+    tt = globalTimeOfDay.tv_sec;
+
+    /* Assume we are never more than 24 hours away. */
+    gmt = *gmtime(&tt);	/* remember gmtime/localtime return ptr to static */
+    t = localtime(&tt);	/* buffer... so be careful */
+    days = t->tm_yday - gmt.tm_yday;
+    hours = ((days < -1 ? 24 : 1 < days ? -24 : days * 24)
+	     + t->tm_hour - gmt.tm_hour);
+    timz = hours * 60 + t->tm_min - gmt.tm_min;
+    sign = (timz < 0 ? '-' : '+');
+    if (timz < 0) 
+      timz = -timz;
+
+    strftime(tstr, sizeof(tstr) - 10, " - - [%d/%b/%Y:%H:%M:%S ", t);
+    sprintf(tstr + strlen(tstr),
+	    "%c%.2d%.2d] \"", sign, timz / 60, timz % 60);
+    tstrLen = strlen(tstr);
+  }
+
+  /* check, update inaddr cache if needed */
+  temp = *((int *) (&c->hc_clientAddr));
+  temp += temp >> 16;
+  temp += temp >> 8;
+  temp &= 0xff;
+  if (memcmp(&inaddrCache[temp].ic_addr, &c->hc_clientAddr, 
+	     sizeof(struct in_addr))) {
+    inaddrCache[temp].ic_addr = c->hc_clientAddr;
+    if (inaddrCache[temp].ic_textName)
+      free(inaddrCache[temp].ic_textName);
+    inaddrCache[temp].ic_textName = strdup(inet_ntoa(c->hc_clientAddr));
+    if (!inaddrCache[temp].ic_textName)
+      Panic("strdup failed");
+    inaddrCache[temp].ic_textNameLen = 
+      strlen(inaddrCache[temp].ic_textName);
+  }
+
+  /* flush buffer if we're out of space */
+  if (logHoldBufUsed + inaddrCache[temp].ic_textNameLen + 
+      c->hc_origFirstLineLen + tstrLen + 40 > LOG_HOLD_BUF_SIZE) {
+    if (!logHoldBufUsed) {
+      /* this line is too long to be logged - ignore */
+      fprintf(stderr, "log line too long\n");
+      return;
+    }
+    FlushAccessLog();
+ }
+
+  /* write data into our own buffer */
+  memcpy(logHoldBuf+logHoldBufUsed, inaddrCache[temp].ic_textName,
+	 inaddrCache[temp].ic_textNameLen);
+  logHoldBufUsed += inaddrCache[temp].ic_textNameLen;
+  memcpy(logHoldBuf+logHoldBufUsed, tstr, tstrLen);
+  logHoldBufUsed += tstrLen;
+  memcpy(logHoldBuf+logHoldBufUsed, c->hc_origFirstLine, 
+	 c->hc_origFirstLineLen);
+  logHoldBufUsed += c->hc_origFirstLineLen;
+
+  if (c->hc_status == 200 && c->hc_cacheEnt &&
+      c->hc_bytesSent == c->hc_cacheEnt->ce_size &&
+      c->hc_cacheEnt->ce_200Resp) {
+    memcpy(logHoldBuf+logHoldBufUsed, c->hc_cacheEnt->ce_200Resp,
+	   c->hc_cacheEnt->ce_200RespLen);
+    logHoldBufUsed += c->hc_cacheEnt->ce_200RespLen;
+  }
+  else if (c->hc_status == 304) {
+    memcpy(logHoldBuf+logHoldBufUsed, resp304, resp304Len);
+    logHoldBufUsed += resp304Len;
+  }
+  else {
+    sprintf(logHoldBuf+logHoldBufUsed, "\" %d %d\n", c->hc_status,
+	    (int) c->hc_bytesSent);
+    logHoldBufUsed += strlen(logHoldBuf+logHoldBufUsed);
+  }
+  return;
+}
+#endif
+/* ---------------------------------------------------------------- */
+void 
+DoneWithConnection(httpd_conn c, bool forceClose) 
+{
+  int cnum;
+  bool closeConn;
+
+  if ((c == null) || (c.hc_fd == -1))	/* connection already closed */
+    return;
+
+  /*
+  if (accessLoggingEnabled)
+    DoAccessLogging(c);
+
+  mainStats.cs_bytesSent += c.hc_bytesSent;
+
+  if (c.hc_neededDiskRead)
+    mainStats.cs_numReqsNeedingReads++;
+  if (c.hc_hadMincoreMisses)
+    mainStats.cs_numReqsWithMincoreMisses++;
+
+  if (c.hc_status == 200 && c.hc_cacheEnt)
+    mainStats.cs_numPagesSent += 
+      (c.hc_bytesSent + systemPageSize-1) >> systemPageSizeBits;
+  */
+  closeConn = !(c.hc_isPersistentConnection && (!forceClose));
+
+  cnum = c.hc_cnum;
+
+  if (closeConn) {
+    SetSelectHandler(c.hc_fd, bogus_handler, SSH_NOTHING);
+    ClearConnFDAssociation(c.hc_fd);
+    if (forceClose)
+      fdToConnMap[c.hc_fd] = -3;
+    try {
+      unix_close(c.hc_fd);
+    } handle e {
+      switch e {
+      case Unix_error *(code,syscall):
+	fprintf(tal_stderr,"%s:%s\n",syscall,unix_error_string(code));
+      }
+    }
+    c.hc_fd = -1;
+
+    freeConnBits[cnum>>3] |= (1<<(cnum&7));
+    if ((cnum>>3) < firstFreeConnHint)
+      firstFreeConnHint = cnum>>3;
+
+    ClearTimer(c);
+    
+    numConnects--;
+
+    if (newClientsDisallowed)
+      ReenableNewClients();
+  }
+  else {
+    SetSelectHandler(c.hc_fd, DoConnReading, SSH_READ);
+    SetTimer(c, IDLEC_TIMELIMIT, IdleTimeout);	
+  }
+
+  if (c.hc_hne != null) {
+    ReleaseHNE(c.hc_hne);
+    c.hc_hne = null;
+  }
+
+  /* do this before releasing cache entry */
+  /*
+  if (c.hc_numChunkLocks) {
+    if (DecChunkLock(c.hc_cacheEnt, c.hc_bytesSent))
+      c.hc_numChunkLocks--;
+    if (c.hc_numChunkLocks) {
+      fprintf(stderr, "still have chunk locks\n");
+      exit(-1);
+    }
+  }
+
+  if (c->hc_cacheEnt) 
+    ReleaseCacheEntry(&c->hc_cacheEnt);
+  */
+  if (c.hc_headerInfo != null) 
+    ReleaseHeaderInfo(c.hc_headerInfo, closeConn);
+  /*
+  if (c->hc_cgiInfo)
+    ReleaseCGIInfo(&c->hc_cgiInfo);
+
+  if (c->hc_dsb)
+    ReleaseDirStageBuf(&c->hc_dsb);
+
+  if (c->hc_stripped) {
+    free(c->hc_stripped);
+    c->hc_stripped = null;
+  }
+  */
+
+  if (!closeConn)
+    PrepareConnForNextRequest(c);
+}
+/* ---------------------------------------------------------------- */
+static int bogus_handler(httpd_conn c, int conn, int forRW) {
+  fprintf(tal_stderr,"Invoked bogus handler -- conn %d\n",conn);
+  exit(-1);
+  return 0;
+}
+static int needEvalHighestFD = 0;
+void 
+SetSelectHandler(int fd, int s(httpd_conn, int, int), int forRW)
+{
+  int i;
+
+  if (fd < 0) {
+    fprintf(tal_stderr, "negative fd in ssh\n");
+    exit(-1);
+  }
+
+  if (fd >= FD_SETSIZE) {
+    fprintf(tal_stderr, "large fd in ssh\n");
+    exit(-1);
+  }
+
+  if ((forRW != 0) && (s == bogus_handler)) {
+    fprintf(tal_stderr, "unset s in ssh\n");
+    exit(-1);
+  }
+
+  allHandlers[fd] = s;
+
+  if ((forRW & SSH_READ) != 0)
+    unix_fd_set(fd, masterReadFDSet);
+  else
+    unix_fd_clr(fd, masterReadFDSet);
+
+  if ((forRW & SSH_WRITE) != 0)
+    unix_fd_set(fd, masterWriteFDSet);
+  else
+    unix_fd_clr(fd, masterWriteFDSet);
+ 
+  if (fd >= highestFDInvolvedWithRW && (forRW != 0)) {
+    highestFDInvolvedWithRW = fd;
+    needEvalHighestFD = 0;
+  }
+  else if (fd == highestFDInvolvedWithRW && (forRW == 0))
+    needEvalHighestFD = 1;
+  else if (needEvalHighestFD != 0)
+    needEvalHighestFD++;
+
+  if (needEvalHighestFD > 256)	{ /* some large number */
+    needEvalHighestFD = 0;
+    /* walk backwards, find new max */
+    for (i = highestFDInvolvedWithRW; i >= 0; i--) {
+      if (unix_fd_isset(i, masterReadFDSet) || 
+	  unix_fd_isset(i, masterWriteFDSet)) {
+	highestFDInvolvedWithRW = i;
+	break;
+      }
+    }
+    if (i == -1) 
+      Panic("highestFDInvolvedWithRW");
+  }
+}
+/* ---------------------------------------------------------------- */
+void
+IdleTimeout(httpd_conn c)
+{
+  if (!ISCONNFREE(c.hc_cnum)) {
+    /*
+    fprintf(tal_stderr, "%.80s connection timed out", 
+	    inet_ntoa(c.hc_clientAddr));
+    */
+    unix_gettimeofday(globalTimeOfDay);
+    DoneWithConnection(c, true);
+  }
+}
+/* ---------------------------------------------------------------- */

@@ -1,0 +1,10 @@
+(* simple ping *)
+fun ack() =
+  print ("Success")
+
+fun ping (source, destination) =
+  if (thisHostIs (destination)) then
+    OnRemote (|ack| (), source, getRB (), defaultRoute)
+  else 
+    OnRemote (|ping| (source, destination), destination, 
+              getRB (), defaultRoute)

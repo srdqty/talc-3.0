@@ -1,0 +1,25 @@
+/Makefile/1.8/Fri Nov 10 16:57:08 2000//
+/README/1.2/Wed Oct  6 06:04:20 1999//
+/bench.h/1.1/Tue Oct  5 19:45:16 1999//
+/bench.pop/1.4/Fri Nov 10 16:57:08 2000//
+/bench2.data/1.1/Wed Oct  6 06:04:20 1999//
+/bench3.data/1.1/Wed Oct  6 06:04:20 1999//
+/bench5.data/1.1/Wed Oct  6 06:04:20 1999//
+/cinterp.c/1.1/Fri Dec  3 00:11:00 1999//
+/cinterp.opt.c/1.1/Fri Dec  3 00:11:00 1999//
+/cprog.c/1.1/Tue Oct  5 19:45:16 1999//
+/interpret.rts.h/1.1/Fri Oct 15 16:47:46 1999//
+/interpret_cts_1.c/1.1/Fri Oct 15 16:31:52 1999//
+/interpret_cts_1.opt.c/1.1/Fri Dec  3 00:11:00 1999//
+/interpret_cts_2.c/1.1/Fri Oct 15 16:31:52 1999//
+/interpret_cts_2.opt.c/1.1/Fri Dec  3 00:11:00 1999//
+/opcodes.h/1.1/Tue Oct  5 19:45:16 1999//
+/pinterp.pop/1.1/Fri Dec  3 00:11:00 1999//
+/pinterp_gen.pop/1.2/Fri Feb  4 09:32:50 2000//
+/pprog.pop/1.1/Tue Oct  5 19:45:16 1999//
+/ref.out/1.1/Fri Oct 15 16:36:16 1999//
+/test_c.c/1.3/Fri Nov 10 16:57:08 2000//
+/test_pop.pop/1.3/Fri Nov 10 16:57:08 2000//
+/test_tempo.c/1.1/Fri Oct 15 16:36:16 1999//
+/timer.c/1.1/Tue Oct  5 19:45:16 1999//
+D/Linux////

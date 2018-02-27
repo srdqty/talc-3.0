@@ -1,0 +1,51 @@
+#include "core.h"
+#include "bitvec.h"
+
+prefix Worklist;
+open Worklist;
+
+struct worklist {
+  int sz;
+  int num;
+  int marks[];
+  int elts[];
+  int start; // Points to first element
+  int end;   // Points one past last element
+}
+
+worklist create(int sz) {
+   return ^worklist { sz = sz,
+			num = 0,
+			marks = Bitvec::new_empty(sz),
+			elts = new_array(sz,0),
+			start = 0,
+			end = 0 };
+}
+
+void add(worklist w,int elt) {
+  if(!Bitvec::get_and_set(w.marks,elt)) {
+    _ end = w.end;
+    w.elts[end] = elt;
+    end = (end + 1) % w.sz;
+    w.end = end;
+    w.num++;
+  }
+ }
+
+int remove(worklist w) {
+  if(w.num>0) {
+    _ s = w.start;
+    w.num--;
+    _ elt = w.elts[s];
+    w.start = (s+1)% w.sz;
+    Bitvec::clear(w.marks,elt);
+    return elt;
+  }
+  raise(^Core::Failure("Worklist::remove"));
+}
+
+bool is_empty(worklist w) {
+  return (w.num == 0);
+}
+
+

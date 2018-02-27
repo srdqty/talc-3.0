@@ -1,0 +1,300 @@
+/* Version of hotfile.c but without stuff for caching.  This is
+   the first rev of the server, so we ditched this stuff, to be added
+   as updates later. */
+
+#include "unixlib.h"
+#include "c_string.h"
+#include "buffer.h"
+
+#include "conn.h"
+#include "handy.h"
+#include "loop.h"
+#include "libhttpd.h"
+/* #include "hotfile.h"
+#include "helper.h"
+#include "hotname.h"
+*/
+#include "data.h"
+#include "name.h"
+#include "config.h"
+#include "timer.h"
+#include "cold.h"
+#include "common.h"
+
+/* ---------------------------------------------------------------- */
+#ifdef notdef
+void
+ResumeAfterFileReading(httpd_conn c)
+{
+  /* called after slave has read appropriate chunk */
+  if (ReadChunkIfNeeded(c.hc_cacheEnt, c.hc_bytesSent)) {
+    fprintf(stderr, "failed in ResumeAfterFileReading\n");
+    DoneWithConnection(c, TRUE);
+    return;
+  }
+  SetSelectHandler(c.hc_fd, DoSingleWrite, SSH_WRITE);
+}
+#endif
+/* ---------------------------------------------------------------- */
+static int
+PowerOf2LessThanEqual(int x)
+{
+  int y = 1;
+
+  /* test if it's power of 2 already*/
+  if ((x & (x-1)) == 0)
+    return(x);
+
+  while (y <= x)
+    y <<=1;
+  return(y>>1);
+}
+/* ---------------------------------------------------------------- */
+int 
+DoSingleWrite(httpd_conn c, int fd, int forRW)
+{
+  fprintf(tal_stderr,"DoSingleWrite: calling DoSingleWriteBackend(%d)\n", fd);
+  DoSingleWriteBackend(c, fd, false);
+  return(0);
+}
+/* ---------------------------------------------------------------- */
+  /* #if defined(__osf__) || defined(__linux__) */
+#define SKIP_MINCORE
+  /* #endif */
+
+void 
+DoSingleWriteBackend(httpd_conn c, int fd, bool testing)
+{
+  string dataToSend; 
+  int bytesToSend;
+  int startOffset;
+  int maxBufSize, targetSize;
+  int sz;
+  iovec ioBufs[2] = { ^iovec("",0,0), ^iovec("",0,0) }; /* XXX make
+							   static? */
+  int numIOBufs = 0;
+#ifndef SKIP_MINCORE
+  char *incoreStart;
+  int incoreLen;
+  int i;
+#endif
+  *(string,int,int) res;	/* return val for GetDataToSend */
+#define DATESTARTOFF 22		/* offset of actual date field */
+#define DATESTRLEN 27		/* length of date information */
+
+  /* if the send buffer is too small, size it appropriately */
+  if (sendBufSizeBytes != 0 &&
+      c.hc_sndbuf < c.hc_dataEnt.ce_size &&
+      c.hc_sndbuf != sendBufSizeBytes) {
+
+    c.hc_sndbuf = sendBufSizeBytes;
+    try {
+      unix_setsockopt(HS.fd, ^socket_option.SO_SNDBUF, sendBufSizeBytes);
+    } handle e {
+      fprintf(tal_stderr, "setsockopt SO_SNDBUF\n");
+    }
+  }
+
+  /* Write a bufferload. */
+  if (c.hc_bytesSent == 0 && c.hc_mimeFlag &&
+      c.hc_dataEnt.ce_respHeaderLen != 0) 
+    maxBufSize = c.hc_sndbuf - c.hc_dataEnt.ce_respHeaderLen;
+  else 
+    maxBufSize = c.hc_sndbuf;
+  
+  targetSize = PowerOf2LessThanEqual(maxBufSize);
+
+  res = GetDataToSend(c.hc_dataEnt, c.hc_bytesSent, targetSize, maxBufSize);
+  dataToSend = res.1;
+  bytesToSend = res.2;
+  startOffset = res.3;
+
+  if ((bytesToSend != 0) && (size(dataToSend) == 0)) {
+    /* MWH: for now we expect GetDataToSend to always return
+       some data to send (not using the helpers */
+    /* data not in memory - start reading */
+    /*
+    ScheduleAsyncRead(c, c.hc_bytesSent, bytesToSend);
+    c.hc_neededDiskRead = 1;
+    return;
+    */
+    fprintf(tal_stderr, "failed in DoSingleWriteBackend\n");
+    DoneWithConnection(c, false);
+    return;
+  }
+
+#ifndef SKIP_MINCORE		/* define this to avoid compiling mincore */
+  if (bytesToSend) {
+    static char *incoreRes;
+    /* round start down to page boundary, round length up */
+    incoreStart = (char *) dataToSend  + startOffset;
+    incoreLen = ((long) incoreStart) & (systemPageSize-1);
+    incoreStart -= incoreLen;
+    incoreLen += bytesToSend + systemPageSize-1;
+    incoreLen -= incoreLen & (systemPageSize-1);
+    
+    if (!incoreRes) {
+      incoreRes = calloc(1, 10 + READBLOCKSIZE/systemPageSize); /* slop */
+      if (!incoreRes)
+	Panic("failed allocating incore");
+    }
+
+    if (mincore(incoreStart, incoreLen, incoreRes)) {
+      fprintf(stderr, "mincore had error\n");
+      exit(-1);
+    }
+    
+    incoreLen >>= systemPageSizeBits;
+    for (i = 0; i < incoreLen; i++) {
+      if (!(incoreRes[i]&1)) {
+	if (doMincoreDump)
+	  putc((i < 10) ? ('0'+i) : ('a'+i-10), stderr);
+	if (!i) {
+	  /* no data in memory - start reading */
+	  ScheduleAsyncRead(c, c.hc_bytesSent, bytesToSend);
+	  c.hc_neededDiskRead = 1;
+	  c.hc_hadMincoreMisses = 1;
+	  return;
+	}
+	else {
+	  /* use what we have first */
+	  char *incoreEnd;
+	  incoreEnd = incoreStart + (i << systemPageSizeBits);
+	  bytesToSend = incoreEnd - ((char *) dataToSend + startOffset);
+	  break;
+	}
+      }
+    }
+  }
+#endif
+
+  if (bytesToSend == 0 && c.hc_dataEnt.ce_size != 0) {
+    /* if the file has a size _and_ we don't have anything
+       to send, then we're done - otherwise, it might be
+       a zero-byte file */
+    DoneWithConnection(c, true);
+    return;
+  }
+
+  if (c.hc_bytesSent==0 && c.hc_dataEnt.ce_respHeaderLen != 0) {
+    ioBufs[0].buf = c.hc_dataEnt.ce_respHeader;
+    ioBufs[0].ofs = 0;
+    ioBufs[0].len = c.hc_dataEnt.ce_respHeaderLen;
+    numIOBufs = 1;
+
+    if (c.hc_dataEnt.ce_respHeaderTime != globalTimeOfDay.tv_sec) { 
+      /* fill in the current time in header */
+      C_strncpy( ioBufs[0].buf, DATESTARTOFF + ioBufs[0].ofs,
+		 globalTimeOfDayStr, 0, DATESTRLEN);
+      c.hc_dataEnt.ce_respHeaderTime = globalTimeOfDay.tv_sec;
+    } 
+  }
+
+  if ((c.hc_method == METHOD_GET) && bytesToSend != 0) {
+    ioBufs[numIOBufs].buf = dataToSend;
+    ioBufs[numIOBufs].ofs = startOffset;
+    ioBufs[numIOBufs].len = bytesToSend;
+    numIOBufs++;
+  }
+
+  try {
+    sz = unix_writev(c.hc_fd, ioBufs, numIOBufs);
+    if (c.hc_bytesSent==0 && c.hc_dataEnt.ce_respHeaderLen != 0) {
+      if (sz > 0)
+	sz -= c.hc_dataEnt.ce_respHeaderLen;
+    }
+    if (c.hc_method == METHOD_HEAD) {
+      if (sz != 0)
+	fprintf(tal_stderr, "had non-zero sz with head\n");
+      DoneWithConnection(c, false);
+      return;
+    }
+  } handle e {
+    if (testing)	/* doing optimistic write */
+      return;
+
+    /* Something went wrong, close this connection.
+     **
+     ** If it's just an EPIPE, don't bother logging, that
+     ** just means the client hung up on us.
+     **
+     ** On some systems, write() occasionally gives an EINVAL.
+     ** Dunno why, something to do with the socket going
+     ** bad.  Anyway, we don't log those either.
+     */
+    switch e {
+    case Unix_error *(code,syscall):
+      /* if (code != EPIPE && code != EINVAL)
+	 perror("single write"); */
+      fprintf(tal_stderr, "%s:%s, defaultSendBufSize %d\n", 
+	      syscall, unix_error_string(code), defaultSendBufSize);
+      DoneWithConnection(c, true);
+      return;
+    }
+  }
+
+  /* move the chunk lock */
+  /*
+  if (c.hc_numChunkLocks == 0) {
+    fprintf(tal_stderr, "trying to move a conn without a lock\n");
+    exit(-1);
+  }
+  if (IncChunkLock(c.hc_dataEnt, c.hc_bytesSent + sz))
+    c.hc_numChunkLocks++;
+  if (DecChunkLock(c.hc_dataEnt, c.hc_bytesSent))
+    c.hc_numChunkLocks--;
+  */
+
+  /* Ok, we wrote something. */
+  c.hc_bytesSent += sz;
+  if (c.hc_bytesSent >= c.hc_dataEnt.ce_size) {
+    /* This conection is finished! */
+    DoneWithConnection(c, false);
+    return;
+  }
+
+  SetTimer(c, IDLEC_TIMELIMIT, IdleTimeout);	
+}
+/* ---------------------------------------------------------------- */
+SRCode 
+RegularFileStuff(httpd_conn hc, *(NameEntry) hotName, bool addToHNE,
+		 int fileSize, int modTime)
+{
+  string expanded;
+
+  expanded = hotName.1.hne_expanded;
+  /*
+  hc.hc_cacheEnt = CheckCache(expanded);
+
+  if (hc.hc_cacheEnt) {
+  */
+  if (ColdFileStuff(hc, expanded, fileSize, modTime))
+    return(^SRCode.SR_ERROR);
+  /* } */
+  hc.hc_status = 200;		/* file exists, OK */
+  /*
+  if (IncChunkLock(hc.hc_cacheEnt, 0)) 
+    hc.hc_numChunkLocks++;    *//* indicate we're starting */
+  
+  /* since the name cache operates independently of the file cache,
+     do _not_ include this check inside the file cache check, or
+     else the name cache gets disabled */
+  if (addToHNE) {
+    hc.hc_hne = hotName.1;
+    EnterIntoHotNameCache(hotName);
+  }
+  /* Handle If-Modified-Since. */
+  if (hc.hc_ifModifiedSince != -1 &&
+      hc.hc_ifModifiedSince == hc.hc_dataEnt.ce_modTime) {
+    Buffer::t buf = Buffer::create(1000);
+    SendMime(buf, hc, 304, err304title, 
+	     hc.hc_dataEnt.ce_encodings, "", 
+	     hc.hc_dataEnt.ce_type, 
+	     -1,		/* suppress length field */
+	     hc.hc_dataEnt.ce_modTime);
+    return(^SRCode.SR_DONOTHING);
+  }
+  
+  return(^SRCode.SR_READY);
+}
+/* ---------------------------------------------------------------- */

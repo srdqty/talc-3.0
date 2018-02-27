@@ -1,0 +1,37 @@
+/*  static int make_bar(int foo(int)) (int) { */
+/*    return */
+/*      codegen(int spec(int x) */
+/*       { */
+/*         return (fill (foo))(x) + 1; */
+/*       }); */
+/*  } */
+
+/* Dynamic loading stuff */
+static struct imports_t {
+  int foo(int);
+}
+
+static imports_t imports = new imports_t(myfoo);
+
+static int myfoo(int i) {
+  return i;
+}
+
+void dyninit_simphand<b,c>(a lsym<a> (b, string, <a>rep), 
+		           b lclos,
+		           void usym<a> (c, string, <a>rep, a),
+		           c uclos,
+                           bool no_init) {
+  /* lookup and install foo */
+  int foo(int) = lsym(lclos,"foo",repterm@<int (int)>);
+  imports.foo = foo;
+
+  /* register bar */
+  usym(uclos,"bar",repterm@<int (int)>,bar);
+}
+
+/* Proper file */
+static int bar(int i) {
+  return imports.foo(i);
+}
+

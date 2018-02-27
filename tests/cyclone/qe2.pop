@@ -1,0 +1,61 @@
+#include "core.h"
+open Core;
+
+void pop_main()
+{
+  int y = 4;
+  int s, u;
+
+  u = y;
+
+  int qe2_4(int, int) =
+    codegen(int qe2_gen(int x, int n)
+	    {
+	      int s, t;
+	      
+	      s = 1; t = x;
+	      
+	      cut
+	        while (u != 0) {
+		  if ((u&1) != 0)
+		    splice(s = mod(s*t, n));
+		  u = u >> 1;
+		  splice(t = mod(t*t, n));
+		}
+
+	      return(s);
+	    });
+
+  print_string("qe2(2, 4, 10): ");
+  print_int(qe2(2, 4, 10));
+  print_newline();
+
+  print_string("qe2(2, 4, 10): ");
+  print_int(qe2_4(2, 10));
+  print_newline();
+
+}
+
+int qe2(int x, int y, int n)
+{
+  int s, t, u;
+
+  s = 1;  t = x;  u = y;
+
+  while (u != 0) {
+    if ((u&1) != 0)
+      s = mod(s*t, n);
+    u = u >> 1;
+    t = mod(t*t, n);
+  }
+  return(s);
+}
+
+int mod(int i, int j)
+{
+  if(i < j)
+    return i;
+  else
+    return mod(i - j, j);
+}
+

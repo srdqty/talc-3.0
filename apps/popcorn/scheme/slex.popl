@@ -1,0 +1,202 @@
+
+
+{ 
+// slex_init() ***MUST*** BE CALLED ONCE BEFORE LEXING OR YOU'LL GET A NULL
+// ERROR WHEN PROCESSING AN IDENTIFIER!!!
+
+/* Ported to popcorn lex by Dan */
+/* doing a recursive call for every string character is probably a bad idea */
+/* Also can't do '"' for the moment (Popcorn lexer problem) */
+
+#include "core.h"
+#include "lexing.h"
+#include "dict.h"
+#include "string.h"
+#include "list.h"
+#include "sast.h"
+open Core;
+open Lexing;
+open Sparse;
+open List; // types mentioned in sparse_tab
+open Sast; // types mentioned in sparse_tab
+#include "sparse_tab.h"
+open Sparse;
+extern < < <FILE>function_lexbuf_state>lexbuf>Opt Sparse::lbuf;
+
+/* hack for talking to bison (must not be prefixed): */
+int yylex() { return Slex::token(lbuf.v); }
+void yyerror(string s) { 
+  print_string(s); 
+  print_string(" line: ");
+  print_int(yyline);
+  print_newline();
+}
+int yyline = 1; /* incremented in actions */
+
+prefix Slex;
+open   Slex;
+
+void slex_init() {
+  // build keyword dictionary
+  <string,*(short,YYSTYPE)>Dict::dict d = Dict::empty(strcmp); 
+  keywords = ^Opt(d);
+  for (int i=0; i < size(keyword_array); ++i)   
+    keywords = ^Opt(Dict::insert(keywords.v, keyword_array[i].1, 
+				 ^(keyword_array[i].2, keyword_array[i].3)));
+}  
+
+exception SlexError(string);
+
+static b err<a,b>(<a>lexbuf lbuf, string s) { 
+  return raise SlexError(lexeme(lbuf));
+}
+
+static  *(string, short, YYSTYPE) keyword_array [] = {
+#define DUMMY ^YYSTYPE.Int(0)
+#define KEYWORD_OP(str,op) ^(str, PRIMOP, ^YYSTYPE.Primop(^primop.op))
+  // for this first group the actual yylval is not used so anything works
+  ^("nil",    NIL,    DUMMY),
+  ^("list",   LIST,   DUMMY),
+  ^("begin",  BEGIN,  DUMMY),
+  ^("lambda", LAMBDA, DUMMY),
+  ^("set!",   SET,    DUMMY),
+  ^("let",    LET,    DUMMY),
+  ^("letrec", LETREC, DUMMY),
+  ^("if",     IF,     DUMMY),
+  ^("cond",   COND,   DUMMY),
+  ^("else",   ELSE,   DUMMY),
+  ^("and",    AND,    DUMMY),
+  ^("or",     OR,     DUMMY),
+  ^("define", DEFINE, DUMMY),
+
+  KEYWORD_OP("*", Times),
+  KEYWORD_OP("/", Div),
+  KEYWORD_OP("=", Inteq),
+
+  KEYWORD_OP("eq?",          Ptreq),
+  KEYWORD_OP("not",          Not),
+  KEYWORD_OP("<",            Less),
+  KEYWORD_OP(">",            Greater),
+  KEYWORD_OP("<=",           Lesseq),
+  KEYWORD_OP(">=",           Greatereq),
+  KEYWORD_OP("integer?",     Isint),
+  KEYWORD_OP("boolean?",     Isbool),
+  KEYWORD_OP("null?",        Isnil),
+  KEYWORD_OP("procedure?",   Isfn),
+  KEYWORD_OP("char?",        Ischar),
+  KEYWORD_OP("pair?",        Ispair),
+  KEYWORD_OP("string?",      Isstring),
+  KEYWORD_OP("input-port?",  Isindesc),
+  KEYWORD_OP("output-port?", Isoutdesc),
+  KEYWORD_OP("cons", 	    Cons),
+  KEYWORD_OP("car", 	    Car),
+  KEYWORD_OP("cdr", 	    Cdr),
+  KEYWORD_OP("set-car!",     Setcar),
+  KEYWORD_OP("set-cdr!",     Setcdr),
+  
+  KEYWORD_OP("open-input-file",      Openin),
+  KEYWORD_OP("open-output-file",     Openout),
+  KEYWORD_OP("close-input-port",     Closein),
+  KEYWORD_OP("close-output-port",    Closeout),  
+  KEYWORD_OP("flush-out",            Flushout),
+  KEYWORD_OP("read-char",            Getchar),
+  KEYWORD_OP("peek-char",            Peekchar),
+  KEYWORD_OP("write-char",           Putchar),
+  KEYWORD_OP("write",                Write),
+  KEYWORD_OP("current-input-port",   Currentin),
+  KEYWORD_OP("current-output-port",  Currentout),
+  KEYWORD_OP("with-input-from-file", Winfile),
+  KEYWORD_OP("with-output-to-file",  Woutfile),
+  KEYWORD_OP("eof-object?",          Iseof),
+   
+  KEYWORD_OP("string",         Newstring),
+  KEYWORD_OP("string-length",  Sizes),
+  KEYWORD_OP("string-ref",     Subs),
+  KEYWORD_OP("string-set!",    Sets),
+  KEYWORD_OP("integer->char",  Chr),
+  KEYWORD_OP("char->integer",  Ord) 
+};
+// of course switching from an array to a linear-time dict is sort of silly, but
+// maybe someone will write a better dict module.
+// shame we have to do a null check every time just b/c can't have
+// non-constant initializers.
+static < <string,*(short,YYSTYPE)>Dict::dict>Opt keywords = null;
+
+static int process_id(string s) { // sets yylval
+  try {
+    *(short,YYSTYPE) ans = Dict::lookup(keywords.v, s);
+    yylval = ans.2;
+    return ans.1;
+  } handle y
+      switch y {
+      case Dict::Absent: yylval = ^YYSTYPE.Str(s); return ID;
+      default:           raise(y);
+  }
+}
+
+static string string_buffer = "xxxxxxxxxx";
+static int    string_pos    = 0;
+static void store_string_char(char c) {
+  int sz = size(string_buffer);
+  if (string_pos >= sz) {
+    string str = new_string(2*sz);
+    strncpy(str,0,string_buffer,0,sz);
+    string_buffer = str;
+  }	
+  string_buffer[string_pos] = c;
+  ++string_pos;
+}
+string get_stored_string () {
+  string str = String::substring(string_buffer,0,string_pos);
+  string_pos = 0;
+  return str;
+} 
+
+} 
+
+rule token = parse
+  [' ' '\t' '\011' '\012']+
+                     { return token(lexbuf); }
+| '\010' | '\013' | "\013\010"
+                     { ++yyline; return token(lexbuf); }
+| ";"                { return comment(lexbuf); }
+| '-'?['0'-'9']+     { yylval = ^YYSTYPE.Int(int_of_string(lexeme(lexbuf)));
+	               return NUM;} 
+| "\""               { string_pos = 0; strng(lexbuf);
+		       yylval = ^YYSTYPE.Str(get_stored_string());
+	               return STRING; }
+| "'()"              { return  NIL;   }
+| "#f"               { return  FALSE; }
+| "#t"               { return  TRUE;  }
+| "'"                { return  QUOTE; }
+| '+'                { yylval= ^YYSTYPE.Primop(^primop.Plus);  return  PRIMOP;} 
+| '-'                { yylval= ^YYSTYPE.Primop(^primop.Minus); return  PRIMOP;}
+| ['a'-'z' 'A'-'Z' '!' '$' '%' '&' '*' '/' ':' '<' '=' '>' '?' '^' '_' '~' ]
+     ['a'-'z' 'A'-'Z' '0'-'9' '!' '$' '%' '&' '*' '+' '-' '.' '/' ':' '<' '='
+	 '>' '?' '^' '_' '~']*
+	             { return process_id(lexeme(lexbuf)); }
+| "..."              { return process_id(lexeme(lexbuf)); }
+| '['                { return  LPAREN; }
+| ']'                { return  RPAREN; }
+| '('                { return  LPAREN; }
+| ')'                { return  RPAREN; }
+| eof                { return  -1; }
+and comment = parse
+  '\010' | '\013' | "\013\010"
+                     { ++yyline; return  token(lexbuf); }
+| eof                { return  -1; }
+| _                  { return comment(lexbuf); }
+and strng = parse 
+    "\""            { return 0; /* nop */ }
+  | '\\'('\010'|'\013'|"\013\010")
+                    { ++yyline; return strng(lexbuf); }
+  | "\\\t"          { return strng(lexbuf); }
+  | "\\ "           { return strng(lexbuf); }
+  | "\\\\"          { store_string_char('\\'); return strng(lexbuf); }
+  | "\\n"           { store_string_char('\n'); return strng(lexbuf); }
+  | "\\t"           { store_string_char('\t'); return strng(lexbuf); }
+  | "\\\""          { store_string_char('"');  return strng(lexbuf); }
+  | [' '-'~']       { store_string_char (lexeme_char(lexbuf, 0));
+		      return strng(lexbuf); }
+  | eof             { return err(lexbuf, "unterminated string"); }
+  | _               { return err(lexbuf, "bad string character");}

@@ -1,0 +1,61 @@
+#include "list.h"
+open List;
+
+prefix Queue;
+open Queue;
+
+/* abstract */ struct <a>queue { 
+  <a>list head; 
+  <a>list tail; 
+  int cur_sz; 
+  int max_sz; 
+}
+
+exception Queue_empty;
+exception Queue_full;
+
+<a>queue create<a>(int max_sz) {
+  return new queue(null,null,0,max_sz);
+}
+
+void enqueue<a>(<a>queue q, a elem) {
+  if (q.cur_sz < q.max_sz) {
+    if (q.tail == null) { /* if tail = null then head = null */
+      q.head = q.tail = cons(elem,null);
+    }
+    else {
+      q.tail = q.tail.tl = cons(elem,null);
+    }
+    q.cur_sz++;
+  }
+  else
+    raise (^Queue_full());
+}
+
+a dequeue<a>(<a>queue q) {
+  if (q.head == null)
+    raise (^Queue_empty());
+  else {
+    a x = q.head.hd;
+    q.head = q.head.tl;
+    if (q.head == null)
+      q.tail = null;
+    q.cur_sz--;
+    return x;
+  }
+}
+
+a peek<a>(<a>queue q) {
+  if (q.head == null)
+    raise (^Queue_empty());
+  else
+    return q.head.hd;
+}
+
+int length<a>(<a>queue q) {
+  return q.cur_sz;
+}
+
+int max_size<a>(<a>queue q) {
+  return q.max_sz;
+}

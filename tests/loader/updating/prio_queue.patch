@@ -1,0 +1,7 @@
+implementation: prio_queue.pop
+interface: prio_queue_patch.pop
+sharing:
+  Queue::Queue_full
+  Queue::Queue_empty
+renaming:
+  New::Queue::queue=UmY0hC2pc0hY1zFzCBREkg_B_B

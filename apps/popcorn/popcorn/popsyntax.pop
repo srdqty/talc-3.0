@@ -1,0 +1,487 @@
+
+// prefix this once prefix is working!
+
+// popsyntax.pop 
+// First ported by Dan, April 1999
+
+#include "core.h"
+#include "list.h"
+#include "string.h"
+#include "gcdfec.h"
+#include "hashtable.h"
+open Core;
+open List;
+open String;
+open Gcdfec;
+
+// these are a bad idea since they mean identifiers can't have that name
+// but without typedef they seem the lesser of evils
+#define var        string
+#define type_name  string
+#define field_name string
+
+prefix Popsyntax;
+open   Popsyntax;
+
+//////////////////////////// Abstract Syntax /////////////////////////
+
+union scope      { void Static, Public, Extern, Abstract; }
+union capability { void ReadOnly, ReadWrite; }
+union convention { void Stdcall, Cdecl; }
+union size_of    { void B1, B2, B4; }
+union var_class  { void Any, Option, Byte4; }
+// voids,floats,and doubles have kind Kother, everything else is K4
+// Kany is a superkind.
+union kind       { void Kany, K4, Kother; }
+
+union typ {
+  void                       VoidType;
+  *(var_class,<typ>Opt,int)  Evar; // int is unique id
+  var                        VarType;
+  *(bool, size_of)           IntType;
+  void                       BooleanType;
+  void                       StringType;
+  void                       CharType;
+  void                       FloatType; // float and double.
+  void                       DoubleType;
+  *(typ,<exp>Opt)            ArrayType; // exp is optional size
+  *(typ,int,bool)            CArrayType;
+  *(convention,<var>list,typ,<typ>list) FnType;
+  <typ>list                  TupleType;
+  *(type_name,<typ>list)     NamedType;
+  void                       ExnType;
+  *(typ)                     MutableTyp;
+  *(type_name,<typ>list)     UnresolvedTyId;
+}
+
+union cnst {
+  int    Int;
+  bool   Bool;
+  string String;
+  char   Char;
+  void   Null;
+
+  float Float;
+  double Double;
+
+}
+
+union primop { 
+  void Plus, Times, TimesU, Minus, Div, DivU, Mod, ModU,
+    Eq, Neq, Gt, GtU, Lt, LtU, Gte, GteU, Lte, LteU, Not,
+    Bitnot, Bitand, Bitor, Bitxor, Bitlshift, Bitlrshift, Bitarshift,
+    Size, Ord, Chr;
+  // IL operations only
+  *(bool,size_of,size_of) Resize; // Used for cast. bool == is src signed?
+  void ItoF, ItoD, FtoI, DtoI, FtoD, DtoF; // Conversions between ints, floats, doubles.
+  // standard floating point operations.
+  void  PlusF, MinusF, TimesF, DivF, EqF, NeqF, GtF, GteF, LtF, LteF;
+  // built-in operators.
+  // nullary
+  void PiF, Log2_eF, Log2_10F, Log10_2F, Loge_2F, OneF, ZeroF;
+  // unary
+  void CosF, SinF, TanF, SqrtF, F2xm1F, FabsF, FroundF;
+  // binary
+  void AtanF, FremF, Fyl2xF, Fyl2xp1F;
+}
+
+union raw_exp {
+  cnst                      Const;
+  *(<exp>list, <typ>Opt)    ConstArray;
+  <exp>list                 ConstCArray;
+  var                       Var;
+  *(primop, <exp>list)      Primop;
+  *(exp,exp,exp)            Conditional;
+  *(exp,<primop>Opt,exp)    AssignOp;
+  *(exp,< <typ>list>Opt, <exp>list)                   FunCall;
+  *(exp,<typ>list)                                    TypInst;
+  *(type_name, <<typ>list>Opt, <*(<field_name>Opt,exp)>list) NewStruct;
+  *(exp, field_name)                                  StructMember;
+  *(type_name, < <typ>list>Opt, field_name, <exp>Opt) NewUnion;
+  *(exp,field_name) UnionMember;
+  <exp>list         NewTuple;
+  *(exp,int)        TupleMember;
+  *(exp,exp)        Subscript;
+  *(exp,exp)        CSubscript;
+  // Cyclone
+  fndecl            Codegen;
+  exp               Fill;
+  // End Cyclone
+  *(var, <exp>Opt)  NewExn;
+  exp               Raise;
+  <exp>list         SeqExp;
+  void              Nop;
+  *(typ,exp)        Cast;
+  *(type_name,<<typ>list>Opt,<<typ>list>Opt,exp)     NewAbstype;
+  fndecl            Fun;  // nested function definition
+}  
+struct exp {
+  <typ>Opt    typ;
+  raw_exp     raw_exp;
+  <var>list   assigned_to; //made during type-checking, used in Poptranslate
+  Gcdfec::seg loc;
+}
+
+union raw_stmt {
+  void                Skip;
+  exp                 Exp;
+  *(stmt,stmt)        Seq;
+  <exp>Opt            Return;
+  *(exp,stmt,stmt)    IfThenElse;
+  *(exp,stmt)         While;
+  <var>Opt            Break;
+  <var>Opt            Continue;
+  *(exp,exp,exp,stmt) For;
+  *(exp,<*(int,stmt)>list,stmt)     IntSwitch;
+  *(exp,<*(char,stmt)>list,stmt)    CharSwitch;
+  *(exp,<switch_arm>list,<stmt>Opt) UnionSwitch;
+  *(exp,<switch_arm>list,<stmt>Opt) ExnSwitch;
+  *(var,typ,<exp>Opt,stmt)          Decl;
+  // Cyclone
+  stmt             Cut;
+  stmt             Splice;
+  // End Cyclone
+  *(var,stmt)      Label;
+  *(stmt,exp)      Do;
+  *(stmt,var,stmt) TryHandle;
+  //                      default   finally
+  *(stmt,<switch_arm>list,<stmt>Opt,<stmt>Opt) TryCatchFinally;
+  *(var,<typ>Opt,<var>list,exp,stmt) With;
+  *(exp,exp) Rdtsc;
+}
+union prim_pattern {
+  *(typ)     Wild;
+  *(var,typ) Var;
+}
+union pattern {
+  void               None;
+  prim_pattern       Prim;
+  <prim_pattern>list Tuple;
+}
+struct switch_arm { 
+  field_name field;
+  pattern    pat;
+  stmt       body;
+}
+struct stmt {
+  raw_stmt    raw_stmt;
+  Gcdfec::seg loc;
+}
+struct fndecl {
+  bool              is_static;
+  convention        convention;
+  var               name;
+  <var>list         tyvars;
+  typ               ret_type;
+  <*(var,typ)>list  args;
+  stmt              body;
+}
+struct structdecl {
+  scope     scope;
+  type_name name;
+  <var>list tyvars;
+  bool      possibly_null;
+  <*(field_name,capability,typ)>list fields;
+}
+struct uniondecl {
+  scope     scope;
+  type_name name;
+  <var>list tyvars;
+  <*(field_name,typ)>list fields;
+}
+struct absdecl {
+  scope     scope;
+  type_name name;
+  <var>list all_tyvars;
+  <var>list exist_tyvars;
+  typ       defn;
+}
+union raw_top_decl {
+  fndecl                      FunDecl;
+  structdecl                  StructDecl;
+  uniondecl                   UnionDecl;
+  absdecl                     AbsDecl;
+  *(var,scope,typ)            ExceptionDecl;
+  *(type_name,<var>list,bool) ExternType; // bool indicates option
+  *(var,typ)                  ExternVal;
+  *(scope,var,typ,<exp>Opt)   GlobalDecl;
+  *(var,<top_decl>list)       PrefixDecl;
+  *(var,<top_decl>list)       OpenDecl;
+}
+struct top_decl {
+  raw_top_decl raw_top_decl;
+  Gcdfec::seg  loc;
+}
+
+///////////////////////////// Pre-defined Values //////////////
+// These exceptions may be thrown and handled by any code.
+// In addition they are thrown in the obvious places implicitly.
+// Every file will have extern declarations for these (void) exception names.
+// It is therefore an error to re-declare or re-define these values.
+// (We can't put top_decls here b/c of global initialization restrictions)
+string null_exception_name  = "NullPointer";
+string union_exception_name = "UnionVariant";
+string array_exception_name = "ArrayBounds";
+
+convention default_convention = ^.Cdecl;
+
+// Changes to the types below must also be reflected in prelude.tal
+// and prelude_e.tali
+top_decl make_predefined_exn(string s) { // useful for strings above
+  return ^top_decl(^raw_top_decl.ExceptionDecl(^(s, ^scope.Extern,
+						 ^typ.VoidType)),
+  Gcdfec::seg_of_abs(42,42)); // dummy location
+}
+
+top_decl make_memType() {
+  return ^top_decl(^raw_top_decl.StructDecl(
+            ^structdecl(^scope.Extern, "memType", null, true,
+	                ^list(^("ignore",
+				^capability.ReadWrite,
+				^typ.IntType(^(true,^size_of.B4))), null))),
+                   Gcdfec::seg_of_abs(42,42)); // dummy location
+}
+
+//////////////////////////////// Utilities ////////////////////
+
+string var2string(var v) { // replaces each '?' with "::"
+  int len       = size(v);
+  int questions = 0;
+  for (int i = 0; i < len; ++i)
+    if (v[i] == '?') ++questions;
+  string ans = new_string(len+questions);
+  for (int i=0,j=0; i < len; ++i, ++j) 
+    if (v[i] == '?') { 
+      ans[j] = ans[j+1] = ':';
+      ++j;
+    } else
+      ans[j] = v[i];
+  return ans;
+}
+
+string convention2string(convention c) {
+  if (c==default_convention) return "";
+
+  switch c {
+  case Stdcall: return "__stdcall";
+  case Cdecl: return "__cdecl";
+  }
+}
+
+// as in caml implementation, the array and function cases are different
+// from the languages concrete syntax
+string typ2string(typ t) {
+  switch t {
+  case VoidType: return "void";
+  case Evar*(c,r,id):
+    string s1 = (r != null) ? typ2string(r.v) : "";
+    string s2 = string_of_int(id);
+    string s3;
+    switch c {
+    case Option: s3 = "?%(";
+    case Byte4:  s3 = "4%(";
+    case Any:    s3 = "%(";
+    }
+    return(strconcat(s3,strconcat(s1,strconcat(")",s2))));
+  case VarType(v): return v;
+  case IntType*(sign,sz): 
+    string signstr = sign ? "" : "unsigned ";
+    string szstr;
+    switch sz {
+    case B1: szstr = "byte";
+    case B2: szstr = "short";
+    case B4: szstr = "int";
+    }
+    return strconcat(signstr, szstr);
+  case BooleanType:  return "bool";
+  case StringType:   return "string";
+  case CharType:     return "char";
+  case FloatType:    return "float";
+  case DoubleType:   return "double";
+  case ArrayType(t): return strconcat(typ2string(t.1),"[]");
+  case CArrayType *(t1,sz,opt):
+    return strconcat(typ2string(t1),
+		     strconcat((opt ? "?" : ""),
+			       strconcat("[|",
+					 strconcat(string_of_int(sz),"|]"))));
+  case FnType*(c,vs,t,ts): // no longer lists tyvars explicitly
+    return strconcat_l(^list(typ2string(t),
+		       ^list(" ",
+		       ^list(convention2string(c),
+		       ^list(" (",
+		       ^list(types2string(ts),
+		       ^list(")",null)))))));
+  case TupleType(ts): 
+    return strconcat_l(^list("*(",^list(types2string(ts),^list(")",null))));
+  case NamedType*(n,l):
+    string tyvar_str = "";
+    if (l != null) 
+      tyvar_str = 
+	strconcat_l(^list("<",^list(types2string(l),^list(">",null))));
+    return strconcat(tyvar_str,var2string(n));
+  case ExnType: return "exn";
+  case MutableTyp*(t): return typ2string(t);
+  case UnresolvedTyId*(n,l): 
+    string tyvar_str = "";
+    if (l != null) 
+      tyvar_str = 
+	strconcat_l(^list("<",^list(types2string(l),^list(">",null))));
+    return strconcat(tyvar_str,var2string(n));
+  }
+}
+static string types2string(<typ>list ts) { 
+  return str_sepstr(List::map(typ2string,ts),",");
+}
+
+static int evar_counter = 0;
+
+typ new_evar(var_class c) {
+  return(^typ.Evar(^(c,null,++evar_counter)));
+}
+
+// we don't implement eqtype b/c it isn't used in caml implementation
+// and it's a pain to write in Popcorn
+
+string add_prefix(string pre, var v) {
+  return strconcat_l(^list(pre,^list("?",^list(v,null))));
+}
+
+bool size_leq(size_of s1, size_of s2) {
+  switch s1 {
+  case B1: return true;
+  case B2: switch s2 { case B1: return false; default: return true;  }
+  case B4: switch s2 { case B4: return true;  default: return false; }
+  }
+}
+
+string primop2string(primop p) {
+  switch p {
+  case Plus      : return("+");
+  case Times     : return("*");
+  case TimesU    : return("(unsigned)*");
+  case Minus     : return("-");
+  case Div       : return("/");
+  case DivU      : return("(unsigned)/");
+  case Mod       : return("%");
+  case ModU      : return("%");
+  case Eq        : return("==");
+  case Neq       : return("!=");
+  case Gt        : return(">");
+  case GtU       : return("(unsigned)>");
+  case Lt        : return("<");
+  case LtU       : return("(unsigned)<");
+  case Gte       : return(">=");
+  case GteU      : return("(unsigned)>=");
+  case Lte       : return("<=");
+  case LteU      : return("(unsigned)<=");
+  case Not       : return("!");
+  case Bitnot    : return("~");
+  case Bitand    : return("&");
+  case Bitor     : return("|");
+  case Bitxor    : return("^");
+  case Bitlshift : return("<<");
+  case Bitlrshift: return(">>>");
+  case Bitarshift: return(">>");
+  case Size      : return("size");
+  case Ord       : return("ord");
+  case Chr       : return("chr");
+  case PlusF     : return("(float)+");
+  case MinusF    : return("(float)-");
+  case TimesF    : return("(float)*");
+  case DivF      : return("(float)/");
+  case EqF       : return("(float)==");
+  case NeqF      : return("(float)!=");
+  case GtF       : return("(float)>");
+  case GteF      : return("(float)>=");
+  case LtF       : return("(float)<");
+  case LteF      : return("(float)<=");
+  case Resize*(s,dst,src) :
+    if(s) return("resize");
+    return("(unsigned)resize");
+  case ItoD     : return ("(:double) int");
+  case ItoF     : return ("(:float) int");
+  case DtoI     : return ("(:int) double");
+  case FtoI     : return ("(:int) float");
+  case DtoF     : return ("(:float) double");
+  case FtoD     : return ("(:double) float");
+    // Specials
+  case PiF      : return ("Math::pi");
+  case Log2_eF  : return ("Math::log2_e");
+  case Log2_10F : return ("Math::log2_10");
+  case Log10_2F : return ("Math::log10_2");
+  case Loge_2F  : return ("Math::loge_2");
+  case OneF     : return ("1.0");
+  case ZeroF    : return ("0.0");  
+  case CosF     : return ("Math::cos");
+  case SinF     : return ("Math::sin");
+  case TanF     : return ("Math::tan");
+  case AtanF    : return ("Math::atan");
+  case FremF    : return ("Math::frem");
+  case SqrtF    : return ("Math::sqrt");
+  case F2xm1F   : return ("Math::f2xm1");
+  case FabsF    : return ("Math::fabs");
+  case FroundF  : return ("Math::fround");
+  case Fyl2xF   : return ("Math::fyl2x");
+  case Fyl2xp1F : return ("Math::fyl2xp1");
+}
+}
+
+
+// WARNING: Don't use the kind as a surrogate for size.  Kother may have size
+// 0 or 8.
+kind kind_of_typ(typ t) {
+  switch t {
+  case VoidType: return ^.Kother;
+  case Evar *(c,topt,_):
+    switch c {
+    case Any:
+      if(topt!=null) {
+	return kind_of_typ(topt.v);
+      }
+      return ^.Kany;
+    default: return ^.K4;
+    }
+  case DoubleType: return ^.Kother;
+  case FloatType: return ^.Kother;
+  default: return ^.K4;
+  }
+}
+
+< <string, *(int,primop)>Hashtable::table >Opt specials;
+
+void init_specials() {
+
+  _ hs = Hashtable::create(37,strcmp,Hashtable::hash_string);
+
+#define ADD_OP(N,A,O) Hashtable::insert(hs,add_prefix("Math",N),^(A,O))
+
+  ADD_OP("pi"      ,0, ^.PiF);
+  ADD_OP("log2_ef" ,0, ^.Log2_eF);
+  ADD_OP("log2_10f",0, ^.Log2_10F);
+  ADD_OP("log10_2f",0, ^.Log10_2F);
+  ADD_OP("loge_2f" ,0, ^.Loge_2F);
+  ADD_OP("cos"     ,1, ^.CosF);
+  ADD_OP("sin"     ,1, ^.SinF);
+  ADD_OP("tan"     ,1, ^.TanF);
+  ADD_OP("atan"    ,2, ^.AtanF);
+  ADD_OP("frem"    ,2, ^.FremF);
+  ADD_OP("sqrt"    ,1, ^.SqrtF);
+  ADD_OP("f2xm1"   ,1, ^.F2xm1F);
+  ADD_OP("fabs"    ,1, ^.FabsF);
+  ADD_OP("fround"  ,1, ^.FroundF);
+  ADD_OP("fyl2x"   ,2, ^.Fyl2xF);
+  ADD_OP("fyl2xp1" ,2, ^.Fyl2xp1F);
+
+#undef ADD_OP  
+  specials = ^Opt(hs);
+}
+
+<*(int,primop)>Opt is_special(string v) {
+  if(specials == null) init_specials();
+  
+  try {
+    return ^Opt(Hashtable::lookup(specials.v,v));
+  } handle y {
+    return null;
+  }
+}

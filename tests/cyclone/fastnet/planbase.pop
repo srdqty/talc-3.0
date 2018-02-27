@@ -1,0 +1,24 @@
+#include <list.h>
+#include <tal_sockets.h>
+open List;
+
+/***************************************************************************
+ * Exceptions
+ **************************************************************************/
+
+exception InternalError(string);
+exception PlanExcept(string);
+exception ResourceBound(string);
+
+
+/***************************************************************************
+ * globals
+ **************************************************************************/
+
+<*(string, string, string, int, string, int)> list pland_interface_info;
+<string> list pland_neighbors;
+<*(string, string)> list pland_rtable;
+<*(FILE, string)>   list pland_interfaces;
+<*(string, string)> list pland_spf_edges;
+string              received_host;
+FILE                logfile;

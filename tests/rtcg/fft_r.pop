@@ -1,0 +1,270 @@
+// fft
+// Copied from Lawall's paper.
+// Faster Fourier Transforms via Automatic Program Specialization
+//
+
+#include "poptiming.h"
+#include "core.h"
+#include "math.h"
+
+open Core;
+open Math;
+
+#define FP double
+
+void scramble(FP fr[], FP fi[], int n) {
+  for(int m=1,j=0; m<n-1;m++) {
+    for(int k=n>>1; ((j^=k)&k) == 0; k>>=1) 
+      /* Do nothing. */;
+
+    if(j>m) {
+      FP tmp;
+      tmp = fr[m];
+      fr[m] = fr[j];
+      fr[j] = tmp;
+      
+      tmp = fi[m];
+      fi[m] = fi[j];
+      fi[j] = tmp;
+    }
+  }
+}
+
+// is = 1 == fft, is = -1 == inverse fft
+// The inverse does not preserve amplitude -- divide by length of the array to get it back.
+// fr and fi are the real and imaginary parts of the input respectively.
+// ldn = log_2 (size(fr))
+void fft_gen(int ldn,int is)(FP fr[], FP fi[]) {
+
+  int n2 = 1 << ldn;
+  FP is_pi = is * pi;
+
+  return codegen(void fft(FP fr[], FP fi[]) {
+
+    cut {
+      // scramble inlined.
+      // It is not at all clear that this pays off!
+      for(int m=1,j=0; m<n2-1;m++) {
+	for(int k=n2>>1; ((j^=k)&k) == 0; k>>=1) 
+	  ;
+	
+	if(j>m) {
+	  splice {
+	    FP tmp;
+	    int m = fill(m);
+	    int j = fill(j);
+	    tmp = fr[m];
+	    fr[m] = fr[j];
+	    fr[j] = tmp;
+	    
+	    tmp = fi[m];
+	    fi[m] = fi[j];
+	    fi[j] = tmp;
+	  }
+	}
+      }
+      
+      for(int ldm=1; ldm <= ldn; ldm++) {
+	int m = 1 << ldm;
+	int mh = m >> 1;
+	FP phi = is_pi / mh;
+	FP w = 0.0;
+
+	for(int j=0; j < mh; j++, w+=phi) {
+	  FP c = cos(w);
+	  FP s = sin(w);
+	  
+	  splice {
+	    FP c = fill(^(c)).1;
+	    FP s = fill(^(s)).1;
+
+	    // Unrolling this loop means we blow the cache a lot faster
+	    // and we cannot specialize too much of the computation away
+	    // in any case.
+	    for(int r=0; r<fill(n2); r+=fill(m)) {	      
+	      int t1 = r+fill(j);
+	      int t2 = r+fill(j+mh);
+	      FP fr2 = fr[t2], fi2 = fi[t2];
+	      FP vr = fr2 * c - fi2 * s;
+	      FP vi = fr2 * s + fi2 * c;
+	      
+	      FP ur = fr[t1];
+	      fr[t1] = ur+vr;
+	      fr[t2] = ur-vr;
+	      
+	      FP ui = fi[t1];
+	      fi[t1]=ui+vi;
+	      fi[t2]=ui-vi;  	    
+	    }
+	  }
+	}
+      }
+    }
+  });
+}
+
+void prn_fp_arrays(double fr[], double fi[]) {
+  for(int i = 0; i < size(fr); i++) {
+    printf("%d \t (%g + %gi) \t |%g|\n",i,fr[i],fi[i],sqrt(fr[i]*fr[i] + fi[i] * fi[i]));
+  }
+  printf("\n");
+}
+
+double fp_copy(double x[])[] {
+  int len = size(x);
+  double y[] = new_array_double(len);
+
+  for(int i=0; i<len;i++) {
+    y[i] = x[i];
+  }
+
+  return y;
+}
+
+void mean_error(double fr[], double fi[], double gr[], double gi[]) {
+  int len = size(fr);
+  double err[] =  new_array_double(len);
+
+  for(int i=0; i<len;i++) {
+    _ r_err = fr[i] - gr[i];
+    _ i_err = fi[i] - gi[i];
+    
+    err[i] = sqrt(r_err * r_err + i_err * i_err);
+  }
+ 
+  for(int i=0; i<len; i++) {
+    if(err[i] < 1e-10) printf("0 ");
+    else printf("%g ",err[i]);
+  }
+
+  printf("\n");
+}
+
+int pop_main () {
+
+  string s[] = std_args();
+
+  if(size(s)!=2) {
+    printf("usage: %s <log of input length>\n",s[0]);
+    return -1;
+  }
+
+  int len_log = int_of_string(s[1]);
+  int len = 1 << len_log;
+
+  if(len_log <=0 || len_log >=32) {
+    printf("Input length must be betwee 1 and 31.\n");
+    return -1;
+  }
+
+  FP  fi[] = new_array_double(len);
+  FP  fr[] = new_array_double(len);
+
+  
+  for(int i=0; i<len; i++) {
+    double phi = (i/(:double)(len-1)) * 2.0 * pi;
+
+    fr[i] = sin(phi) + sin(4.0 * phi);
+    fi[i] = 0;
+  }
+
+  FP fr_orig[] = fp_copy(fr);
+  FP fi_orig[] = fp_copy(fi);
+
+  FP fr_data[][] = new_array(100,{:FP});
+  FP fi_data[][] = new_array(100,{:FP});
+
+  for(int i=0; i<100; i++) {
+    fr_data[i] = fp_copy(fr);
+    fi_data[i] = fp_copy(fi);
+  }
+
+  MAIN_TEST("fft",COMPILER,RTCG_KIND,s[1],_ fft = fft_gen(len_log,1),    fft(fr,fi));
+  /*
+  INIT_TIMER(0);
+  START_TIMER(0);
+
+  INIT_TIMER(1);
+  START_TIMER(1);
+  fft_gen(len_log,1);
+  fft_gen(len_log,-1);
+  END_TIMER(1);
+
+  // First calls to fft_gen  eliminate cache effects that are otherwise very pronounced.
+  START_TIMER(1);
+  _ fft = fft_gen(len_log,1);
+  END_TIMER(1);
+
+  INIT_TIMER(2);
+  for(int i = 0; i < 10; i++) {
+    START_TIMER(2);
+    fft(fr,fi);
+    END_TIMER(2);
+  }
+
+  INIT_TIMER(3);
+  START_TIMER(3);
+  for(int i=0; i <100; i++) {
+    fft(fr,fi);
+  }
+  END_TIMER(3);
+
+  INIT_TIMER(4);
+  START_TIMER(4);
+  for(int i=0; i <1000; i++) {
+    fft(fr,fi);
+  }
+  END_TIMER(4);
+
+  INIT_TIMER(5);
+  START_TIMER(5);
+  for(int i=0; i <100; i++) {
+    fft(fr_data[i],fi_data[i]);
+  }
+  END_TIMER(5);
+
+  END_TIMER(0);
+
+  output_timers(string_to_Cstring("fft.log"));
+
+  */
+  return 0;
+}
+
+/* Testing pop_main 
+int pop_main () {
+
+  int len = 32, len_log = 5;
+  FP  fi[] = new_array_double(len);
+  FP  fr[] = new_array_double(len);
+
+  for(int i=0; i<len; i++) {
+    double phi = (i/(:double)(len-1)) * 2.0 * pi;
+
+    fr[i] = sin(phi) + sin(4.0 * phi);
+    fi[i] = 0;
+  }
+
+  FP fr_orig[] = fp_copy(fr);
+  FP fi_orig[] = fp_copy(fi);
+
+  _ fft = fft_gen(len_log,1);
+  _ ifft = fft_gen(len_log, -1);
+
+  fft(fr,fi);
+
+  prn_fp_arrays(fr,fi);
+
+  ifft(fr,fi);
+
+  for(int i=0;i<len;i++) {
+    fr[i] /= len;
+    fi[i] /= len;
+  }
+
+  mean_error(fr_orig,fi_orig,fr,fi);
+
+  return 0;
+}
+
+ */

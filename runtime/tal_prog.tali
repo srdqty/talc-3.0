@@ -1,0 +1,19 @@
+; A TAL module must export this interface to be a program
+;
+; Copyright Greg Morrisett, Neal Glew,
+;   January 1999, all rights reserved
+
+; The TLA is kind of tricky.  SetTLA allows us to write an arbitrary value
+; to a field in the TLA so long as the TLA is a pointer to something with
+; fields in it.  Therefore, the initial TLA consists of n fields of type
+; B4^rw which should be safe and allow the _tal_main code to update the TLA
+; to whatever it needs initially.  For now n=4 (although the implementation
+; provides for n=80).
+
+; Exception: the cyclone stuff requires a template stack to be in the first
+; TLA slot.  Since there is no way to initialise this we hard code it in
+; this type.
+
+	VAL	_tal_main,<code{ESP: sptr se}>
+
+; EOF: tal_prog.tali

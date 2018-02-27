@@ -1,0 +1,14 @@
+(* ping which evaluates at every hop to determine its routing *)
+fun p(s,d,o) =
+  if (not thisHostIs(d)) then
+    let val hop = defaultRoute(d) in
+      OnNeighbor(|p|(s,d,o),fst hop,getRB(),snd hop)
+    end
+  else
+    if o then
+      let val hop = defaultRoute(s) in
+	OnNeighbor(|p|(d,s,false),fst hop,getRB(),snd hop)
+      end
+    else
+      print('x')
+

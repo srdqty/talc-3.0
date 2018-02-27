@@ -1,0 +1,59 @@
+#include "poptiming.h"
+#include "core.h"
+open Core;
+
+double dot(float u[],float v []) {
+  unsigned int len = size(u);
+  double result = 0;
+
+  for(unsigned int i = 0; i < len; ++i)
+    result += u[i] * v[i];
+  return result;
+} 
+
+int pop_main()
+{
+  string s[] = std_args();
+  if (size(s)!=3) 
+    {
+      print_string(s[0]);
+      print_string(": usage: <vec_len> <percent zeroes>");
+      print_newline();
+      return 0;
+    } 
+
+  int vec_len = int_of_string(s[1]);
+  int percent_zeroes = int_of_string(s[2]);
+  float u[] = new_array_float(vec_len);
+  float v[] = new_array_float(vec_len);
+
+  for(int i = 0; i < vec_len; i++) {
+    u[i] = i+1;
+    v[i] = i+1;
+  }
+  
+  int num_zeroes = (percent_zeroes * vec_len) / 100;
+  
+  if(num_zeroes > vec_len || num_zeroes < 0) {
+    printf("Bad percentage %d\n",percent_zeroes);
+    return 1;
+  }
+
+  for(int i = 0; i < num_zeroes; i++) {
+    u[i] = 0;
+  }
+
+  _ args = strconcat(s[1],strconcat(" ",s[2]));
+
+  MAIN_TEST("dotf",COMPILER,PLAIN_KIND,args,0,dot(u,v));
+
+  _ result = dot(u,v);
+  printf("vec_len = %d, percent_zeroes = %d, result = %g\n",
+	 vec_len, percent_zeroes, result);
+  return 0;
+}
+
+
+
+
+

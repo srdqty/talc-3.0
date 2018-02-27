@@ -1,0 +1,354 @@
+
+////////////////////////////////////////////////////////////////////////////
+// Popcorn library, file core.pop                                         //
+// Copyright Greg Morrisett, Dan Grossman                                 //
+// January 1999, all rights reserved                                      //
+//                                                                        //
+////////////////////////////////////////////////////////////////////////////
+
+extern string new_array1(int);
+
+extern int tal_errno;
+
+/////////////////////////////// I/O ////////////////////////////
+
+extern FILE?;
+extern Cstring?;
+extern FILE tal_stdout;
+extern void    fprint_int       (FILE,int);
+extern void    fprint_uint      (FILE,unsigned int);
+extern void    fprint_string    (FILE,string);
+extern void    fprint_char      (FILE,char);
+//extern void    fprint_float     (FILE,float);
+//extern void    fprint_double    (FILE,double);
+extern int     f_string_read    (FILE,string,int,int);
+extern Cstring string_to_Cstring(string);
+extern string  Cstring_to_string(Cstring);
+extern FILE    fopen            (Cstring,Cstring);
+extern int     f_close          (FILE);
+extern int     f_length         (Cstring);
+extern Cstring getenv           (Cstring);
+extern int     system           (Cstring);
+
+extern double str_to_d(string s);
+extern string d_to_str(double d);
+extern float  str_to_f(string s);
+extern string f_to_str(float d);
+
+extern string d_to_hexstr(double d);
+extern string f_to_hexstr(float f);
+
+prefix Core;
+open   Core;
+
+void print_int    (int    n) { fprint_int   (tal_stdout,n);    }
+void print_string (string s) { fprint_string(tal_stdout,s);    }
+void print_newline()         { fprint_char  (tal_stdout,'\n'); }
+void print_char   (char c)   { fprint_char  (tal_stdout,c);    }
+//void print_float  (float f)  { fprint_float (tal_stdout,f);    }
+//void print_double (double d) { fprint_double(tal_stdout,d);    }
+
+exception FileOpenError(string);
+exception FileCloseError;
+exception Impossible(string);
+exception Not_found;
+
+FILE file_open(string fname, string mode) {
+  FILE f = fopen(string_to_Cstring(fname), string_to_Cstring(mode));
+  if (f == null) raise FileOpenError(fname);
+  return f;
+}
+void file_close(FILE f) {
+  if (f_close(f) != 0) raise FileCloseError();
+}
+int file_delete(string fname) { // this should be added to the runtime
+  return system(string_to_Cstring(strconcat("rm ", fname)));
+}
+int file_length(string fname) {
+  return f_length(string_to_Cstring(fname));
+}
+/* Popcorn version of fgets; returns the # of chars read */
+int file_gets(string buf,int ofs,FILE f) {
+  int i, len = size(buf), retc;
+  if (ofs < 0 || ofs >= len)
+    raise (^InvalidArg("file_gets"));
+  /* built on f_string_read; pretty inefficient but oh well */
+  for (i = ofs; i<len; i++) {
+    retc = f_string_read(f,buf,i,1);
+    if (retc   !=   1 || /* assume EOF */ 
+	buf[i] == '\n') { /* end-of-line */
+      buf[i] = '\000';
+      break;
+    }
+  }
+  return i-ofs;
+}
+string get_env(string s) {
+  Cstring r = getenv(string_to_Cstring(s));
+  if (r==null) raise Not_found();
+  return Cstring_to_string(r);
+}
+
+#define EOF chr(-1)
+
+static string hexarr = "0123456789abcdef";
+
+void fprint_hex(FILE f,unsigned int x) {
+  // arrays of characters are broken...
+  int c[] = { ord(hexarr[ x        & 0xf]),
+              ord(hexarr[(x >>> 4)  & 0xf]),
+              ord(hexarr[(x >>> 8)  & 0xf]),
+              ord(hexarr[(x >>> 12) & 0xf]),
+              ord(hexarr[(x >>> 16) & 0xf]),
+              ord(hexarr[(x >>> 20) & 0xf]),
+              ord(hexarr[(x >>> 24) & 0xf]),
+	      ord(hexarr[(x >>> 28) & 0xf]) };
+
+  if (x == 0) { fprint_char(f,'0'); return; }
+  int i = 7;
+  while (c[i] == 0) --i;
+  for (; i >= 0; --i) {
+    fprint_char(f,chr(c[i]));
+  }
+}
+  
+void print_hex(unsigned int x) { fprint_hex (tal_stdout,x); }
+
+/////////////////////////////Generally Useful Things//////////////
+?struct <a>Opt { a v; }
+
+<b>Opt opt_map<a,b>(b f(a), <a>Opt o) {
+  if (o==null)
+    return null;
+  return ^Opt(f(o.v));
+}
+
+struct <a>ref {a v;}
+
+exception InvalidArg(string);
+exception Failure(string);
+
+bool true_f<a> (a x) {  return true;  }
+bool false_f<a>(a x) {  return false; }
+
+int intcmp(int a, int b) { return a - b; }
+int charcmp(char a,char b) { return (ord(a) - (ord(b))); }
+
+a fst<a,b>(*(a,b) pair) {
+  return(pair.1);
+}
+
+b snd<a,b>(*(a,b) pair) {
+  return(pair.2);
+}
+
+c third<a,b,c>(*(a,b,c) triple) {
+  return(triple.3);
+}
+
+a identity<a>(a x) {
+  return x;
+}
+
+//////////////////////////Strings////////////////////////////
+// Some of the more obscure utilities should go in a different module.
+
+string new_string(int len) { return new_array1(len); }
+
+int strcmp(string a, string b) {
+  int as = size(a);
+  int bs = size(b);
+  int min_length = (as < bs) ? as : bs;
+  int i  = -1;
+  while (++i < min_length) {
+    int diff = ord(a[i]) - ord(b[i]);
+    if (diff != 0)
+      return diff;
+  }
+  return as-bs;
+}
+string strconcat(string a, string b) {
+  string ans = new_string(size(a)+size(b));
+  int i, j;
+  for (i=0; i < size(a); ++i) ans[i]   = a[i];
+  for (j=0; j < size(b); ++j) ans[i+j] = b[j];
+  return ans;
+}
+string strcpy(string s) {
+  string ans = new_string(size(s));
+  for (int i=0; i<size(s); ++i)
+    ans[i] = s[i];
+  return ans;
+}
+
+void strncpy(string dest, int dest_offset, string src, int src_offset, int n) {
+  if(src != dest 
+     || dest_offset + n < src_offset 
+     || src_offset  + n < dest_offset)
+    for (int i=0; i<n; i++)
+      dest[dest_offset+i] = src[src_offset+i];
+  else {
+    // we could do better, but this is correct
+    string buffer = new_string(n);
+    for (int i=0; i<n; i++)
+      buffer[i] = src[src_offset+i];
+    for (int i=0; i<n; i++)
+      dest[dest_offset+i] = buffer[i];
+  }
+}
+
+bool is_space(char c) {
+  switch ord(c) {
+  case  9: return true;
+  case 10: return true;
+  case 11: return true;
+  case 12: return true;
+  case 13: return true;
+  case 32: return true;
+  default: return false;
+  }
+}
+
+static int int_of_char(char c) {
+  if ('0'<=c && c<='9')      return ord(c)-ord('0');
+  else if ('a'<=c && c<='f') return 10+ord(c)-ord('a');
+  else if ('A'<=c && c<='F') return 10+ord(c)-ord('A');
+  else raise InvalidArg("string to integer conversion");
+}
+
+int int_of_string(string s)
+{
+  int n, i, base;
+  int sign = 1;
+
+  // skip leading whitespace and eat the sign
+  for(i=0; i<size(s) && is_space(s[i]); ++i);
+  while (i<size(s) &&(s[i]=='-' || s[i]=='+')) {
+    if (s[i]=='-') sign = - sign;
+    i++;
+  } 
+  if (i==size(s)) 
+    raise InvalidArg("string to integer conversion");
+
+  // determine the base
+  if (i+1 == size(s) || s[i]!='0') 
+    base = 10;
+  else {
+    switch s[++i] {
+    case 'x': base = 16;  ++i;
+    case 'o': base =  8;  ++i;
+    case 'b': base =  2;  ++i;
+    default:  base = 10;
+    }
+  }
+  // do the math
+  for(n=0; i<size(s); ++i) {
+    int digit = int_of_char(s[i]);
+    if (digit >= base) 
+      raise InvalidArg("string to integer conversion");
+    n = n*base+digit;
+  }
+  return sign*n;
+}
+
+string string_of_int_width(int n, int minWidth) {
+  int i, len = 0;
+  bool negative = false;
+  if (n < 0) {
+    negative=true;
+    ++len;
+    n = -n;
+  }
+  int m = n;
+  do ++len; while ((m /= 10) > 0);
+  len = len > minWidth ? len : minWidth;
+  string ans = new_array1(len);
+  for(i=len-1; n > 0; --i) { 
+     ans[i] = chr(ord('0') + (n % 10));
+     n /= 10;
+  }
+  for (; i>=0; --i)
+    ans[i] = '0';
+
+  /* this line should be here (Luke 11-10-99) */
+  if (negative) ans[0] = '-';
+  return ans;
+}
+
+string string_of_int(int n) {
+  return string_of_int_width(n,0);
+}
+
+string string_of_uint(unsigned int n) {
+  int len = 0;
+  unsigned int m = n;
+  do ++len; while ((m /= 10) > 0);
+  string ans = new_array1(len);
+  for(int i=len-1; i>=0; --i) {
+    ans[i] = chr(ord('0') + (n % 10));
+    n /= 10;
+  }
+  return ans;
+}
+
+string hex_string_of_uint(unsigned int n) {
+  if (n == 0) return "0";
+  int len = 0;
+  unsigned int m = n;
+  while (m > 0) {
+    m = m >>> 4;
+    ++len;
+  }
+  string ans = new_array1(len);
+  for(int i=len-1; i>=0; --i) {
+    ans[i] = hexarr[n & 0xf];
+    n = n >>> 4;
+  }
+  return ans;
+}
+
+string string_of_char(char c) {
+  string ans = new_array1(1);
+  ans[0] = c;
+  return ans;
+}
+
+//////////////////////////Floats////////////////////////////
+
+double double_of_string(string s) {
+  _ d = str_to_d(s);
+
+  if(tal_errno!=0) raise InvalidArg("string to double conversion.");
+
+  return d;
+}
+
+float float_of_string(string s) {
+  float f = str_to_f(s);
+
+  if(tal_errno!=0) raise InvalidArg("string to double conversion.");
+
+  return f;
+ 
+}
+
+string string_of_double(double d) {
+  return d_to_str(d);
+}
+
+string string_of_float(float f) {
+  return f_to_str(f);
+}
+
+string hexstr_of_double(double d) {
+  return d_to_hexstr(d);
+}
+
+string hexstr_of_float(float f) {
+  return f_to_hexstr(f);
+}
+
+
+
+
+

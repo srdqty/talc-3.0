@@ -1,0 +1,9 @@
+*(int (), int) f(int i)
+{
+  int f_sp() = codegen(
+    int f_sp()
+    {
+      return 1;
+    });
+  return ^(f_sp, 1);
+}

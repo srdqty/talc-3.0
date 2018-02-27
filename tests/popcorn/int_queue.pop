@@ -1,0 +1,79 @@
+// int_queue.pop
+// Simple queue. Stresses structs and option structs
+
+#include "core.h"
+open Core; 
+
+static ?struct int_queue_node {
+  int i;
+  int_queue_node next;
+}
+
+abstract struct int_queue {
+  int_queue_node front;
+  int_queue_node back;
+}
+
+int pop_main () 
+{
+  int i;
+
+  int_queue q1 = q_empty();
+  
+  print_string("\nenqueue: ");
+  for(i=0;i<5;i++)
+    {
+      print_int(i);
+      print_string(" ");
+      q_enqueue(q1,i);
+    }
+
+  print_string("\ndequeue: ");
+  for(i=0;i<5;i++)
+    {
+      print_int(q_dequeue(q1));
+      print_string(" ");
+    }
+
+  print_string("\nq empty?");
+  if (q_isempty(q1)) print_string("yes\n");
+  else print_string("no\n");
+
+  return 1;
+}
+
+int_queue q_empty()
+{
+  return new int_queue(null,null);
+}
+
+bool q_isempty(int_queue q)
+{
+  return q.front==null;
+}
+
+void q_enqueue(int_queue q, int n)
+{
+  int_queue_node n = new int_queue_node(n,null);
+  if (q.back==null) {
+    q.back=n;
+    q.front=n;
+  } else {
+    q.back.next=n;
+    q.back=n;
+  }
+  return;
+}
+
+int q_dequeue(int_queue q)
+{
+  int res=0;
+  if (q.front!=null) {
+    res=q.front.i;
+    q.front=q.front.next;
+    if (q.front==null) q.back=q.front;
+  }
+  return res;
+}
+
+// EOF: queue.pop

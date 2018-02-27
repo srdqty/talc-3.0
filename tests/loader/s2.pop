@@ -1,0 +1,28 @@
+#include "core.h"
+open Core;
+
+static ?struct imports_t {
+  int bar(int);
+  int baz;
+}
+
+static imports_t imports = null;
+
+int bar(int a) {
+  return a + 1;
+}
+
+int foo(int a) {
+  if (a == 0) return a;
+  else
+    return imports.baz + imports.bar(a);
+}
+
+void pop_main()
+{
+  imports = ^imports_t(bar,4);
+  int i = foo(10);
+  print_string("foo(10) = ");
+  print_int(i);
+  print_char('\n');
+}

@@ -1,0 +1,7 @@
+int ptr_compare<a>(a p1, a p2) {
+  return 0;
+}
+
+int hash<a>(a p) {
+  return 1;
+}

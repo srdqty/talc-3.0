@@ -1,0 +1,74 @@
+#include "core.h"
+open Core;
+
+void pop_main()
+{
+  int a[] = {0, 2, 6, 8,  12, 15, 18, 19,  23, 24, 25, 29,  30, 33, 37, 38};
+  int f(int) = dummy;
+  int i, norm, spec;
+
+  f=bs_gen(a, 0, 15, 7); 
+  print_string("index\tnorm\tspec\n");
+
+  for (i = 0; i < 40; i++) {
+    print_int(i);
+    print_string(":\t"); 
+    norm = bin(a,  i, 0, 15, 7);
+    print_int(norm);
+    print_string("\t"); 
+    spec = f(i);
+    print_int(spec);
+    if(norm != spec)
+      print_string(" *");
+    print_newline();
+  }
+}
+
+int dummy(int foo) { return 0; }
+
+int bs_gen(int x[], int l, int u, int r) (int)
+{
+  int p;
+
+  return codegen(
+    int bsearch(int key)
+    {
+      cut
+	if (l > u)
+	  splice { return -1; }
+	else {
+	    p = u - r;
+
+	    splice
+	      if (fill(x[p]) == key)
+		return fill(p);
+	      else {
+		if (fill(x[p]) < key)
+		  return 
+		    fill(bs_gen(x, p+1, u, r/2)) (key);
+		else
+		  return 
+		    fill(bs_gen(x, l, p-1, r/2))(key);
+	  }
+	}
+      return 0;
+    });
+}
+
+int bin(int x[], int key, int l, int u, int r)
+{
+  int p;
+
+  if (l > u) 
+    return -1;
+
+  p = u - r;
+  if (x[p] == key) 
+    return p;
+  else
+    if(x[p] < key) 
+      return bin(x, key, p+1, u, r/2);
+    else
+      return bin(x, key, l, p-1, r/2);
+}
+

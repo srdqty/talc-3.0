@@ -1,0 +1,33 @@
+struct app_t {
+  exp_t function;
+  exp_t arg;
+}
+
+struct abs_t {
+  string var;
+  exp_t body;
+}
+
+union exp_t {
+  string var;
+  app_t app;
+  abs_t abs;
+}
+
+static exp_t var(string x) {
+  return(new exp_t.var(x));
+}
+
+static exp_t app(exp_t f, exp_t x) {
+  return(new exp_t.app(new app_t(f,x)));
+}
+
+static exp_t abs(string x, exp_t b) {
+  return(new exp_t.abs(new abs_t(x,b)));
+}
+    
+int foo(int a) {
+  exp_t test = 
+    app(abs("x",app(var("x"),var("x"))),abs("x",app(var("x"),var("x"))));
+  return a +2;
+}

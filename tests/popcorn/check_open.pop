@@ -1,0 +1,46 @@
+
+#include "core.h"
+open Core;
+
+void pop_main()
+{
+ <int>List::t w = ^List::t(5,null);
+
+ print_int(List::my_length(w));
+ print_newline();
+
+}
+
+prefix List{
+open List;
+
+// foo and bar are mutually recursive to check that order does not matter.
+int foo<a>(<a>t x)
+  {
+    if(x==null) return 5;
+    return bar(x.tl);
+  }
+
+int bar<a>(<a>t x)
+  {
+    if(x==null) return 6;
+    return foo(x.tl);
+  }
+
+int my_length<a>(<a>t x) 
+{
+  int i = 0;
+  
+  while (x != null) 
+    {
+      ++i;
+      x = x.tl;
+    }
+  return(i);
+}
+
+
+?struct <a>t { a hd; <a>t tl; }
+
+
+}

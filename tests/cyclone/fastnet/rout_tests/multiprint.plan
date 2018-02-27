@@ -1,0 +1,49 @@
+(* per-packet multicast.  The injected packet carries a list of addresses
+   to send the payload to.  This list is pruned as the packet traverses the
+   network resulting in a tree of deliveries, as per standard IP multicast. *)
+
+svc remove : ('a,'a list) -> 'a list
+
+fun multicast(addrs) =
+  let 
+
+    (* This function has two purposes: 
+       - if this node is a destination, deliver the payload and remove
+         the address from the destination list
+       - calculate a list of next hops to take which form the tree *)
+    fun find_hops(res:(host * dev) list * host list,dest) = 
+      let val hops = fst res
+          val dests = snd res in
+        if thisHostIs(dest) then
+          (print("arrived\n"); (hops,remove(dest,dests)))
+        else
+          let val hop_info = defaultRoute(dest) in
+            if member(hop_info,hops) then (hops,dests)
+            else (hop_info::hops,dests)
+          end
+      end
+
+    (* This function is called by fold for each hop to be taken.
+       It sends the multicast packet to each hop *)
+    fun send_packs(params:int*host list,hop:host*dev) =
+      (OnNeighbor(|multicast|(snd params),
+                  fst hop,fst params,snd hop);
+       params)
+
+    (* The list of hops and pruned destinations *)
+    val hops_dests = foldl(find_hops,([],addrs),addrs)
+
+    val hops = fst hops_dests
+    val dests = snd hops_dests
+    val num_hops = length(hops) in
+
+      (* If we haven't reached the end of the road, send out more
+         packets, else quit *)
+      if num_hops > 0 then
+        (foldl(send_packs,(getRB()/length(hops),dests),hops);
+	 ())
+      else
+        ()
+
+  end
+

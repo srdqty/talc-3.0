@@ -1,0 +1,43 @@
+/*
+ * This example demonstrates how to dynamically link a new program
+ * into a running program.  See comments in dynlink_running.pop for
+ * more information.
+ */
+
+#include "core.h"
+open Core;
+
+/* Imported from simple_call.pop */
+extern exception Foo;
+extern exn a;
+extern int b;
+extern int func2(int);
+
+/* c, foo, and d are looked up by simple_call.pop */
+int c = 0;
+void foo() {
+  try {
+    c = 6;
+    b = func2(0);
+  } handle e {
+    switch (e) {
+      case Foo: {
+        b = 7;
+      }
+    }
+  }
+} 
+
+exception Bar;
+exn d = new Bar();
+
+/* Called when the file is loaded */
+static void init () {
+  printf("-------------\n");
+  printf("in simp.o:init()\n");
+  printf("-------------\n");
+  c = 5;
+  exn e = new Foo();
+  a = e;
+  return;
+}

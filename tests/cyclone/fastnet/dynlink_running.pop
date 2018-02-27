@@ -1,0 +1,70 @@
+/*
+ * This example demonstrates how to dynamically link a new program
+ * into a running program.  In particular, dynlink_running.pop links
+ * dynlink_linked.pop in during its execution.  Both programs import
+ * and export exceptions, variables, and functions.  Specifically:
+ * 
+ * 
+ *   dynlink_running.pop                    dynlink_linked.pop
+ *                       
+ *   exception Foo;
+ *   exn a;                       ----->   (declared as extern)
+ *   int b;
+ *   int func2(int);
+ *                                          int c;
+ *   (available via dlopen()...)  <-----    void foo();
+ *                                          exn d;
+ *
+ */
+
+#include "core.h"
+#include "dlpop.h"
+open Core;
+
+/* all exported (and used) by the loaded code */
+int b = 3;
+exn a = new FileCloseError();
+exception Foo;
+int func2(int i) {
+  raise (a);
+}
+
+static int func(int i, handle_t h) {
+  *(int) c = dlsym(h,"c",repterm@<*(*(int))>);
+  return i + c.1;
+}
+
+void pop_main () {
+  printf("-----\nTest: simple_call\n-----\n");
+  try {
+    //print_table();
+
+    handle_t h = dlopen("dynlink_linked");
+    //print_table();
+
+    printf("func is %d\n", func(1,h));
+
+    void foo() = dlsym(h,"foo",repterm@<*(void ())>);
+    printf("before foo(), b is %d\n", b);
+    foo();
+    printf("after foo(), b is %d\n", b);
+
+    printf("func is %d\n", func(1,h));
+
+    *(exn) loaded_exn = dlsym(h,"d", repterm@<*(*(exn))>);
+    
+    dlclose(h);
+    //print_table();
+
+    /* this should fail because the handle was closed */
+    printf("%d", (func(1,h)));
+    
+  } handle y
+    switch y {
+    case WrongType(s):      printf ("Wrong type for symbol : %s\n", s);
+    case SymbolNotFound(s): printf ("Can't find symbol : %s\n", s);
+    case FailsTypeCheck:    printf ("File doesn't type-check\n");
+    case FileOpenError(s):  printf ("Can't open file : %s\n", s);
+    default:                printf ("Exception Raised\n");
+    }
+}

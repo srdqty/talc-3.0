@@ -1,0 +1,118 @@
+// msort.pop
+// polymorphic merge-sort.
+
+#include "core.h"
+#include "list.h"
+open Core;
+open List;
+
+<a>list merge_sort<a>(bool less_eq(a,a), <a>list x)
+{
+  <a>list a = null;
+  <a>list b = null;
+  <a>list c = null;
+  <a>list d = null;
+  
+  if ((x == null) || (x.tl == null))
+    return(x);
+
+  // split into two lists
+  while (x != null) {
+    a = new list(x.hd,a);
+    x = x.tl;
+    if (x != null) {
+      b = new list(x.hd,b);
+      x = x.tl;
+    }
+  }
+
+  a = merge_sort(less_eq,a);
+  b = merge_sort(less_eq,b);
+
+  // merge the two lists:
+  //   d = beginning of the merged list
+  //   c = current cons cell
+ 
+  // set d & c to the smallest cons cell
+  if (less_eq(a.hd,b.hd)) {
+    c = a; d = a; a = a.tl; 
+  } else {
+    c = b; d = b; b = b.tl;
+  }
+  // walk through a and b
+  while ((a != null) && (b != null)) {
+    // add a to the list else add b
+    if (less_eq(a.hd, b.hd)) {
+      c.tl = a;
+      c = a;
+      a = a.tl;
+    } else {
+      c.tl = b;
+      c = b;
+      b = b.tl;
+    }
+  }
+  // splice in the rest of the other list
+  if (a == null)
+    c.tl = b;
+  else
+    c.tl = a;
+  return(d);
+}
+
+<int>list mk_list(int length)
+{
+ <int>list x = null;
+ int i;
+
+ for(i=0;i<length;i++)
+   x = new list(i,x);
+ 
+ return x;
+}
+
+void print_elt(int i)
+{
+  print_int(i);
+  print_string(" ");
+}
+void print_list(<int>list x)
+{
+  iter(print_elt,x);
+}
+
+bool less_eq(int x,int y)
+{
+  return (x<=y);
+}
+
+void pop_main() 
+{
+  string s[] = std_args();
+
+  if (size(s)!=2) 
+    {
+      print_string(s[0]);
+      print_string(": usage: <num>");
+      print_newline();
+    } 
+  else 
+    {
+      int iterations = int_of_string(s[1]);
+      int i = 0;      
+      <int>list x = mk_list(100);  
+
+      print_list(x);
+      print_newline();
+      
+      for (i=0; i < iterations; i++) 
+	{
+	  x = merge_sort(less_eq,x);
+	  print_string(".");
+	}	
+      print_newline();
+      print_list(merge_sort(less_eq,x));
+      print_newline();
+    }
+  return;
+}

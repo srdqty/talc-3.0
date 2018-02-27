@@ -1,0 +1,96 @@
+/* TAL Language Stuff
+ *
+ * Copyright Greg Morrisett, Neal Glew
+ *   January 1999, all rights reserved
+ *
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+
+/*** Memory Allocation ***/
+
+extern void *GC_malloc(int size);
+extern void *GC_malloc_atomic(int size);
+extern void GC_free(void);
+extern void tal_exit(int);
+extern void GC_expand_hp(unsigned int byte_size);
+
+void out_of_memory(void)
+{
+  fprintf(stderr, "\nout of memory!\n");
+  exit(255);
+}
+
+/* Moved from stdlib.c to make Linux happy */
+
+FILE *tal_stdin = NULL;
+FILE *tal_stdout = NULL;
+FILE *tal_stderr = NULL;
+
+void init_stdlib_io() {
+  tal_stdin = stdin;
+  tal_stdout = stdout;
+  tal_stderr = stderr;
+}
+
+/*** Loader initialization ***/
+
+#ifdef __linux__
+#define SYMNAME(s) s
+#else
+#define SYMNAME(s) "_" ## s
+#endif
+
+void
+tal_start_init_loader_syms(void (*register_sym)(long,long))
+{
+  /* register GC symbols here as well, since we can't alter gc.a */
+  register_sym((long)GC_malloc,(long)SYMNAME("GC_malloc"));
+  register_sym((long)GC_expand_hp,(long)SYMNAME("GC_expand_hp"));
+  /* register_sym((long)GC_free,(long)SYMNAME("GC_free")); */
+
+  register_sym((long)out_of_memory,(long)SYMNAME("out_of_memory"));
+  /*  register_sym((long)taltla,(long)SYMNAME("taltla"));
+  register_sym((long)&tal_stdin,(long)SYMNAME("tal_stdin"));
+  register_sym((long)&tal_stdout,(long)SYMNAME("tal_stdout"));
+  register_sym((long)&tal_stderr,(long)SYMNAME("tal_stderr"));
+  register_sym((long)tal_exit,(long)SYMNAME("tal_exit")); */
+}
+
+extern int init_loader(char **argv);
+
+/*** Program Entry ***/
+
+extern void tal_main(void);
+
+int tal_argc;
+char **tal_argv;
+char **tal_envp;
+
+int main(int argc, char **argv, char **envp)
+{
+  init_stdlib_io();
+  tal_argc = argc;
+  tal_argv = argv;
+  tal_envp = envp;
+
+  /* This must go here because local variables stored
+     in registers may get clobbered as a result: init_loader
+     doesn't respect standard callee-saves registers
+     at the moment. */
+  if (init_loader(tal_argv) != 1) {
+    fprintf(stderr,"Error initializing dynamic loader\n");
+    return 1;
+  }
+
+  GC_expand_hp(1 << 23); /* Expand the heap to 8 MB at startup!. */
+  
+  tal_main();
+  return 0;
+}
+
+typedef struct str_internal {int size; char *chars;} *string;
+typedef struct rep_internal {int size; char chars[1];} *rep;
+
+/* EOF: tal_start.c */

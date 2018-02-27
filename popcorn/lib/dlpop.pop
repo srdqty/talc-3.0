@@ -1,0 +1,738 @@
+// #define TIMING
+
+#include "core.h"
+#include "list.h"
+#include "hashtable.h"
+#include "poploader.h"
+#include "filename.h"
+#ifdef TIMING
+#include "unixlib.h"
+#endif
+
+// #define VERBOSE 
+
+/* for performance measurement */
+int static_calls = 0;
+int dynamic_calls = 0;
+#ifdef VERBOSE
+bool dlpop_verbose = true;
+#else
+bool dlpop_verbose = false;
+#endif
+
+static abstype entry[a] = *(<a>rep,a);
+
+#define DYNINIT_FUN_TYPE					\
+  void <b,c>(a lsym<a> (b closure, string, <a>rep),		\
+             b lclosure,					\
+             void usym<a> (c closure, string, <a>rep, a),	\
+             c uclosure,					\
+             bool no_init)
+
+#define DYNINIT_FUN(_v)						\
+  void _v<b,c>(a lsym<a> (b closure, string, <a>rep),		\
+               b lclosure,					\
+	       void usym<a> (c closure, string, <a>rep, a),	\
+               c uclosure,					\
+	       bool no_init)
+
+#define DYNINIT_FUN_MODS(_v,_ms)				\
+  void _v ## _ms <b,c>(a lsym<a> (b closure, string, <a>rep),	\
+               b lclosure,					\
+	       void usym<a> (c closure, string, <a>rep, a),	\
+               c uclosure,					\
+	       bool no_init)
+
+/* The dynamic symbol table is a list of symtabs, one per linked file. */
+static struct objfile_info {
+  string name;
+  <string,entry>Hashtable::table symtab;
+  DYNINIT_FUN(dyninit);
+}
+static <objfile_info>List::list dynamic_symbol_table;
+
+#define SYM_HASHTABLE_SZ 53
+
+/* dlopen can raise Core::FileOpenError(string)         */
+exception FailsTypeCheck;	    // the file is not well formed
+exception SymbolNotFound(string);   // dlsym can't find the symbol
+exception WrongType(string);        // type of symbol is incorrect
+exception UnresolvedSymbol(string); // raised by default fun
+
+abstract struct handle_t {
+  <objfile_info>List::list mod_tab;
+}
+
+#define UPDATE_LIST
+#ifdef UPDATE_LIST
+
+/**** update list---used to map between old and new values
+      during state translation.  The list may contain multiple
+      copies of a particular oldval, if there was a stub function
+      defined for it.  In terms of ordering, the newer version
+      should appear later in the list, in case the stub function
+      has the same type as the old version.  That is, we want
+      the stub returned, since it will be the preference for all
+      existing code.
+****/
+
+/* maps old symtab entries to new symtab entries */
+static <*(entry,entry)>List::list update_list;
+
+b updated_sym<a,b>(a oldval, <a>rep oldtyp, <b>rep newtyp) {
+  bool wrongtyp_err = false;
+
+//    fprintf(tal_stderr,
+//  	  "updated_sym: looking for mapping from %x\n",hash(oldval));
+  <*(entry,entry)>List::list here = update_list;
+  while (here != null) {
+    with old_entry[c] = here.hd.1 do {
+      try {
+//  	fprintf(tal_stderr,
+//  		"updated_sym: old val %x; checking type\n",hash(old_entry.2));
+        a aOldval = Poploader::pop_cast(old_entry.2, old_entry.1, oldtyp);
+//  	fprintf(tal_stderr,
+//  		"updated_sym: old val %x; type match\n",hash(old_entry.2));
+        if (aOldval == oldval) { // found it
+//  	  fprintf(tal_stderr,
+//  		  "updated_sym: old val %x; value match\n",hash(old_entry.2));
+          /* assign the new value to the passed in new type */
+          with new_entry[d] = here.hd.2 do {
+            try {
+              b newval = Poploader::pop_cast(new_entry.2, new_entry.1, newtyp);
+              return newval;
+	    } handle e {
+	      switch e {
+	      case Core::Failure(s): // not the right type
+	        wrongtyp_err = true; // note error and continue
+	      }
+	    }
+	  }
+	}
+	// else this isn't it
+      } handle e { 
+        switch e {
+	case Core::Failure(s): // not the right type
+	  ;
+	}
+      }
+    }
+    here = here.tl;
+  }
+  /* if we found an old value, but only at the wrong type, then
+     this is an error */
+  if (wrongtyp_err) {
+    fprintf(tal_stderr,
+	    "Only found mapping at type other than requested\n");
+    raise (^WrongType("updated_sym"));
+  }
+  /* Otherwise, we didn't find an old value, so we try to cast the
+     old value to the new type */
+  else {
+    try {
+      return Poploader::pop_cast(oldval, oldtyp, newtyp);
+    } handle e {
+      /* the cast failed; throw an exception */
+      fprintf(tal_stderr,
+	      "No value found, and could not cast old value to new type\n");
+      raise (^WrongType("updated_sym"));
+    }
+  }
+}
+#endif
+
+// helper functions
+
+// read in an object file and its corresponding types file,
+// returning them as a pair
+static *(string,string,string) get_objfile(string name) {
+  /* use filesystem to find the files */
+#ifdef SYS_UNIX
+  string talname = Core::strconcat(name, ".o");
+#else
+  string talname = Core::strconcat(name, ".obj");
+#endif
+  string toname = Core::strconcat(name, ".to");
+  FILE talfile = Core::file_open (talname, "rb");
+  FILE tofile = Core::file_open (toname, "rb");
+  /* read talfile */
+  int tallen = Core::file_length(talname);
+  string talbuf = Core::new_string(tallen);
+  int tolen = Core::file_length(toname);
+  string tobuf = Core::new_string(tolen);
+  
+  f_string_read(talfile, talbuf, 0, tallen);
+  f_string_read(tofile, tobuf, 0, tolen);
+  Core::file_close (talfile);
+  Core::file_close (tofile);
+  return ^(talbuf,tobuf,Filename::basename(name));
+}
+
+// look through the global symbol table to see if there is a module
+// with the given name.  If so, return it (but leave its position in
+// the list)
+static
+<objfile_info>List::list find_table(string mod_name, bool last) {
+  <objfile_info>List::list x, y = null;
+  
+  for (x = dynamic_symbol_table;
+       x != null;
+       x=x.tl)
+    if (Core::strcmp(x.hd.name,mod_name) == 0) {
+      y = x;
+      if (!last) break;
+    }
+  return(y);
+}
+
+// interface functions
+
+bool dlinit (string mod_name,
+	     DYNINIT_FUN(init),
+	     bool no_init) {
+  try {
+    objfile_info tab;
+    <objfile_info>List::list x;
+
+    /* see if we've already allocated a table for this module */
+    x = find_table(mod_name,false);
+    if (x != null) {
+      /* remove the old element first */
+      tab = x.hd;
+      dynamic_symbol_table = List::rmq(dynamic_symbol_table,tab);
+    }
+    else
+      tab = 
+	^objfile_info(mod_name,
+		  Hashtable::create(SYM_HASHTABLE_SZ,
+				    Core::strcmp,Hashtable::hash_string),
+		  init);
+    dynamic_symbol_table = new List::list(tab,dynamic_symbol_table);
+    init(lookup_symbol, 0, add_symbol, tab, no_init);
+    return true;
+  } handle e {
+    /* if we are performing the initialization part,
+       then print any errors we get */
+    if (!no_init) {
+      printf("Error in linking module %s:",mod_name);
+      switch e {
+      case WrongType(s):
+	printf ("Wrong type for symbol : %s",s);
+      case SymbolNotFound(s):
+	printf ("Can't find symbol : %s",s);
+      default:
+	printf ("Exception raised");
+      }
+      printf ("\n");
+    }
+    return false;
+  }
+  return true;
+}
+
+/*
+  Invalidate the handle and remove the entries from the
+  symbol table. This is kind hacky as we have to find the
+  entry in the table before the one pointed to by start.   
+*/
+void dlclose(handle_t h)
+{
+  if (h.mod_tab == null) 
+    return;
+  else {
+    objfile_info tab = h.mod_tab.hd;
+    dynamic_symbol_table = List::rmq(dynamic_symbol_table,tab);
+    h.mod_tab = null;
+  }
+  return;
+}
+
+static DYNINIT_FUN(dummy_init) {
+  raise (^Core::Failure("dummy_init invoked"));
+}
+
+static void move_info_to_front(objfile_info tab) {
+  dynamic_symbol_table = List::rmq(dynamic_symbol_table,tab);
+  dynamic_symbol_table = new List::list(tab,dynamic_symbol_table); 
+}
+
+static void do_relinking(<objfile_info>Core::Opt tables [],
+                         <objfile_info>List::list old_tabs []) {
+
+  int numobjs = size(tables);
+  if (size(old_tabs) != numobjs) { 
+    printf("internal error---size of old_tabs array != size of tables\n");
+    return;
+  }
+
+  <objfile_info>List::list x = dynamic_symbol_table;
+  try {
+    for (; x != null; x = x.tl) {
+      /* only call init if it's not one of the modules we just loaded */
+      bool do_init = true;
+      <objfile_info>List::list old_tab = null;
+      for(int i = 0; do_init == true && i<numobjs; i++)
+	if (x.hd == tables[i].v)
+	  do_init = false;
+	else if (x == old_tabs[i])
+	  old_tab = x;
+      if (do_init) {
+	/* if this a module that has just been changed, then
+	   allow failed lookups to use the old symbols; set init flag
+	   to false so no reinit stuff is called */
+	if (old_tab != null) {
+	  if (dlpop_verbose)
+	    fprintf(tal_stderr,"relinking %s (old version)\n",x.hd.name);
+	  x.hd.dyninit(old_relookup_symbol, 0, bogus_add_symbol, 0, false);
+	}
+	else {
+	  if (dlpop_verbose)
+	    fprintf(tal_stderr,"relinking %s\n",x.hd.name);
+	  /* XXX should make this not look in the old tables */
+	  x.hd.dyninit(relookup_symbol, 0, bogus_add_symbol, 0, true);
+	}
+      }
+    }
+  } handle e {
+    /* !!!! */
+    printf("shit!  got an error during relinking %s\n", x.hd.name);
+    /* re-raise so the caller can deal */
+    raise (e);
+  } 
+}
+
+// core functionality of dlopen.  Takes multiple "files" that
+// may have mutually recursive imports and links them all
+
+handle_t dlopen_bufs(*(string,string,string) objfiles []) [] {
+  int numobjs = size(objfiles);
+  if (numobjs == 0) {
+    <objfile_info>List::list l = null;
+    handle_t retv[0] = { ^handle_t(l) };
+    return retv;
+  }
+
+  /* list of hashtables containing the symbols for each module */
+  <objfile_info>Core::Opt tables [] = new_array(numobjs,null);
+  /* list of old hashtables that we're (potentially) replacing */
+  <objfile_info>List::list old_tabs [] = new_array(numobjs,null);
+
+  /* list of init functions acquired from each module */
+  DYNINIT_FUN_MODS(funs,[]) = new_array(numobjs,dummy_init);
+  DYNINIT_FUN(init) = dummy_init;
+  objfile_info tab;
+
+#ifdef TIMING
+  timeval tmstart = ^timeval(0,0);
+  timeval tmend = ^timeval(0,0);
+  int linksec[] = new_array(numobjs,0);
+  int linkusec[] = new_array(numobjs,0);
+#define START_TIME() unix_gettimeofday(tmstart)
+#define END_TIME()					\
+  {							\
+    unix_gettimeofday(tmend);				\
+    int delta_sec = tmend.tv_sec - tmstart.tv_sec;	\
+    int delta_usec = tmend.tv_usec - tmstart.tv_usec;	\
+    if (delta_usec < 0) {				\
+      delta_sec--; delta_usec += 1000000;		\
+    }
+#define PRINT_TIME(_test)						\
+    END_TIME()								\
+    fprintf(tal_stderr,"program TIME %s = %d.%s secs\n",		\
+	    _test,delta_sec,Core::string_of_int_width(delta_usec,6));	\
+  }  
+#define ADD_TIME(idx)				\
+  END_TIME()					\
+    linksec[idx] += delta_sec;			\
+    linkusec[idx] += delta_usec;		\
+    if (linkusec[idx] >= 1000000) {		\
+      linksec[idx]++; linkusec[idx] -= 1000000;	\
+    }						\
+  }
+
+#else
+#define START_TIME()
+#define ADD_TIME(idx) 
+#define PRINT_TIME()
+#endif
+
+  /***********/
+  /* LOADING */
+  /***********/
+  for(int i = 0; i<numobjs; i++) {
+
+    /* load it */
+    if (dlpop_verbose)
+      fprintf(tal_stderr,"loading %s\n",objfiles[i].3);
+    try {
+      init = Poploader::pop_load (objfiles[i].1, objfiles[i].2,
+				  repterm@<*(DYNINIT_FUN_TYPE)>).1;
+      funs[i] = init;
+    } handle e {
+      raise FailsTypeCheck();
+    }
+
+    START_TIME();
+    /* find any existing table */
+    old_tabs[i] = find_table(objfiles[i].3,false);
+
+    /* create new a symbol table */
+    tab = 
+      ^objfile_info(objfiles[i].3,
+		Hashtable::create(SYM_HASHTABLE_SZ,
+				  Core::strcmp,Hashtable::hash_string),
+		init);
+    tables[i] = ^Core::Opt(tab);
+    dynamic_symbol_table = new List::list(tab,dynamic_symbol_table);
+
+    /* look up early symbols */
+    /* If an exception is raised, then we don't have the symbol */
+    init(lookup_symbol, 0, bogus_add_symbol, 0, true);
+    ADD_TIME(i);
+  }
+
+
+  /***********/
+  /* LINKING */
+  /***********/
+  if (dlpop_verbose)
+    fprintf(tal_stderr,"linking ...\n");
+  for(int pass = 0; pass<2; pass++) {
+#ifdef VERBOSE
+    if (pass == 1) {
+      Core::print_string("**** BEFORE INITIALIZING ****\n");
+      print_table();
+    }
+#endif
+    for(int i = 0; i<numobjs; i++) {
+      START_TIME();
+      /* move this file's table to the front of the list */
+      /* move_info_to_front(tables[i].v); */
+      init = funs[i];
+      /* try again -- if we fail this time the exception will go
+	 to the caller after we clean up */
+      try {
+	if ((pass == 1) && (dlpop_verbose))
+	  fprintf(tal_stderr,"initializing %s\n",objfiles[i].3);
+	init(lookup_symbol, 0, update_symbol, tables[i].v, 
+	     pass == 0 ? true : false);
+      } handle e {
+	if (pass == 1) { /* we really don't have it */
+	  /* remove the new obj_info's from the table */
+	  for(int i = 0; i<numobjs; i++) {
+	    tab = tables[i].v;
+	    dynamic_symbol_table = List::rmq(dynamic_symbol_table,tab);
+	  }
+	  /* re-raise so the caller can deal */
+	  raise (e);
+	}
+	/* else keep going */
+      }
+      ADD_TIME(i);
+    }
+  }
+
+  /***************************************/
+  /* RELINKING (of the existing program) */
+  /***************************************/
+START_TIME();
+  do_relinking(tables,old_tabs);
+PRINT_TIME("relinking");
+
+  /* throw away any old tables that we no longer need */
+  for (int i = 0; i<numobjs; i++) {
+    if (old_tabs[i] != null) {
+#ifdef VERBOSE
+      printf("removing old table for %s\n",objfiles[i].3);
+#endif
+      List::rmq(dynamic_symbol_table,old_tabs[i].hd);
+    }
+  }
+#ifdef UPDATE_LIST
+  // throw out updating list
+  update_list = null;
+#endif
+
+  /******************/
+  /* RETURN HANDLES */
+  /******************/
+  handle_t h = ^handle_t(dynamic_symbol_table);
+  handle_t hs [] = new_array(numobjs,h);
+  for (int i = 0; i<numobjs; i++) {
+    move_info_to_front(tables[i].v);
+    hs[i] = ^handle_t(dynamic_symbol_table);
+  }
+#ifdef TIMING
+  for (int i = 0; i<numobjs; i++)
+    fprintf(tal_stderr,"%s TIME linking = %d.%s secs\n",
+	    objfiles[i].3,linksec[i],Core::string_of_int_width(linkusec[i],6));
+#endif
+  return hs;
+}
+
+// given an array of filenames with potentially mutually
+// recursive dependencies, attempts to load all of the files
+handle_t dlopens(string filenames[]) [] {
+  int numfiles = size(filenames);
+  *(string,string,string) dummy = ^("","","");
+  *(string,string,string) objfiles [] = new_array(numfiles,dummy);
+  for (int i = 0; i<numfiles; i++) {
+    objfiles[i] = get_objfile(filenames[i]);  
+  }
+#ifdef VERBOSE
+  Core::print_string("**** BEFORE LOADING ****\n");
+  print_table();
+#endif
+  handle_t hs[] = dlopen_bufs(objfiles);
+#ifdef VERBOSE
+  Core::print_string("**** AFTER LOADING ****\n");
+  print_table();
+#endif
+  return hs;
+}  
+
+// version of dlopen that interprets its argument as TAL code, rather
+// than a filename.  Call this function from dlopen().
+handle_t dlopen_buf (string talbuf, string tobuf, string name)
+{
+  DYNINIT_FUN(init) = dummy_init;
+  try {
+    init = Poploader::pop_load (talbuf, tobuf, 
+				repterm@<*(DYNINIT_FUN_TYPE)>).1;
+  } handle e {
+    raise FailsTypeCheck();
+  }
+
+  // find any existing symbol table for the module, and hold onto it
+  <objfile_info>List::list x;
+  x = find_table(name,false);
+  
+  // create a new hashtable for this module, and add it to the symtab
+  objfile_info tab =
+    ^objfile_info(name,
+	      Hashtable::create(SYM_HASHTABLE_SZ,
+				Core::strcmp,Hashtable::hash_string),
+	      init);
+  dynamic_symbol_table = new List::list(tab,dynamic_symbol_table);
+
+  // call the init function to do the linking
+  try {
+    init(lookup_symbol, 0, update_symbol, tab, false);
+  } handle e {
+    /* clear the old table */
+    dynamic_symbol_table = dynamic_symbol_table.tl;
+    /* re-raise the exception */
+    raise (e);
+  }
+
+  /* perform relinking of the rest of the program to notice the changes;
+     any errors that occur cause rollback */
+  do_relinking(new_array(1,^Core::Opt(tab)), new_array(1,x));
+
+  // throw out the old table
+  if (x != null) List::rmq(dynamic_symbol_table,x.hd);
+#ifdef UPDATE_LIST
+  // throw out updating list
+  update_list = null;
+#endif
+  handle_t h = ^handle_t(dynamic_symbol_table);
+  return h;
+}
+
+handle_t dlopen (string name) 
+{ 
+  *(string,string,string) buf;
+  buf = get_objfile(name);  
+  return dlopen_buf(buf.1,buf.2,buf.3);
+}
+
+static a getsym<a>(<string,entry>Hashtable::table tab, 
+                   string name, <a>rep typ, bool prefer_stub) {
+
+  entry h = Hashtable::lookup(tab, name);
+  if (prefer_stub) {
+    /* if we are re-linking, then we prefer the stub.  This means
+       we have to ditch the first ht entry and look for the
+       second one; restore the first when we're done. */
+    Hashtable::remove(tab, name);
+    try {
+      a val = getsym(tab,name,typ,false);
+      Hashtable::insert(tab,name,h);
+      return val;
+    } handle e {
+      Hashtable::insert(tab,name,h);
+      switch e {
+      case Core::Not_found:
+	/* There is no stub; use the original */
+	return getsym(tab,name,typ,false);
+      default:
+	raise (e);
+      }
+    }
+  }
+  else {
+    try {
+      with er[b] = h do {
+	return Poploader::pop_cast(er.2, er.1, typ);
+      }
+    } handle e {
+      raise WrongType(name);
+    }
+  }
+}
+
+// helper function for dlsym, lookup_symbol
+static a 
+find <a> (<objfile_info>List::list start,
+          <objfile_info>List::list stop,
+          string name, <a>rep typ,
+          bool prefer_stub, bool persist)
+{
+  exn ret = ^SymbolNotFound(name);
+  while (start != stop) {
+    try {
+      return getsym(start.hd.symtab,name,typ,prefer_stub);
+    } handle e {
+      switch e {
+      case Core::Not_found: {
+	start = start.tl;
+      }
+      default: {
+	if (persist) {
+	  if (dlpop_verbose)
+	    fprintf(tal_stderr,
+		    "Warning: wrong type for sym %s, getting old sym\n",
+		    name);
+	  ret = e; start = start.tl;
+	}
+	else
+	  raise (e);
+      }}
+    }
+  }
+  raise (ret);
+}
+
+a dlsym<a> (handle_t x, string name, <a>rep typ) {
+  <objfile_info>List::list tail = null;
+  if (x.mod_tab != null) {
+    tail = x.mod_tab.tl;
+  }
+  return find (x.mod_tab, tail, name, typ, false, false);
+}
+
+// UPDATE FUNCTIONS
+
+/* basic "add" function; overrides existing entry in the hashtable */
+static void add_symbol<a> (objfile_info info,
+                           string name, <a>rep typ, a val)
+{
+  Hashtable::insert(info.symtab,name,^entry(^(typ,val)));
+}
+
+/* Called during relinking and early lookups; no updates should occur then */
+static void bogus_add_symbol<a> (int x, string name, <a>rep type, a val)
+{
+  fprintf(tal_stderr,
+	  "Warning, called bogus_add_symbol for %s---will be ignored\n", 
+	  name);
+}
+
+/* Called during updating.  In addition to adding the symbol, sees if
+   it is actually overriding an existing symbol, and if so makes
+   a note in the update list */
+static void update_symbol<a> (objfile_info info,
+			      string name, <a>rep typ, a val)
+{
+  /* add entry to the given table */
+  add_symbol(info,name,typ,val);
+
+#ifdef UPDATE_LIST
+  /* see if a version of this symbol exists in the old table */
+  <objfile_info>List::list x;
+  x = find_table(info.name,true);
+  if (x != null) {
+    try {
+      <string,entry>Hashtable::table tab = x.hd.symtab;
+      entry old_h = Hashtable::lookup(tab, name);
+      /* found the symbol; retrieve new entry & add mapping to list */
+      entry new_h = Hashtable::lookup(info.symtab, name);
+//        fprintf(tal_stderr,"update_symbol: adding mapping for %s -> %x\n",
+//  	      name, hash(val));
+      update_list = List::cons(^(old_h,new_h),update_list);
+    } handle e {
+      /* Not found---new symbol */
+      ;
+    }
+  }
+  // else there is no old table, so these symbols are new
+#endif
+}
+
+// LOOKUP FUNCTIONS
+
+// This function looks for the symbol in each hashtable in the list
+static a lookup_symbol<a> (int x, string name, <a>rep typ) 
+{
+  return find (dynamic_symbol_table, null, name, typ, false, false);
+}
+
+// This function looks for the symbol in each hashtable in the list
+// specialized for re-linking
+static a relookup_symbol<a> (int x, string name, <a>rep typ) 
+{
+  return find (dynamic_symbol_table, null, name, typ, true, false);
+}
+
+// This function looks for the symbol in each hashtable in the list
+// specialized for re-linking of replaced modules (they can use
+// the old modules' tables if type errors occur with linking */
+static a old_relookup_symbol<a> (int x, string name, <a>rep typ) 
+{
+  return find (dynamic_symbol_table, null, name, typ, true, true);
+}
+
+void print_table () 
+{
+  Core::print_string ("Symbol table contains\n");
+  <objfile_info>List::list here = dynamic_symbol_table;
+
+  while (here != null) {
+    Core::print_string("=== ");
+    Core::print_string(here.hd.name);
+    Core::print_string(" ===\n");
+    Hashtable::iter
+      (fun void _(string sym, entry e) {
+	with er[b] = e do {
+  	  printf("%s @ %x\n",sym,hash(er.2));
+	}
+      }, here.hd.symtab);
+    here = here.tl;
+  }
+  Core::print_string("========\n");
+  return;
+}
+
+void print_handle_table (handle_t t) 
+{
+  Core::print_string ("Handle symbol table contains:\n");
+  <objfile_info>List::list here = t.mod_tab;
+  <objfile_info>List::list tail = null;
+
+  if (t.mod_tab != null) {
+    tail = t.mod_tab.tl;
+  }
+
+  while (here != tail) {
+    Core::print_string("=== ");
+    Core::print_string(here.hd.name);
+    Core::print_string(" ===\n");
+    Hashtable::iter
+      (fun void _(string sym, entry e) {
+	Core::print_string (sym);
+	Core::print_string ("\n");
+      }, here.hd.symtab);
+    here = here.tl;
+  }
+  return;
+}

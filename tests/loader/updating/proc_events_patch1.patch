@@ -1,0 +1,6 @@
+implementation: proc_events2.pop
+interface: proc_events2_patch.pop
+sharing:
+  process_event
+  load_file
+  No_event

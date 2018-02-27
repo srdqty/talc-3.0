@@ -1,0 +1,16 @@
+(* UDP-style delivery of chunks. Basic delivery with fragmentation and
+   checksumming. *) 
+fun send_frags (x:int*host,c)=
+  (OnRemote(c,snd x,fst x,defaultRoute);x)
+
+svc checksum : 'a chunk -> unit chunk
+svc fragment : ('a chunk,int) -> unit chunk list
+  
+fun udp_deliver (dest, c) =
+  let val d = checksum(c)
+      val p = defaultRoute(dest)
+      val ds = fragment(d,getMTU(snd p))
+      val l = length(ds) in
+   (foldl(send_frags,(getRB()/l,dest),ds); ())
+  end
+

@@ -1,0 +1,31 @@
+val out_devs  : unit = remove(getSrcDev(), getDevs())
+val out_len   : unit = length(out_devs)
+val each_rb   : unit = if (out_len > 0) then (getRB() / out_len) else 0
+
+fun remoteDoit(src : unit, dummy: unit) : unit=
+  let val s : unit = toString(thisHost()) ^ " says : Hello world!\n" in
+    OnNeighbor(|doit|(s), src, each_rb, getSrcDev())
+  end
+
+
+(* broadcasts packets on an interface which prints 'hello' on all neighbors *)
+fun doit(str : string) : unit =
+    (print(str);
+     print("getSrcDev():");
+     print(getSrcDev());
+     print("\n");
+     print("getDevs():");
+     print(getDevs());
+     print("\n");
+     print("remove(...):");
+     print(out_devs);
+     print("\n");
+     foldr(remoteDoit, out_devs, ""))
+
+fun main() : unit = doit()
+
+val entry_fun  : unit = "doit"
+val entry_args : unit = ["original\n"]
+val entry_src  : unit = "blah"
+val entry_eval : unit = "cyclone:4001"
+val entry_rb   : unit = 20

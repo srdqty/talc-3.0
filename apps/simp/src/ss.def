@@ -1,0 +1,1447 @@
+/*
+XXX - DEFINITIONS OF LWL/LWR/SWL/SWR ARE NOT IN SYNC WITH RTCG VERSION
+WILL FIX AFTER CHECKING THAT "THE PATCH" WORKED.
+
+XXX - ALSO MUST UPDATE SIMPLESCALAR DEFINITION
+*/
+
+/* This doesn't look like -*- Popcorn -*-, but it is!
+ *
+ * ss.def - simplescalar machine definition
+ *
+ * This file is a part of the SimpleScalar tool suite written by
+ * Todd M. Austin as a part of the Multiscalar Research Project.
+ *  
+ * The tool suite is currently maintained by Doug Burger and Todd M. Austin.
+ * 
+ * Copyright (C) 1994, 1995, 1996, 1997 by Todd M. Austin
+ *
+ * This source file is distributed "as is" in the hope that it will be
+ * useful.  The tool set comes with no warranty, and no author or
+ * distributor accepts any responsibility for the consequences of its
+ * use. 
+ * 
+ * Everyone is granted permission to copy, modify and redistribute
+ * this tool set under the following conditions:
+ * 
+ *    This source code is distributed for non-commercial use only. 
+ *    Please contact the maintainer for restrictions applying to 
+ *    commercial use.
+ *
+ *    Permission is granted to anyone to make or distribute copies
+ *    of this source code, either as received or modified, in any
+ *    medium, provided that all copyright notices, permission and
+ *    nonwarranty notices are preserved, and that the distributor
+ *    grants the recipient permission for further redistribution as
+ *    permitted by this document.
+ *
+ *    Permission is granted to distribute this file in compiled
+ *    or executable form under the same conditions that apply for
+ *    source code, provided that either:
+ *
+ *    A. it is accompanied by the corresponding machine-readable
+ *       source code,
+ *    B. it is accompanied by a written offer, with no time limit,
+ *       to give anyone a machine-readable copy of the corresponding
+ *       source code in return for reimbursement of the cost of
+ *       distribution.  This written offer must permit verbatim
+ *       duplication by anyone, or
+ *    C. it is distributed by someone who received only the
+ *       executable form, and is accompanied by a copy of the
+ *       written offer of source code that they received concurrently.
+ *
+ * In other words, you are welcome to use, share and improve this
+ * source file.  You are forbidden to forbid anyone else to use, share
+ * and improve what you give them.
+ *
+ * INTERNET: dburger@cs.wisc.edu
+ * US Mail:  1210 W. Dayton Street, Madison, WI 53706
+ *
+ * $Id: ss.def,v 1.5 2001/05/31 15:43:37 fms Exp $
+ *
+ * $Log: ss.def,v $
+ * Revision 1.5  2001/05/31 15:43:37  fms
+ *
+ * Bug fixes that finally enable the simulator to run all SPEC95
+ * benchmarks correctly.  Also much instrumentation to allow the easy
+ * collection of statistics.
+ *
+ * The RTCG version of the simulator now relies on tail-calls rather than
+ * trampolining.  This feature can be enabled/disabled with the flick of
+ * a switch.
+ *
+ * Currently, one full timing run takes about 5 hours.
+ *
+ * -Fred
+ *
+ * Revision 1.4  2001/05/29 15:10:25  fms
+ *
+ * Added support for tail-call elimination to the optimizing popcorn compiler.
+ *
+ * -Fred
+ *
+ * Revision 1.3  2001/05/22 23:25:13  fms
+ * The gcc and go SPEC benchmarks finally run correctly to completion.
+ *
+ * Top Four Most Pestilience Bugs:
+ * 1) byte order,
+ * 2) signedness,
+ * 3) typos,
+ * 4) floating point to integer conversions. (rounding)
+ *
+ *
+ * -Fred
+ *
+ * Revision 1.2  2001/05/02 15:01:03  fms
+ *
+ * Simulator:
+ *   Correctly simulates all my test programs.
+ * Profiler:
+ *   Now runs under Linux.  A few other minor bug fixes.
+ * Popcorn Library:
+ * 	Added function new_array4u to create an unsigned int array.
+ *
+ * -Fred
+ *
+ * Revision 1.1  2001/04/25 19:20:34  fms
+ *
+ * Added new function std_env to Core.h that returns the environment as
+ * an array of strings.
+ *
+ * Big change: Added a first cut at a simulator for the SimpleScalar
+ * architecture written in Popcorn..  This code is based on (copied from
+ * and reworked) the code in the SimpleScalar toolset version 2.0!!! (Not
+ * 3.0 because its still Beta).
+ *
+ * The simulator does not currently work. It does correctly load an
+ * executable image.  It runs about 131 instructions before the
+ * instruction stream diverges from the reference implementation for one
+ * small example.  Many system calls remain to be implemented.
+ *
+ * -Fred
+ *
+# Revision 1.6  1997/04/16  22:11:30  taustin
+# fixed header comments
+#
+# Revision 1.5  1997/03/11  01:40:00  taustin
+# updated copyrights
+# removed inter-dependency between dependency and semantic macros
+# supported added for non-GNU C compilers
+#
+# Revision 1.4  1997/01/06  16:07:49  taustin
+# comments updated
+# functional unit definitions moved to ss.h and ss.c
+#
+# Revision 1.3  1996/12/27  15:55:09  taustin
+# eliminated compiler warnings
+#
+# Revision 1.1  1996/12/05  18:55:22  taustin
+# Initial revision
+#
+ *
+ */
+
+/* This file defines all aspects of the SimpleScalar instruction set
+ * architecture.  Each instruction set in the architecture has a DEFINST()
+ * macro call included below.  The contents of a instruction definition are
+ * as follows:
+ *
+ *   DEFINST(<enum>,			<opcode>,
+ *	     <opname>,			<operands>,
+ *	     <fu_req>,			<iflags>,
+ *	     <output deps...>,		<input deps...>,
+ *	     <expr>)
+ *
+ * Where:
+ *
+ *   <enum>	- is an enumerator that is returned when an instruction is
+ *		  decoded by SS_OP_ENUM()
+ *   <opcode>	- is the opcode of this instruction
+ *   <opname>   - name of this instruction as a string, used by disassembler
+ *   <operands>	- specified the instruction operand fields and their printed
+ * 		  order for disassembly, used by disassembler, the recognized
+ *		  operand field are (the instruction format is detailed in
+ *		  the header file ss.h):
+ *		    J - target field
+ *		    j - PC relative target (offset + PC)
+ *		    s - S register field
+ *		    b - S register field (base register)
+ *		    t - T register field
+ *		    d - D register field
+ *		    S - S register field (FP register)
+ *		    T - T register field (FP register)
+ *		    D - D register field (FP register)
+ *		    o - load address offset (offset)
+ *		    i - signed immediate field value
+ *		    u - unsigned immediate field value
+ *		    U - upper immediate field value
+ *		    H - shift amount immediate field value
+ *		    B - break code
+ *
+ *   <fu_req>	- functional unit requirements for this instruction
+ *   <iflags>	- instruction flags, accessible via the SS_OP_FLAGS()
+ *		  macro, flags are defined with F_* prefix in ss.h
+ *   <output deps...>
+ *		- a list of up to two output dependency designators, the
+ *		  following designators are recognized (place an DNA in any
+ *		  unused fields:
+ *		    DGPR(N)   - general purpose register N
+ *		    DGPR_D(N) - double word general purpose register N
+ *		    DCGPR(N)  - general purpose register conditional on
+ *			        pre/post- increment/decrement mode
+ *		    DFPR_L(N) - floating-point register N, as word
+ *		    DFPR_F(N) - floating-point reg N, as single-prec float
+ *		    DFPR_D(N) - floating-point reg N, as double-prec double
+ *		    DHI	      - HI result register
+ *		    DLO	      - LO result register
+ *		    DFCC      - floating point condition codes
+ *		    DCPC      - current PC
+ *		    DNPC      - next PC
+ *		    DNA	      - no dependence
+ *
+ *   <input deps...>
+ *		- a list of up to three input dependency designators, the
+ *		  designators are defined above (place an DNA in any unused
+ *		  fields.
+ *
+ *   <expr>	- a C expression that implements the instruction being
+ * 		  defined, the expression must modify all architected state
+ *		  affected by the instruction's execution, by default, the
+ *		  next PC (NPC) value defaults to the current PC (CPC) plus
+ *		  SS_INST_SIZE, as a result, only taken branches need to set
+ *		  NPC
+ *
+ *		  The following predefined macros are available for use in
+ *		  DEFINST() instruction expressions to access the value of
+ *		  instruction operand/opcode field values:
+ *
+ *		    RS	    - RS register field value
+ *		    RT	    - RT register field value
+ *		    RD	    - RD register field value
+ *		    FS	    - RS register field value
+ *		    FT	    - RT register field value
+ *		    FD	    - RD register field value
+ *		    BS	    - RS register field value
+ *		    TARG    - jump target field value
+ *		    OFS	    - signed offset field value
+ *		    IMM	    - signed offset field value
+ *		    UIMM    - unsigned offset field value
+ *		    SHAMT   - shift amount field value
+ *		    BCODE   - break code field value
+ *
+ *		  To facilitate the construction of performance simulators
+ *		  (which may want to specialize their architected state
+ *		  storage format), all architected register and memory state
+ *		  is accessed through the following macros:
+ *
+ *		    GPR(N)         - read general purpose register N
+ *		    SET_GPR(N,E)   - write general purpose register N with E
+ *		    GPR_D(N)       - read double word general purpose reg N
+ *		    SET_GPR_D(N,E) - write double word gen purpose reg N w/ E
+ *		    FPR_L(N)       - read floating-point register N, as word
+ *		    SET_FPR_L(N,E) - floating-point reg N, as word, with E
+ *		    FPR_F(N)       - read FP reg N, as single-prec float
+ *		    SET_FPR_F(N,E) - write FP reg N, as single-prec float w/ E
+ *		    FPR_D(N)       - read FP reg N, as double-prec double
+ *		    SET_FPR_D(N,E) - write FP reg N, as double-prec double w/E
+ *		    HI	           - read HI result register
+ *		    SET_HI(E)      - write HI result register with E
+ *		    LO	           - read LO result register
+ *		    SET_LO(E)      - write LO result register with E
+ *		    FCC	           - read floating point condition codes
+ *		    SET_FCC(E)     - write floating point condition codes w/ E
+ *		    CPC	           - read current PC register
+ *		    NPC	           - read next PC register
+ *		    SET_NPC(E)     - write next PC register with E
+ *		    TPC	           - read target PC register
+ *		    SET_TPC(E)     - write target PC register with E
+ *
+ *		    READ_SIGNED_BYTE(A)   - read signed byte from address A
+ *		    READ_UNSIGNED_BYTE(A) - read unsigned byte from address A
+ *		    READ_SIGNED_HALF(A)   - read signed half from address A
+ *		    READ_UNSIGNED_HALF(A) - read unsigned half from address A
+ *		    READ_WORD(A)          - read word from address A
+ *		    WRITE_BYTE(E,A)       - write byte value E to address A
+ *		    WRITE_HALF(E,A)       - write half value E to address A
+ *		    WRITE_WORD(E,A)       - write word value E to address A
+ *
+ *		  Finally, the following helper functions are available to
+ *		  assist in the construction of instruction expressions:
+ *
+ *		    INC_DEC(E,N,S) - execute E and update N as per pre/post-
+ *				     incr/decr addressing sementics for an
+ *				     access of S bytes
+ *		    OVER(X,Y)      - check for overflow for X+Y, both signed
+ *		    UNDER(X,Y)	   - check for umderflow for X-Y, both signed
+ *		    DIV0(N)	   - check for divide by zero, N is denom
+ *		    INTALIGN(N)    - check double word int reg N alignment
+ *		    FPALIGN(N)	   - check double word FP reg N alignment
+ *		    TALIGN(T)	   - check jump target T alignment
+ */
+
+/* FMS: Changed the expr to a statement because there is no chance in hell
+   that we'll generate good code for any of these expressions. 
+
+   WARNING: Commas not in parentheses are allowed in the statement
+   otherwise the preprocessor gets confused!!! */
+
+/* no operation */
+DEFINST(NOP,		0x00,
+	"nop",		"",
+	IntALU,		F_ICOMP,
+	DNA, DNA,	DNA, DNA, DNA,
+	/* Do nothing, yes this does work!!! */;)
+
+/*
+ * control operations
+ */
+
+DEFINST(JUMP,			0x01,
+	"j",			"J",
+	NA, 			F_CTRL|F_UNCOND|F_DIRJMP,
+	DNA, DNA, 		DNA, DNA, DNA,
+	{ 
+	  _ targ = TARG_TO_PC(TARG,CPC);
+	  SET_TPC(targ);
+	  SET_NPC(targ);
+	})
+     //	(SET_TPC((CPC & 036000000000) | (TARG << 2)),
+     //	 SET_NPC((CPC & 036000000000) | (TARG << 2))))
+
+DEFINST(JAL,			0x02,
+	"jal",			"J",
+	IntALU,			F_CTRL|F_UNCOND|F_DIRJMP|F_CALL,
+	DGPR(31), DNA,	 	DNA, DNA, DNA,
+	{
+	  _ cpc2 = CPC;
+	  _ targ = TARG_TO_PC(TARG,cpc2);
+	  SET_TPC(targ);
+	  SET_NPC(targ);
+	  SET_GPR(31, cpc2 + 8);
+	})
+DEFINST(JR, 			0x03,
+	"jr", 			"s", 
+	NA, 			F_CTRL|F_UNCOND|F_INDIRJMP,
+	DNA, DNA,		DGPR(RS), DNA, DNA,
+	{
+	  _ rs = GPR(RS);
+	  TALIGN(rs); 
+	  SET_TPC(rs); 
+	  SET_NPC(rs);
+	})
+DEFINST(JALR,	 		0x04,
+	"jalr", 		"d,s",
+	IntALU,			F_CTRL|F_UNCOND|F_INDIRJMP|F_CALL,
+	DGPR(RD), DNA,		DGPR(RS), DNA, DNA,
+	{
+	  _ rs = GPR(RS);
+	  TALIGN(rs);
+	  SET_GPR(RD, CPC + 8);
+	 SET_TPC(rs);
+	 SET_NPC(rs);
+	})
+DEFINST(BEQ,			0x05,
+	"beq",			"s,t,j",
+	IntALU,			F_CTRL|F_COND|F_DIRJMP,
+	DNA, DNA,		DGPR(RS), DGPR(RT), DNA,
+	{
+	  _ dest = CPC + 8 + (OFS << 2);
+	  SET_TPC(dest);
+	  if (GPR(RS) == GPR(RT)) { SET_NPC(dest); }
+	 })
+DEFINST(BNE,			0x06,
+	"bne",			"s,t,j",
+	IntALU,			F_CTRL|F_COND|F_DIRJMP,
+	DNA, DNA,		DGPR(RS), DGPR(RT), DNA,
+	{
+	  _ dest = CPC + 8 + (OFS << 2);
+	  SET_TPC(dest);
+	 if (GPR(RS) != GPR(RT)) { SET_NPC(dest); }
+	})
+DEFINST(BLEZ,			0x07,
+	"blez",			"s,j",
+	IntALU,			F_CTRL|F_COND|F_DIRJMP,
+	DNA, DNA,		DGPR(RS), DNA, DNA,
+	{
+	  _ dest = CPC+ 8 + (OFS << 2);
+	  SET_TPC(dest);
+	 if (((: signed int)GPR(RS)) <= 0) { SET_NPC(dest); }
+	})
+DEFINST(BGTZ,			0x08,
+	"bgtz",			"s,j",
+	IntALU,			F_CTRL|F_COND|F_DIRJMP,
+	DNA, DNA,		DGPR(RS), DNA, DNA,
+	{
+	  _ dest = CPC + 8 + (OFS << 2);
+	  SET_TPC(dest);
+	 if (((:signed int)GPR(RS)) > 0) { SET_NPC(dest); } 
+	 })
+DEFINST(BLTZ,	 		0x09,
+	"bltz", 		"s,j", 
+	IntALU, 		F_CTRL|F_COND|F_DIRJMP,
+	DNA, DNA,		DGPR(RS), DNA, DNA,
+	{
+	  _ dest = CPC + 8 + (OFS << 2);
+	  SET_TPC(dest);
+	 if (((:signed int)GPR(RS)) < 0) { SET_NPC(dest); }
+	})
+DEFINST(BGEZ, 			0x0a,
+	"bgez", 		"s,j", 
+	IntALU, 		F_CTRL|F_COND|F_DIRJMP,
+	DNA, DNA,		DGPR(RS), DNA, DNA,
+	{
+	  _ dest = CPC + 8 + (OFS << 2);
+	  SET_TPC(dest);
+	 if (((:signed int)GPR(RS)) >= 0) { SET_NPC(dest); }
+	})
+DEFINST(BC1F, 			0x0b,
+	"bc1f", 		"j", 
+	IntALU,			F_CTRL|F_COND|F_DIRJMP|F_FPCOND,
+	DNA, DNA,		DFCC, DNA, DNA,
+	{
+	  _ dest = CPC + 8 + (OFS << 2);
+	  SET_TPC(dest);
+	 if (FCC == 0) { SET_NPC(dest); }
+	})
+DEFINST(BC1T, 			0x0c,
+	"bc1t", 		"j", 
+	IntALU,			F_CTRL|F_COND|F_DIRJMP|F_FPCOND,
+	DNA, DNA,		DFCC, DNA, DNA,
+	{
+        _ dest = CPC + 8 + (OFS << 2);
+	SET_TPC(dest);
+	if (FCC != 0) { SET_NPC(dest); }
+	})
+
+/*
+ * load/store operations
+ *
+ * NOTE: the out-of-order issue simulator(s) require that load and store
+ * address computation input dependencies be placed in slots 1 and 2 of
+ * the input dependency list slot 0 is reserved for the input dependency
+ * of store values for store instructions
+ */
+
+DEFINST(LB,			0x20,
+	"lb",			"t,o(b)",
+	RdPort,			F_MEM|F_LOAD|F_DISP,
+	DGPR(RT), DCGPR(BS),	DNA, DGPR(BS), DNA,
+	{
+	  _ bs = BS;
+	  _ r_bs = GPR(bs);
+	  PRE_INC_DEC(bs,r_bs,1)
+	  SET_GPR(RT, READ_SIGNED_BYTE(r_bs+OFS));
+	  POST_INC_DEC(bs,r_bs,1)
+	})
+DEFINST(LBU, 			0x22, 
+	"lbu", 			"t,o(b)",
+	RdPort, 		F_MEM|F_LOAD|F_DISP,
+	DGPR(RT), DCGPR(BS),	DNA, DGPR(BS), DNA,
+	{ 
+	  _ bs = BS;
+	  _ r_bs = GPR(bs);
+	  PRE_INC_DEC(bs,r_bs,1)
+	  SET_GPR(RT, READ_UNSIGNED_BYTE(r_bs+OFS));
+	  POST_INC_DEC(bs,r_bs,1)
+	})
+DEFINST(LH, 			0x24,
+	"lh",			"t,o(b)",
+	RdPort,			F_MEM|F_LOAD|F_DISP,
+	DGPR(RT), DCGPR(BS),	DNA, DGPR(BS), DNA,
+	{ 
+	  _ bs = BS;
+	  _ r_bs = GPR(bs);
+	  PRE_INC_DEC(bs,r_bs,2);
+	  SET_GPR(RT, READ_SIGNED_HALF(r_bs+OFS)); 
+	  POST_INC_DEC(bs,r_bs,2);
+	})
+DEFINST(LHU, 			0x26, 
+	"lhu", 			"t,o(b)",
+	RdPort, 		F_MEM|F_LOAD|F_DISP,
+	DGPR(RT), DCGPR(BS),	DNA, DGPR(BS), DNA,
+	{ 
+	  _ bs = BS;
+	  _ r_bs = GPR(bs);
+	  PRE_INC_DEC(bs,r_bs,2);
+	  SET_GPR(RT, READ_UNSIGNED_HALF(r_bs+OFS)); 
+	  POST_INC_DEC(bs,r_bs,2);
+	})
+DEFINST(LW,			0x28,
+	"lw", 			"t,o(b)",
+	RdPort,			F_MEM|F_LOAD|F_DISP,
+	DGPR(RT), DCGPR(BS),	DNA, DGPR(BS), DNA,
+	{ 
+	  _ bs = BS;
+	  _ r_bs = GPR(bs);
+	  PRE_INC_DEC(bs,r_bs,4);
+	  SET_GPR(RT, READ_WORD(r_bs+OFS));
+	  POST_INC_DEC(bs,r_bs,4);
+         })
+DEFINST(DLW,			0x29,
+	"dlw",			"t,o(b)",
+	RdPort,			F_MEM|F_LOAD|F_DISP,
+	DGPR_D(RT), DCGPR(BS),	DNA, DGPR(BS), DNA,
+	{ 
+	  _ rt = RT;	
+	  _ bs = BS;
+	  _ temp_bs = GPR(bs);
+	  INTALIGN(rt);
+	  PRE_INC_DEC(bs,temp_bs,8);
+	  SET_GPR(rt, READ_WORD(temp_bs + OFS));
+	  SET_GPR(rt+1, READ_WORD(temp_bs + OFS + 4));
+	  POST_INC_DEC(bs,GPR(bs),8);
+	})
+
+DEFINST(L_S, 			0x2a,
+	"l.s",			"T,o(b)",
+	RdPort,			F_MEM|F_LOAD|F_DISP,
+	DFPR_L(FT), DCGPR(BS),	DNA, DGPR(BS), DNA,
+	{ 
+	  _ bs = BS;
+	  _ r_bs = GPR(BS);
+	  PRE_INC_DEC(bs,r_bs,4);
+	  SET_FPR_L(FT, READ_WORD(r_bs+OFS));
+	  POST_INC_DEC(bs,r_bs,4);
+	})
+DEFINST(L_D,			0x2b,
+	"l.d",			"T,o(b)",
+	RdPort,			F_MEM|F_LOAD|F_DISP,
+	DFPR_D(FT), DCGPR(BS),	DNA, DGPR(BS), DNA,
+	{ 
+	  _ bs = BS;
+	  _ r_bs = GPR(bs);
+	  _ src = r_bs + OFS;
+	  _ ft = FT;
+	  FPALIGN(ft);
+	  PRE_INC_DEC(bs,r_bs,8);
+	  SET_FPR_L(ft,READ_WORD(src));
+	  SET_FPR_L(ft+1,READ_WORD(src+4));
+	  POST_INC_DEC(bs,r_bs,8);
+	})
+DEFINST(LWL,			0x2c,
+	"lwl",			"t,o(b)",
+	RdPort,			F_MEM|F_LOAD|F_DISP,
+	DGPR(RT), DNA,		DNA, DGPR(BS), DNA,
+	{ /* inc/dec not supported. */
+	  _ r_bs = GPR(BS);
+	  _ r_rt = GPR(RT);
+	  _ src = r_bs + OFS;
+	  _ ss_lr_temp = READ_WORD(WL_BASE(src));
+	 SET_GPR(RT, ((r_rt & WR_PROT_MASK1(src))) |
+		      ((ss_lr_temp << (8 * (WL_SIZE(src) - 1)))
+	              & ~WR_PROT_MASK1(src)));
+	 })
+DEFINST(LWR,			0x2d,
+	"lwr",			"t,o(b)",
+	RdPort,			F_MEM|F_LOAD|F_DISP,
+	DGPR(RT), DNA,		DNA, DGPR(BS), DNA,
+	{/* inc/dec not supported */
+	 _ r_bs = GPR(BS);
+	 _ r_rt = GPR(RT);
+	 _ src = r_bs + OFS;
+	 _ ss_lr_temp = READ_WORD(WR_BASE(src));
+	 SET_GPR(RT, ((r_rt & ~WL_PROT_MASK2(src)) |
+		      ((ss_lr_temp >> (8 * (WR_SIZE(src) - 1)))
+                      & WL_PROT_MASK2(src))));
+	 })
+
+DEFINST(SB, 			0x30, 
+	"sb", 			"t,o(b)",
+	WrPort, 		F_MEM|F_STORE|F_DISP,
+	DCGPR(BS), DNA,	 	DGPR(RT), DGPR(BS), DNA,
+	{ 
+	  _ bs = BS;
+	  _ r_bs = GPR(bs);
+	  PRE_INC_DEC(bs,r_bs,1);
+	  WRITE_BYTE(GPR(RT), r_bs+OFS);
+	  POST_INC_DEC(bs,r_bs,1);
+	})
+DEFINST(SH, 			0x32, 
+	"sh", 			"t,o(b)",
+	WrPort, 		F_MEM|F_STORE|F_DISP,
+	DCGPR(BS), DNA,	 	DGPR(RT), DGPR(BS), DNA,
+	{ 
+	  _ bs = BS;
+	  _ r_bs = GPR(bs);
+	  PRE_INC_DEC(bs,r_bs,2);
+	  WRITE_HALF(GPR(RT), r_bs+OFS);
+	  POST_INC_DEC(bs,r_bs,2);
+	})
+DEFINST(SW, 			0x34, 
+	"sw", 			"t,o(b)",
+	WrPort, 		F_MEM|F_STORE|F_DISP,
+	DCGPR(BS), DNA,	 	DGPR(RT), DGPR(BS), DNA,
+	{
+	  _ bs = BS;
+	  _ r_bs = GPR(bs);
+	  PRE_INC_DEC(bs,r_bs,4);
+	  WRITE_WORD(GPR(RT), r_bs+OFS);
+	  POST_INC_DEC(bs,r_bs,4);
+	  })
+DEFINST(DSW,			0x35,
+	"dsw",			"t,o(b)",
+	WrPort,			F_MEM|F_STORE|F_DISP,
+	DCGPR(BS), DNA,		DGPR_D(RT), DGPR(BS), DNA,
+	{ 
+	  _ rt = RT;
+	  _ bs = BS;
+	  _ r_bs = GPR(bs);
+	  _ src = r_bs + OFS;
+	  INTALIGN(rt);
+	  PRE_INC_DEC(bs,r_bs,8);
+	  WRITE_WORD(GPR(rt  ), src);
+	  WRITE_WORD(GPR(rt+1), src+4);
+	  POST_INC_DEC(bs,r_bs,8);
+	})
+DEFINST(DSZ,			0x38,
+	"dsz",			"o(b)",
+	WrPort,			F_MEM|F_STORE|F_DISP,
+	DCGPR(BS), DNA,		DNA, DGPR(BS), DNA,\
+	{ 
+	  _ bs = BS;
+	  _ r_bs = GPR(bs);
+	  _ src = r_bs + OFS;
+	  PRE_INC_DEC(bs,r_bs,8);
+	  WRITE_WORD(GPR(0), src);
+	  WRITE_WORD(GPR(0), src+4);
+	  POST_INC_DEC(bs,r_bs,8);
+	})
+DEFINST(S_S, 			0x36, 
+	"s.s", 			"T,o(b)",
+	WrPort, 		F_MEM|F_STORE|F_DISP,
+	DCGPR(BS), DNA,		DFPR_L(FT), DGPR(BS), DNA,
+	{ 
+	  _ bs = BS;
+	  _ r_bs = GPR(bs);
+	  PRE_INC_DEC(bs,r_bs,4);
+	  WRITE_WORD(FPR_L(FT), r_bs+OFS);
+	  POST_INC_DEC(bs,r_bs,4);
+	})
+DEFINST(S_D,			0x37,
+	"s.d",			"T,o(b)",
+	WrPort,			F_MEM|F_STORE|F_DISP,
+	DCGPR(BS), DNA,		DFPR_D(FT), DGPR(BS), DNA,
+	{ 
+	  _ bs = BS;
+	  _ r_bs = GPR(bs);
+	  _ src = r_bs + OFS;
+	  _ ft = FT;
+	  FPALIGN(ft);
+	  PRE_INC_DEC(bs,r_bs,4);
+	  WRITE_WORD(FPR_L(FT), src);
+	  WRITE_WORD(FPR_L((FT)+1), src+4);
+	  POST_INC_DEC(bs,r_bs,4);
+	})
+DEFINST(SWL,			0x39,
+	"swl",			"t,o(b)",
+	WrPort,			F_MEM|F_STORE|F_DISP,
+	DNA, DNA,		DGPR(RT), DGPR(BS), DNA,
+	{/* inc/dec not supported */
+	  _ bs = BS;
+	  _ r_bs = GPR(bs);
+	  _ src = r_bs + OFS;
+	  _ ss_lr_temp = READ_WORD(WL_BASE(src));
+	  ss_lr_temp = (((GPR(RT) >> (8 * (4 - WR_SIZE(src))))
+	                & WR_PROT_MASK2(src)) |
+			(ss_lr_temp & ~WR_PROT_MASK2(src)));
+	 WRITE_WORD(ss_lr_temp, WL_BASE(src));
+	})
+DEFINST(SWR,			0x3a,
+	"swr",			"t,o(b)",
+	WrPort,			F_MEM|F_STORE|F_DISP,
+	DNA, DNA,		DGPR(RT), DGPR(BS), DNA,
+	{/* inc/dec not supported */
+	  _ bs = BS;
+	  _ r_bs = GPR(bs);
+	  _ src = r_bs + OFS;
+	  _ ss_lr_temp = READ_WORD(WR_BASE(src));
+	  ss_lr_temp = (((GPR(RT) << (8 * (4-WL_SIZE(src))))
+		        & ~WL_PROT_MASK1(src)) |
+		       (ss_lr_temp & WL_PROT_MASK1(src)));
+	 WRITE_WORD(ss_lr_temp, WR_BASE(src));
+	})
+
+/* reg+reg loads and stores */
+
+#define L_RR_STMT(READ_MACRO,SIZE) { \
+_ bs = BS; \
+_ r_bs = GPR(bs); \
+PRE_INC_DEC(bs,r_bs,SIZE); \
+SET_GPR(RT,READ_MACRO(r_bs+GPR(RD))); \
+POST_INC_DEC(bs,r_bs,SIZE); \
+}
+
+DEFINST(LB_RR,			0xc0,
+	"lb",			"t,(b+d)",
+	RdPort,			F_MEM|F_LOAD|F_RR,
+	DGPR(RT), DCGPR(BS),	DNA, DGPR(BS), DGPR(RD),
+	L_RR_STMT(READ_SIGNED_BYTE,1))
+DEFINST(LBU_RR,			0xc1, 
+	"lbu", 			"t,(b+d)",
+	RdPort, 		F_MEM|F_LOAD|F_RR,
+	DGPR(RT), DCGPR(BS),	DNA, DGPR(BS), DGPR(RD),
+	L_RR_STMT(READ_UNSIGNED_BYTE,1))
+DEFINST(LH_RR,	 		0xc2,
+	"lh",			"t,(b+d)",
+	RdPort,			F_MEM|F_LOAD|F_RR,
+	DGPR(RT), DCGPR(BS),	DNA, DGPR(BS), DGPR(RD),
+	L_RR_STMT(READ_SIGNED_HALF,2))
+DEFINST(LHU_RR,			0xc3, 
+	"lhu", 			"t,(b+d)",
+	RdPort, 		F_MEM|F_LOAD|F_RR,
+	DGPR(RT), DCGPR(BS),	DNA, DGPR(BS), DGPR(RD),
+	L_RR_STMT(READ_UNSIGNED_HALF,2))
+DEFINST(LW_RR,			0xc4,
+	"lw", 			"t,(b+d)",
+	RdPort,			F_MEM|F_LOAD|F_RR,
+	DGPR(RT), DCGPR(BS),	DNA, DGPR(BS), DGPR(RD),
+	L_RR_STMT(READ_WORD,4))
+
+DEFINST(DLW_RR,			0xce,
+	"dlw",			"t,(b+d)",
+	RdPort,			F_MEM|F_LOAD|F_RR,
+	DGPR_D(RT), DCGPR(BS),	DNA, DGPR(BS), DGPR(RD),
+	{
+	  _ bs = BS;
+	  _ rt = RT;
+	  _ r_bs = GPR(bs);
+	  _ r_rd = GPR(RD);
+	  _ src = r_bs + r_rd;
+	  PRE_INC_DEC(bs,r_bs,8);
+	  INTALIGN(rt);
+	  SET_GPR(rt, READ_WORD(src));
+	  SET_GPR(rt+1, READ_WORD(src+4));
+	  POST_INC_DEC(bs,r_bs,8);
+	})
+
+DEFINST(L_S_RR,			0xc5,
+	"l.s",	 		"T,(b+d)",
+	RdPort,			F_MEM|F_LOAD|F_RR,
+	DFPR_L(FT), DCGPR(BS),	DNA, DGPR(BS), DGPR(RD),
+	{ 
+	  _ bs = BS;
+	  _ r_bs = GPR(BS);
+	  PRE_INC_DEC(bs,r_bs,4);
+	  _ r_rd = GPR(RD);
+	  _ src = r_rd + r_bs;
+	  SET_FPR_L(FT, READ_WORD(src));
+	  POST_INC_DEC(bs,r_bs,4);
+	})
+DEFINST(L_D_RR,			0xcf,
+	"l.d",			"T,(b+d)",
+	RdPort,			F_MEM|F_LOAD|F_RR,
+	DFPR_D(FT), DCGPR(BS),	DNA, DGPR(BS), DGPR(RD),
+	{ 
+	  _ bs = BS;
+	  _ r_bs = GPR(bs);
+	  _ ft = FT;
+	  PRE_INC_DEC(bs,r_bs,8);
+	  FPALIGN(ft);	  
+	  _ src = r_bs + GPR(RD);
+	  SET_FPR_L(ft, READ_WORD(src));
+	  SET_FPR_L(ft + 1,READ_WORD(src+4));
+	  POST_INC_DEC(bs,r_bs,8);
+	})
+
+DEFINST(SB_RR, 			0xc6, 
+	"sb", 			"t,(b+d)", 
+	WrPort, 		F_MEM|F_STORE|F_RR,
+	DCGPR(BS), DNA, 	DGPR(RT), DGPR(BS), DGPR(RD),
+	{ 
+	  _ bs = BS;
+	  _ r_bs = GPR(bs);
+	  PRE_INC_DEC(bs,r_bs,1);
+	  _ src = GPR(bs) + GPR(RD);
+	  WRITE_BYTE(GPR(RT), src);
+	  POST_INC_DEC(bs,r_bs,1);
+	})
+DEFINST(SH_RR,	 		0xc7, 
+	"sh", 			"t,(b+d)", 
+	WrPort,			F_MEM|F_STORE|F_RR,
+	DCGPR(BS), DNA,	 	DGPR(RT), DGPR(BS), DGPR(RD),
+	{ 
+	  _ bs = BS;
+	  _ r_bs = GPR(BS);
+	  PRE_INC_DEC(bs,r_bs,2);
+	  WRITE_HALF(GPR(RT), r_bs+GPR(RD));
+	  POST_INC_DEC(bs,r_bs,2);
+	})
+DEFINST(SW_RR,	 		0xc8, 
+	"sw", 			"t,(b+d)", 
+	WrPort, 		F_MEM|F_STORE|F_RR,
+	DCGPR(BS), DNA, 	DGPR(RT), DGPR(BS), DGPR(RD),
+	{
+	  _ bs = BS;
+	  _ r_bs = GPR(bs);
+	  PRE_INC_DEC(bs,r_bs,4);
+	  WRITE_WORD(GPR(RT), r_bs+GPR(RD));
+	  POST_INC_DEC(bs,r_bs,4);
+	})
+DEFINST(DSW_RR,			0xd0,
+	"dsw",			"t,(b+d)",
+	WrPort,			F_MEM|F_STORE|F_RR,
+	DCGPR(BS), DNA,		DGPR_D(RT), DGPR(BS), DGPR(RD),
+	{
+	  _ bs = BS;
+	  _ rt = RT;
+	  _ r_bs = GPR(bs);
+	  PRE_INC_DEC(bs,r_bs,8);
+	  INTALIGN(rt);
+	  _ src = r_bs + GPR(RD);
+	  WRITE_WORD(GPR(rt), src);
+	  WRITE_WORD(GPR(rt+1), src+4);
+	  POST_INC_DEC(bs,r_bs,8);
+	})
+DEFINST(DSZ_RR,			0xd1,
+	"dsz",			"(b+d)",
+	WrPort,			F_MEM|F_STORE|F_RR,
+	DCGPR(BS), DNA,		DNA, DGPR(BS), DGPR(RD),
+	{
+	  _ bs = BS;
+	  _ r_bs = GPR(bs);
+	  PRE_INC_DEC(bs,r_bs,8);
+	  _ src = r_bs + GPR(RD);
+	  _ r0 = GPR(0);	  
+	  WRITE_WORD(r0, src);
+	  WRITE_WORD(r0, src+4);
+	  POST_INC_DEC(bs,r_bs,8);
+	})
+DEFINST(S_S_RR,			0xc9, 
+	"s.s",	 		"T,(b+d)", 
+	WrPort, 		F_MEM|F_STORE|F_RR,
+	DCGPR(BS), DNA,		DFPR_L(FT), DGPR(BS), DGPR(RD),
+	{
+	  _ bs = BS;
+	  _ r_bs = GPR(bs);
+	  PRE_INC_DEC(bs,r_bs,4);
+	  _ src = r_bs + GPR(RD);
+	  WRITE_WORD(FPR_L(FT), src);
+	  POST_INC_DEC(bs,r_bs,4);
+	})
+DEFINST(S_D_RR,			0xd2,
+	"s.d",			"T,(b+d)",
+	WrPort,			F_MEM|F_STORE|F_RR,
+	DCGPR(BS), DNA,		DFPR_D(FT), DGPR(BS), DGPR(RD),
+	{
+	  _ bs = BS;
+	  _ r_bs = GPR(bs);
+	  PRE_INC_DEC(bs,r_bs,8);
+	  _ ft = FT;
+	  FPALIGN(ft);
+	  _ src = r_bs + GPR(RD);
+	  WRITE_WORD(FPR_L(ft), src);
+	  WRITE_WORD(FPR_L(ft+1), src + 4);
+	  POST_INC_DEC(bs,r_bs,8);
+	})
+
+/* reg + reg + 4 addressing mode, used to synthesize `l.d r,(s+t)^++' */
+/* FIXME: obsolete */
+DEFINST(L_S_RR_R2,		0xca,
+	"l.s.r2", 		"T,(b+d)",
+	RdPort,			F_MEM|F_LOAD|F_RR,
+	DFPR_L(FT), DCGPR(BS),	DNA, DGPR(BS), DGPR(RD),
+	{ 
+	  _ bs = BS;
+	  _ r_bs = GPR(bs);
+	  PRE_INC_DEC(bs,r_bs,4);
+	  SET_FPR_L(FT, READ_WORD(r_bs+GPR(RD)+4));
+	  POST_INC_DEC(bs,r_bs,4);
+	})
+/* was	INC_DEC(SET_FPR_L(RT, READ_WORD(GPR(BS)+GPR(RD)+4)), BS, 4)) */
+/* FIXME: obsolete */
+DEFINST(S_S_RR_R2,		0xcb,
+	"s.s.r2", 		"T,(b+d)", 
+	WrPort, 		F_MEM|F_STORE|F_RR,
+	DCGPR(BS), DNA,		DFPR_L(FT), DGPR(BS), DGPR(RD),
+	{
+	  _ bs = BS;
+	  _ r_bs = GPR(bs);
+	  PRE_INC_DEC(bs,r_bs,4);
+	  WRITE_WORD(FPR_L(FT), r_bs+GPR(RD)+4);
+	  POST_INC_DEC(bs,r_bs,4);
+	})
+/* FIXME: obsolete */
+DEFINST(LW_RR_R2,		0xcc,
+	"lw.r2",		"t,(b+d)",
+	RdPort,			F_MEM|F_LOAD|F_RR,
+	DGPR(RT), DCGPR(BS),	DNA, DGPR(BS), DGPR(RD),
+	{
+	  _ bs = BS;
+	  _ r_bs = GPR(bs);
+	  PRE_INC_DEC(bs,r_bs,4);
+	  SET_GPR(RT, READ_WORD(r_bs+GPR(RD)+4));
+	  POST_INC_DEC(bs,r_bs,4);
+	})
+/* FIXME: obsolete */
+DEFINST(SW_RR_R2,		0xcd, 
+	"sw.r2", 		"t,(b+d)",
+	WrPort, 		F_MEM|F_STORE|F_RR,
+	DCGPR(BS), DNA,		DGPR(RT), DGPR(BS), DGPR(RD),
+	{
+	  _ bs = BS;
+	  _ r_bs = GPR(bs);
+	  PRE_INC_DEC(bs,r_bs,4);
+	  WRITE_WORD(GPR(RT), r_bs+GPR(RD)+4);
+	  POST_INC_DEC(bs,r_bs,4);
+	})
+
+/*
+ * Integer ALU operations
+ */
+
+DEFINST(ADD,	 		0x40,
+	"add", 			"d,s,t",
+	IntALU, 		F_ICOMP,
+	DGPR(RD), DNA,		DGPR(RS), DGPR(RT), DNA,
+	{ 
+	  _ rd = RD;
+	  _ r_rs = GPR(RS);
+	  _ r_rt = GPR(RT);
+	  OVER(r_rs,r_rt);
+	  SET_GPR(rd, r_rs + r_rt);
+	})
+DEFINST(ADDI,			0x41,
+	"addi",			"t,s,i",
+	IntALU,			F_ICOMP,
+	DGPR(RT), DNA, 		DGPR(RS), DNA, DNA,
+	{
+	  _ rs = RS;
+	  _ r_rs = GPR(rs);
+	  _ imm = IMM;
+	  OVER(r_rs,imm);
+	  SET_GPR(RT,r_rs + imm);
+	})
+DEFINST(ADDU, 			0x42,
+	"addu", 		"d,s,t",
+	IntALU, 		F_ICOMP,
+	DGPR(RD), DNA,		DGPR(RS), DGPR(RT), DNA,
+	{ SET_GPR(RD, GPR(RS) + GPR(RT)); })
+DEFINST(ADDIU,			0x43,
+	"addiu",		"t,s,i",
+	IntALU,			F_ICOMP,
+	DGPR(RT), DNA, 		DGPR(RS), DNA, DNA,
+	{ SET_GPR(RT, GPR(RS) + IMM); })
+
+DEFINST(SUB, 			0x44,
+	"sub", 			"d,s,t",
+	IntALU, 		F_ICOMP,
+	DGPR(RD), DNA,		DGPR(RS), DGPR(RT), DNA,
+	{
+	  _ r_rs = GPR(RS);
+	  _ r_rt = GPR(RT);
+	  UNDER(r_rs,r_rt);
+	  SET_GPR(RD,r_rs - r_rt);
+	})
+DEFINST(SUBU, 			0x45,
+	"subu", 		"d,s,t",
+	IntALU, 		F_ICOMP,
+	DGPR(RD), DNA,		DGPR(RS), DGPR(RT), DNA,
+	{ SET_GPR(RD, GPR(RS) - GPR(RT)); })
+
+  // XXX - multiplication instructions must be redone.
+DEFINST(MULT, 			0x46,
+	"mult", 		"s,t", 
+	IntMULT, 		F_ICOMP|F_LONGLAT,
+	DHI, DLO,		DGPR(RT), DGPR(RS), DNA,
+	MULT;)
+DEFINST(MULTU, 			0x47,
+	"multu", 		"s,t", 
+	IntMULT, 		F_ICOMP|F_LONGLAT,
+	DHI, DLO,		DGPR(RT), DGPR(RS), DNA,
+	MULTU;)
+DEFINST(DIV, 			0x48,
+	"div", 			"s,t", 
+	IntDIV, 		F_ICOMP|F_LONGLAT,
+	DHI, DLO,		DGPR(RT), DGPR(RS), DNA,
+	{
+	  _ r_rt = GPR(RT);
+	  _ r_rs = GPR(RS);
+	  DIV0(r_rt);
+	  SET_LO(IDIV((:signed int)r_rs, (:signed int)r_rt));
+	  SET_HI(IMOD((:signed int)r_rs, (:signed int)r_rt));
+	})
+DEFINST(DIVU, 			0x49,
+	"divu", 		"s,t", 
+	IntDIV, 		F_ICOMP|F_LONGLAT,
+	DHI, DLO,		DGPR(RT), DGPR(RS), DNA,
+	{ 
+	  _ r_rt = GPR(RT);
+	  _ r_rs = GPR(RS);
+	  DIV0(r_rt);
+	 SET_LO(IDIV(((:unsigned int)r_rs), ((:unsigned int)r_rt)));
+	 SET_HI(IMOD(((:unsigned int)r_rs), ((:unsigned int)r_rt)));
+	 })
+
+DEFINST(MFHI, 			0x4a,
+	"mfhi", 		"d",
+	IntALU, 		F_ICOMP,
+	DGPR(RD), DNA,		DHI, DNA, DNA,
+	{ SET_GPR(RD, HI); })
+DEFINST(MTHI, 			0x4b,
+	"mthi", 		"s",
+	IntALU, 		F_ICOMP,
+	DHI, DNA,		DGPR(RS), DNA, DNA,
+	{ SET_HI(GPR(RS)); })
+DEFINST(MFLO, 			0x4c,
+	"mflo", 		"d", 
+	IntALU, 		F_ICOMP,
+	DGPR(RD), DNA,		DLO, DNA, DNA,
+	{ SET_GPR(RD, LO); })
+DEFINST(MTLO, 			0x4d,
+	"mtlo", 		"s", 
+	IntALU, 		F_ICOMP,
+	DLO, DNA,		DGPR(RS), DNA, DNA,
+	{ SET_LO(GPR(RS)); })
+
+/* AND conflicts with GNU defs */
+DEFINST(AND_, 			0x4e,
+	"and", 			"d,s,t",
+	IntALU, 		F_ICOMP,
+	DGPR(RD), DNA,		DGPR(RS), DGPR(RT), DNA,
+	{ SET_GPR(RD, GPR(RS) & GPR(RT)); })
+DEFINST(ANDI,			0x4f,
+	"andi",			"t,s,u",
+	IntALU,			F_ICOMP,
+	DGPR(RT), DNA,	 	DGPR(RS), DNA, DNA,
+	{ SET_GPR(RT, GPR(RS) & UIMM); })
+DEFINST(OR, 			0x50,
+	"or", 			"d,s,t",
+	IntALU, 		F_ICOMP,
+	DGPR(RD), DNA,		DGPR(RS), DGPR(RT), DNA,
+	{ SET_GPR(RD, GPR(RS) | GPR(RT)); })
+DEFINST(ORI, 			0x51,
+	"ori",			"t,s,u",
+	IntALU,			F_ICOMP,
+	DGPR(RT), DNA, 		DGPR(RS), DNA, DNA,
+	{ SET_GPR(RT, GPR(RS) | UIMM); })
+DEFINST(XOR, 			0x52,
+	"xor", 			"d,s,t",
+	IntALU, 		F_ICOMP,
+	DGPR(RD), DNA,		DGPR(RS), DGPR(RT), DNA,
+	{ SET_GPR(RD, GPR(RS) ^ GPR(RT)); })
+DEFINST(XORI, 			0x53,
+	"xori",			"t,s,u",
+	IntALU,			F_ICOMP,
+	DGPR(RT), DNA, 		DGPR(RS), DNA, DNA,
+	{ SET_GPR(RT, GPR(RS) ^ UIMM); })
+DEFINST(NOR, 			0x54,
+	"nor", 			"d,s,t",
+	IntALU, 		F_ICOMP,
+	DGPR(RD), DNA,		DGPR(RS), DGPR(RT), DNA,
+	{ SET_GPR(RD, ~(GPR(RS) | GPR(RT))); })
+
+DEFINST(SLL, 			0x55,
+	"sll", 			"d,t,H", 
+	IntALU, 		F_ICOMP,
+	DGPR(RD), DNA,		DGPR(RT), DNA, DNA,
+	{ SET_GPR(RD, GPR(RT) << SHAMT); })
+DEFINST(SLLV, 			0x56,
+	"sllv", 		"d,t,s", 
+	IntALU, 		F_ICOMP,
+	DGPR(RD), DNA,		DGPR(RT), DGPR(RS), DNA,
+	{ SET_GPR(RD, GPR(RT) << (GPR(RS) & 0x1f)); })
+DEFINST(SRL, 			0x57,
+	"srl", 			"d,t,H", 
+	IntALU, 		F_ICOMP,
+	DGPR(RD), DNA,		DGPR(RT), DNA, DNA,
+	{ SET_GPR(RD, ((:unsigned int)GPR(RT)) >>> SHAMT); })
+DEFINST(SRLV, 			0x58,
+	"srlv", 		"d,t,s", 
+	IntALU, 		F_ICOMP,
+	DGPR(RD), DNA,		DGPR(RT), DGPR(RS), DNA,
+	{ SET_GPR(RD, ((: unsigned int)GPR(RT)) >>> (GPR(RS) & 0x1f)); })
+DEFINST(SRA, 			0x59,
+	"sra", 			"d,t,H", 
+	IntALU, 		F_ICOMP,
+	DGPR(RD), DNA,		DGPR(RT), DNA, DNA,
+	{ SET_GPR(RD,  ((:signed int)GPR(RT)) >> SHAMT); })
+/* FMS: Define our own	SRA; */
+DEFINST(SRAV, 			0x5a,
+	"srav", 		"d,t,s",
+	IntALU, 		F_ICOMP,
+	DGPR(RD), DNA,		DGPR(RT), DGPR(RS), DNA,
+	{ SET_GPR(RD, ((:signed int)GPR(RT)) >> (GPR(RS) & 0x1f)); })
+/* FMS: Define our own:	SRAV;  */
+
+DEFINST(SLT,			0x5b,
+	"slt", 			"d,s,t",
+	IntALU, 		F_ICOMP,
+	DGPR(RD), DNA,		DGPR(RS), DGPR(RT), DNA,
+	{ SET_GPR(RD, ((:signed int)(GPR(RS)) < ((:signed int)GPR(RT))) ? 1 : 0); })
+DEFINST(SLTI, 			0x5c,
+	"slti",			"t,s,i",
+	IntALU,			F_ICOMP,
+	DGPR(RT), DNA, 		DGPR(RS), DNA, DNA,
+	{ SET_GPR(RT, (((:signed int)GPR(RS)) < IMM) ? 1 : 0); })
+DEFINST(SLTU, 			0x5d,
+	"sltu", 		"d,s,t",
+	IntALU, 		F_ICOMP,
+	DGPR(RD), DNA,		DGPR(RS), DGPR(RT), DNA,
+	{ _ v = (:unsigned int)GPR(RS) < (:unsigned int)GPR(RT);
+	  SET_GPR(RD, v ? 1 : 0);
+	})
+DEFINST(SLTIU,			0x5e,
+	"sltiu",		"t,s,i",
+	IntALU,			F_ICOMP,
+	DGPR(RT), DNA, 		DGPR(RS), DNA, DNA,
+	{ _ v = (:unsigned int)GPR(RS) < (:unsigned int)IMM;
+	SET_GPR(RT, v ? 1 : 0);
+	})
+
+
+/*
+ * Floating Point ALU operations
+ */
+
+DEFINST(FADD_S,			0x70,
+	"add.s",		"D,S,T",
+	FloatADD,		F_FCOMP,
+	DFPR_F(FD), DNA,	DFPR_F(FS), DFPR_F(FT), DNA,
+	/* FIXME: check precedences here */
+	{ 
+	  _ fd = FD;
+	  _ fs = FS;
+	  _ ft = FT;
+	  FPALIGN(fd);
+	  FPALIGN(fs);
+	  FPALIGN(ft);
+	  SET_FPR_F(fd,FPR_F(fs) + FPR_F(ft));
+	})
+DEFINST(FADD_D,			0x71,
+	"add.d",		"D,S,T",
+	FloatADD,		F_FCOMP,
+	DFPR_D(FD), DNA,	DFPR_D(FS), DFPR_D(FT), DNA,
+	/* FIXME: check precedences here */
+	{ 
+	  _ fd = FD;
+	  _ fs = FS;
+	  _ ft = FT;
+	  FPALIGN(fd);
+	  FPALIGN(fs);
+	  FPALIGN(ft);
+	  SET_FPR_D(fd, FPR_D(fs) + FPR_D(ft));
+	})
+DEFINST(FSUB_S,			0x72,
+	"sub.s",		"D,S,T",
+	FloatADD, 		F_FCOMP,
+	DFPR_F(FD), DNA,	DFPR_F(FS), DFPR_F(FT), DNA,
+	{ 
+	  _ fd = FD;
+	  _ fs = FS;
+	  _ ft = FT;
+	  FPALIGN(fd); FPALIGN(fs); FPALIGN(ft);
+	  SET_FPR_F(fd, FPR_F(fs) - FPR_F(ft));
+	})
+DEFINST(FSUB_D,			0x73,
+	"sub.d",		"D,S,T",
+	FloatADD, 		F_FCOMP,
+	DFPR_D(FD), DNA,	DFPR_D(FS), DFPR_D(FT), DNA,
+	{ 
+	  _ fd = FD;
+	  _ fs = FS;
+	  _ ft = FT;
+	  FPALIGN(fd); FPALIGN(fs); FPALIGN(ft);
+	  SET_FPR_D(fd, FPR_D(fs) - FPR_D(ft));
+	})
+DEFINST(FMUL_S,			0x74,
+	"mul.s",		"D,S,T",
+	FloatMULT, 		F_FCOMP|F_LONGLAT,
+	DFPR_F(FD), DNA,	DFPR_F(FS), DFPR_F(FT), DNA,
+	{ 
+	  _ fd = FD;
+	  _ fs = FS;
+	  _ ft = FT;
+	FPALIGN(fd); FPALIGN(fs); FPALIGN(ft);
+	SET_FPR_F(fd, FPR_F(fs) * FPR_F(ft));
+	})
+DEFINST(FMUL_D, 		0x75,
+	"mul.d",		"D,S,T",
+	FloatMULT, 		F_FCOMP|F_LONGLAT,
+	DFPR_D(FD), DNA,	DFPR_D(FS), DFPR_D(FT), DNA,
+	{ 
+	  _ fd = FD;
+	  _ fs = FS; 
+	  _ ft = FT;
+	  FPALIGN(fd); FPALIGN(fs); FPALIGN(ft);
+	  SET_FPR_D(fd, FPR_D(fs) * FPR_D(ft));
+	})
+DEFINST(FDIV_S,			0x76,
+	"div.s",		"D,S,T",
+	FloatDIV,		F_FCOMP|F_LONGLAT,
+	DFPR_F(FD), DNA,	DFPR_F(FS), DFPR_F(FT), DNA,
+	{ 
+	  _ fd = FD;
+	  _ fs = FS;
+	  _  ft = FT;
+	  FPALIGN(fd); FPALIGN(fs); FPALIGN(ft);
+	  DIV0(FPR_F(ft));
+	  SET_FPR_F(fd, FDIV(FPR_F(fs), FPR_F(ft)));
+	})
+DEFINST(FDIV_D,			0x77,
+	"div.d",		"D,S,T",
+	FloatDIV,		F_FCOMP|F_LONGLAT,
+	DFPR_D(FD), DNA,	DFPR_D(FS), DFPR_D(FT), DNA,
+	{ 
+	  _ fd = FD;
+	  _ fs = FS;
+	  _ ft = FT;
+	  FPALIGN(fd); FPALIGN(fs); FPALIGN(ft);
+	  DIV0(FPR_D(ft));
+	  SET_FPR_D(fd, FDIV(FPR_D(fs), FPR_D(ft)));
+	})
+DEFINST(FABS_S,			0x78,
+	"abs.s",		"D,S",
+	FloatADD,		F_FCOMP,
+	DFPR_F(FD), DNA,	DFPR_F(FS), DNA, DNA,
+	{ 
+	  _ fd = FD;
+	  _ fs = FS;
+	  FPALIGN(fd); FPALIGN(fs);
+	  SET_FPR_F(fd, Math::fabs((: double)FPR_F(fs))); })
+DEFINST(FABS_D,			0x79,
+	"abs.d",		"D,S",
+	FloatADD,		F_FCOMP,
+	DFPR_D(FD), DNA,	DFPR_D(FS), DNA, DNA,
+	{ 
+	  _ fd = FD;
+	  _ fs = FS;
+	  FPALIGN(fd); FPALIGN(fs);
+	  SET_FPR_D(fd, Math::fabs(FPR_D(fs)));
+	})
+DEFINST(FMOV_S,			0x7a,
+	"mov.s",		"D,S",
+	FloatADD,		F_FCOMP,
+	DFPR_F(FD), DNA,	DFPR_F(FS), DNA, DNA,
+	{ 
+	  _ fd = FD;
+	  _ fs = FS;
+	  FPALIGN(fd); FPALIGN(fs);
+	  SET_FPR_F(fd, FPR_F(fs));
+	})
+DEFINST(FMOV_D,			0x7b,
+	"mov.d",		"D,S",
+	FloatADD,		F_FCOMP,
+	DFPR_D(FD), DNA,	DFPR_D(FS), DNA, DNA,
+	{ 
+	  _ fd = FD;
+	  _ fs = FS;
+	  FPALIGN(fd); FPALIGN(fs);
+	  SET_FPR_D(fd, FPR_D(fs)); })
+DEFINST(FNEG_S,			0x7c,
+	"neg.s",		"D,S",
+	FloatADD,		F_FCOMP,
+	DFPR_F(FD), DNA,	DFPR_F(FS), DNA, DNA,
+	{ 
+	  _ fd = FD;
+	  _ fs = FS;
+	  FPALIGN(fd); FPALIGN(fs);
+	  SET_FPR_F(fd, -FPR_F(fs)); })
+DEFINST(FNEG_D,			0x7d,
+	"neg.d",		"D,S",
+	FloatADD,		F_FCOMP,
+	DFPR_D(FD), DNA,	DFPR_D(FS), DNA, DNA,
+	{ 
+	  _ fd = FD;
+	  _ fs = FS;
+	  FPALIGN(fd); FPALIGN(fs);
+	  SET_FPR_D(fd, -FPR_D(fs));
+	})
+
+DEFINST(CVT_S_D,		0x80, 
+	"cvt.s.d", 		"D,S",
+	FloatCVT,		F_FCOMP,
+	DFPR_F(FD), DNA,	DFPR_D(FS), DNA, DNA,
+	{ 
+	  _ fd = FD;
+	  _ fs = FS;
+	  FPALIGN(fd); FPALIGN(fs);
+	  SET_FPR_F(fd, (:float)FPR_D(fs)); })
+DEFINST(CVT_S_W,		0x81,
+	"cvt.s.w", 		"D,S",
+	FloatCVT,		F_FCOMP,
+	DFPR_F(FD), DNA,	DFPR_L(FS), DNA, DNA,
+	{ 
+	  _ fd = FD;
+	  _ fs = FS;
+	  FPALIGN(fd); FPALIGN(fs);
+	  SET_FPR_F(fd, (:float)FPR_L(fs)); })
+DEFINST(CVT_D_S,		0x82,
+	"cvt.d.s",		"D,S",
+	FloatCVT,		F_FCOMP,
+	DFPR_D(FD), DNA,	DFPR_F(FS), DNA, DNA,
+	{ 
+	  _ fd = FD;
+	  _ fs = FS;
+	  FPALIGN(fd); FPALIGN(fs);
+	  SET_FPR_D(fd, (:double)FPR_F(fs)); })
+DEFINST(CVT_D_W,		0x83,
+	"cvt.d.w",		"D,S",
+	FloatCVT,		F_FCOMP,
+	DFPR_D(FD), DNA,	DFPR_L(FS), DNA, DNA,
+	{ 
+	  _ fd = FD;
+	  _ fs = FS;
+	  FPALIGN(fd); FPALIGN(fs);
+	  SET_FPR_D(fd, (:double)FPR_L(fs));})
+DEFINST(CVT_W_S,		0x84,
+	"cvt.w.s", 		"D,S",
+	FloatCVT,		F_FCOMP,
+	DFPR_L(FD), DNA,	DFPR_F(FS), DNA, DNA,
+	{ 
+	  _ fd = FD;
+	  _ fs = FS;
+	  FPALIGN(fd); FPALIGN(fs);
+	  SET_FPR_L(fd, FINT(FPR_F(fs)));
+	})
+DEFINST(CVT_W_D,		0x85,
+	"cvt.w.d", 		"D,S",
+	FloatCVT,		F_FCOMP,
+	DFPR_L(FD), DNA,	DFPR_D(FS), DNA, DNA,
+	{ 
+	  _ fd = FD;
+	  _ fs = FS;
+	  FPALIGN(fd); FPALIGN(fs);
+	  SET_FPR_L(fd, FINT(FPR_D(fs))); 
+	})
+
+DEFINST(C_EQ_S,			0x90,
+	"c.eq.s", 		"S,T",
+	FloatCMP,		F_FCOMP,
+	DFCC, DNA,		DFPR_F(FS), DFPR_F(FT), DNA,
+	{ 
+	  _ fs = FS;
+	  _ ft = FT;
+	  FPALIGN(fs); FPALIGN(ft);
+	  SET_FCC(FPR_F(fs) == FPR_F(ft) ? 1 : 0); 
+	})
+DEFINST(C_EQ_D,			0x91,
+	"c.eq.d", 		"S,T",
+	FloatCMP,		F_FCOMP,
+	DFCC, DNA,		DFPR_D(FS), DFPR_D(FT), DNA,
+	{ 
+	  _ fs = FS;
+	  _ ft = FT;
+	  FPALIGN(fs); FPALIGN(ft);
+	  SET_FCC(FPR_D(fs) == FPR_D(ft) ? 1 : 0); 
+	})
+DEFINST(C_LT_S,			0x92,
+	"c.lt.s", 		"S,T",
+	FloatCMP,		F_FCOMP,
+	DFCC, DNA,		DFPR_F(FS), DFPR_F(FT), DNA,
+	{ 
+	  _ fs = FS;
+	  _ ft = FT;
+	  FPALIGN(fs); FPALIGN(ft);
+	  SET_FCC(FPR_F(fs) < FPR_F(ft) ? 1 : 0); 
+	})
+DEFINST(C_LT_D,			0x93,
+	"c.lt.d", 		"S,T",
+	FloatCMP,		F_FCOMP,
+	DFCC, DNA,		DFPR_D(FS), DFPR_D(FT), DNA,
+	{ 
+	  _ fs = FS;
+	  _  ft = FT;
+	  FPALIGN(fs); FPALIGN(ft);
+	  SET_FCC(FPR_D(fs) < FPR_D(ft) ? 1 : 0); 
+	})
+DEFINST(C_LE_S,			0x94,
+	"c.le.s", 		"S,T",
+	FloatCMP,		F_FCOMP,
+	DFCC, DNA,		DFPR_F(FS), DFPR_F(FT), DNA,
+	{ 
+	  _ fs = FS;
+	  _ ft = FT;
+	  FPALIGN(fs); FPALIGN(ft);
+	  SET_FCC(FPR_F(fs) <= FPR_F(ft) ? 1 : 0); 
+	})
+DEFINST(C_LE_D,			0x95,
+	"c.le.d", 		"S,T",
+	FloatCMP,		F_FCOMP,
+	DFCC, DNA,		DFPR_D(FS), DFPR_D(FT), DNA,
+	{ 
+	  _ fs = FS;
+	  _ ft = FT;
+	  FPALIGN(fs); FPALIGN(ft);
+	  SET_FCC(FPR_D(fs) <= FPR_D(ft) ? 1 : 0);
+	})
+
+DEFINST(FSQRT_S,		0x96,
+	"sqrt.s",		"D,S",
+	FloatSQRT,		F_FCOMP|F_LONGLAT,
+	DFPR_F(FD), DNA,	DFPR_F(FS), DNA, DNA,
+	{ 
+	  _ fd = FD;
+	  _ fs = FD;
+	  SET_FPR_F(fd, Math::sqrt((: double)FPR_F(fs))); 
+	})
+DEFINST(FSQRT_D,		0x97,
+	"sqrt.d",		"D,S",
+	FloatSQRT,		F_FCOMP|F_LONGLAT,
+	DFPR_D(FD), DNA,	DFPR_D(FS), DNA, DNA,
+	{ 
+	  _ fd = FD;
+	  _ fs = FS;
+	  FPALIGN(fd); FPALIGN(fs);
+	  SET_FPR_D(fd, Math::sqrt(FPR_D(fs))); 
+	})
+
+/*
+ * miscellaneous
+ */
+
+DEFINST(SYSCALL, 		0xa0,
+	"syscall", 		"",
+	NA, 			F_TRAP,
+	DNA, DNA,		DNA, DNA, DNA,
+	SYSCALL;)
+DEFINST(BREAK,			0xa1,
+	"break",		"B",
+	NA,			F_TRAP,
+	DNA, DNA,		DNA, DNA, DNA,
+	/* NOTE: these are decoded speculatively, as they occur in integer
+	   divide sequences, however, they should NEVER be executed under
+	   non-exception conditions */
+	/* abort() */;)
+DEFINST(LUI, 			0xa2,
+	"lui",			"t,U",
+	IntALU,			F_ICOMP,
+	DGPR(RT), DNA, 		DNA, DNA, DNA,
+	{ SET_GPR(RT, UIMM << 16); })
+
+DEFINST(MFC1,	 		0xa3,
+	"mfc1", 		"t,S",
+	IntALU, 		F_ICOMP,
+	DGPR(RT), DNA,		DFPR_L(FS), DNA, DNA,
+	{ SET_GPR(RT, FPR_L(FS)); })
+DEFINST(DMFC1, 			0xa7,
+	"dmfc1",		"t,S",
+	IntALU,			F_ICOMP,
+	DGPR_D(RT), DNA, 	DFPR_D(FS), DNA, DNA,
+	{ _ rt = RT; _ fs = FS;
+	INTALIGN(rt); FPALIGN(fs);
+	SET_GPR(rt, FPR_L(fs));
+	SET_GPR(rt+1, FPR_L(fs+1));
+	})
+DEFINST(CFC1, 			0xa4,
+	"cfc1", 		"t,S",
+	IntALU, 		F_ICOMP,
+	DNA, DNA,		DNA, DNA, DNA,
+	/* FIXME: is this needed */;)
+DEFINST(MTC1, 			0xa5,
+	"mtc1", 		"t,S",
+	IntALU, 		F_ICOMP,
+	DFPR_L(FS), DNA,	DGPR(RT), DNA, DNA,
+	{ SET_FPR_L(FS, GPR(RT)); })
+DEFINST(DMTC1,	 		0xa8,
+	"dmtc1",		"t,S",
+	IntALU,			F_ICOMP,
+	DFPR_D(FS), DNA,	DGPR_D(RT), DNA, DNA,
+	{ _ fs = FS; _ rt = RT;
+	FPALIGN(fs); INTALIGN(rt);
+	SET_FPR_L(fs, GPR(rt));
+	SET_FPR_L(fs+1, GPR(rt+1));})
+DEFINST(CTC1, 			0xa6,
+	"ctc1", 		"t,S",
+	IntALU, 		F_ICOMP,
+	DNA, DNA,		DNA, DNA, DNA,
+	/* FIXME: is this needed */;)

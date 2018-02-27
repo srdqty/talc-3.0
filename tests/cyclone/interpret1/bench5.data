@@ -1,0 +1,70 @@
+- file updated: 9/13/99
+- timings represent 1,000,000 runs
+
+-------------------------------------------------------------------------------
+Interpret1
+-------------------------------------------------------------------------------
+
+(LINUX) 233MHz P2, 64MB -------------------------------------------------------
+
+Program #1 (60 instructions, mostly load/store)
+
+  [Popcorn]             Time: 11450 msec
+  [Cyclone]
+    Code generation:    Time: 534900 msec
+    Code execution:     Time:  3490 msec
+  [gcc -O3]             Time:  3660 msec    (-O0:  7340 msec)
+  [Tempo CT -O3]        Time:   340 msec    (-O0:  620 msec)
+  [Tempo RT -O3]        
+    Code generation:    Time: 
+    Code execution:     Time:   680 msec    (-O0:  1020 msec)
+
+Program #2 (63 instructions, mostly arithmetic)
+
+  [Popcorn]             Time:  11640
+  [Cyclone]
+    Code generation:    Time: 583900 msec
+    Code execution:     Time:   3930 msec
+  [gcc -O3]             Time:   4150 msec    (-O0:  7070 msec)
+  [Tempo CT -O3]        Time:    400 msec    (-O0:  1040 msec)
+  [Tempo RT -O3]        Time:   1130 msec    (-O0:  1480 msec)
+
+Program #3 (54 instructions, triple nested loop)
+
+  [Popcorn]             Time:  70520 msec
+  [Cyclone]
+    Code generation:    Time:        
+    Code execution:     Time:        
+  [gcc -O3]             Time:  25200 msec    (-O0: 44280 msec)
+  [Tempo CT -O3]        Time:        msec    (-O0: )
+  [Tempo RT -O3]        Time:        msec    (-O0: )
+
+Program #4 (66 instructions, three sequential loops)
+
+  [Popcorn]             Time:  72530 msec
+  [Cyclone]
+    Code generation:    Time:  
+    Code execution:     Time:    
+  [gcc -O3]             Time:  26270 msec    (-O0: 44550 msec)
+  [Tempo CT -O3]        Time:        msec    (-O0: )
+  [Tempo RT -O3]        Time:        msec    (-O0: )
+
+Program #5 (22 instructions, factorial)
+
+  [Popcorn]             Time: 2210 msec
+  [Cyclone]
+    Code generation:    Time:  
+    Code execution:     Time:    
+  [gcc -O3]             Time:  820 msec    (-O0: 1250 msec)
+  [Tempo CT -O3]        Time:      msec    (-O0: )
+  [Tempo RT -O3]        Time:      msec    (-O0: )
+
+
+                                                     Program
+                                        1       2       3       4       5
+
+       Speedup Cyclone vs. Popcorn: 
+            Breakeven point (runs):  
+       Speedup Cyclone vs. gcc -O3: 
+ x faster Tempo CT is than Cyclone: 
+

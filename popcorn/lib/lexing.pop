@@ -1,0 +1,190 @@
+
+/* Dan Grossman, April 1999 */
+
+/* Run-time library for files created by popocamllex */
+
+/* aux_buffer is not large enough for real use, just trying to get something
+   to work! */
+
+/* This is the merged port of lexing.ml and lexing.c with lexing.ml
+   basically coming first */
+
+#include "core.h"
+open Core;
+
+prefix Lexing;
+open   Lexing;
+
+exception Error(string);
+
+// AUX_SIZE should be half BUFFER_SIZE
+#define BUFFER_SIZE 8192
+#define AUX_SIZE    4096
+
+struct <a>lexbuf { // use 'a for state that refill_buff might need
+ 
+  void refill_buff(<a>lexbuf);
+  a  refill_state;
+
+  string lex_buffer;
+  int    lex_buffer_len;
+  int    lex_abs_pos;
+  int    lex_start_pos;
+  int    lex_curr_pos;
+  int    lex_last_pos;
+  int    lex_last_action;
+  bool   lex_eof_reached;
+}
+struct <b>function_lexbuf_state { // instantiation for using function to read
+  int read_fun(string,int,b);
+  b read_fun_state;
+}
+
+struct lex_tables { // for space this should probably be shorts, but who cares
+  int lex_base   [];
+  int lex_backtrk[];
+  int lex_default[];
+  int lex_trans  [];
+  int lex_check  [];
+}
+
+static string aux_buffer;
+
+void lex_refill<c> (<<c>function_lexbuf_state>lexbuf lexbuf) {
+  if (size(aux_buffer)==0) aux_buffer = new_string(AUX_SIZE);
+  int read = lexbuf.refill_state.read_fun(aux_buffer, size(aux_buffer),
+                                          lexbuf.refill_state.read_fun_state);
+  int n = read > 0 ? read : (lexbuf.lex_eof_reached = true, 0);
+  if (lexbuf.lex_start_pos < n) {
+    int    oldlen = lexbuf.lex_buffer_len;
+    int    newlen = oldlen*2;
+    
+    string newbuf = new_string(newlen);
+    strncpy(newbuf, oldlen, lexbuf.lex_buffer, 0, oldlen);
+    lexbuf.lex_buffer     = newbuf;
+    lexbuf.lex_buffer_len = newlen;
+    lexbuf.lex_abs_pos    = lexbuf.lex_abs_pos   - oldlen;
+    lexbuf.lex_curr_pos   = lexbuf.lex_curr_pos  + oldlen;
+    lexbuf.lex_start_pos  = lexbuf.lex_start_pos + oldlen;
+    lexbuf.lex_last_pos   = lexbuf.lex_last_pos  + oldlen;
+  }
+  strncpy(lexbuf.lex_buffer, 0, lexbuf.lex_buffer, n, lexbuf.lex_buffer_len-n);
+  strncpy(lexbuf.lex_buffer, lexbuf.lex_buffer_len-n, aux_buffer, 0,  n);
+  lexbuf.lex_abs_pos    = lexbuf.lex_abs_pos   + n;
+  lexbuf.lex_curr_pos   = lexbuf.lex_curr_pos  - n;
+  lexbuf.lex_start_pos  = lexbuf.lex_start_pos - n;
+  lexbuf.lex_last_pos   = lexbuf.lex_last_pos  - n;
+}
+
+<<b>function_lexbuf_state>lexbuf from_function<b>(int read_fun(string,int,b), 
+                                                 b read_fun_state) { 
+  return ^lexbuf(lex_refill @ <b>,
+                 ^function_lexbuf_state(read_fun, 
+                                        read_fun_state),                       
+		 new_string(BUFFER_SIZE),
+                 BUFFER_SIZE, -BUFFER_SIZE, 
+		 BUFFER_SIZE, BUFFER_SIZE, BUFFER_SIZE,
+                 0,
+                 false);
+}
+
+int read_from_file(string aux, int n, FILE f) {
+//                           <<FILE>function_lexbuf_state>lexbuf lbuf) {
+  return f_string_read(f, aux, 0, n);
+}
+
+// corresponds to ocaml's from_channel
+<<FILE>function_lexbuf_state>lexbuf from_file(FILE f) {
+  return (from_function @<FILE>) (read_from_file, f);
+}
+
+static void set_eof(<bool>lexbuf lbuf) { lbuf.lex_eof_reached = true; }
+
+<bool>lexbuf from_string(string s) {
+  return ^lexbuf(set_eof,
+                 false,     //ignored but can't instantiate with void
+                 strcpy(s), // copy to keep lexer shielded from updates
+                 size(s),
+                 0,0,0,0,0,
+                 true);
+}
+
+string lexeme<a> (<a>lexbuf lbuf) {
+   int len = lbuf.lex_curr_pos - lbuf.lex_start_pos;
+   string s = new_string(len);
+   strncpy(s, 0, lbuf.lex_buffer, lbuf.lex_start_pos, len);
+   return s;
+}
+
+char lexeme_char<a> (<a>lexbuf lbuf, int i) {
+   return lbuf.lex_buffer[lbuf.lex_start_pos + i];
+}
+
+int lexeme_start<a>(<a>lexbuf lbuf) { 
+   return lbuf.lex_abs_pos + lbuf.lex_start_pos;
+}
+
+int lexeme_end<a>(<a>lexbuf lbuf) { 
+   return lbuf.lex_abs_pos + lbuf.lex_curr_pos;
+}
+
+/********* Now here's what was lexing.c ********/
+
+int lex_engine<a>(lex_tables tbl, int start_state, <a>lexbuf lbuf) {
+
+   int state, base, backtrk;
+   int c;
+   state = start_state;
+
+   if (state >= 0) {
+      /* First entry */
+      lbuf.lex_last_pos = lbuf.lex_start_pos = lbuf.lex_curr_pos;
+      lbuf.lex_last_action = -1;
+   } else { 
+      /* Reentry after refill */
+      state = -state-1;
+  }
+  while (true) {
+     base = tbl.lex_base[state];
+     if (base < 0) return -base-1;
+     /* See if it's a backtrack point */
+     backtrk = tbl.lex_backtrk[state];
+     if (backtrk >= 0) {
+        lbuf.lex_last_pos    = lbuf.lex_curr_pos;
+        lbuf.lex_last_action = backtrk;
+     }
+     /* See if we need a refill */
+     if (lbuf.lex_curr_pos >= lbuf.lex_buffer_len) {
+        if (!lbuf.lex_eof_reached)
+	  return -state-1;
+        else
+	  c = 256;
+     } else {
+	  /* Read next input char */
+        c = (:int) (lbuf.lex_buffer[lbuf.lex_curr_pos++]);
+	if (c==EOF) c=256;
+     }
+     /* Determine next state */
+     if (tbl.lex_check[base+c]==state)
+	state = tbl.lex_trans[base+c];
+     else
+        state = tbl.lex_default[state];
+     /* If no transition on this char, return to last backtrack point */
+     if (state < 0) {
+        lbuf.lex_curr_pos = lbuf.lex_last_pos;
+	if (lbuf.lex_last_action == -1) 
+	   raise Error("empty token");
+        else {
+	  return lbuf.lex_last_action;
+}
+     } else {
+      /* Erase the EOF condition only if the EOF pseudo-character was
+         consumed by the automaton (i.e. there was no backtrack above)
+       */
+      if (c == 256) lbuf.lex_eof_reached = false;
+    }
+  }
+  raise Error("impossible control point in engine");
+}
+
+

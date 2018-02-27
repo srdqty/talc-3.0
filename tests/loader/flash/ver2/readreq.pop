@@ -1,0 +1,804 @@
+/*
+
+Copyright (c) '1999' RICE UNIVERSITY. All rights reserved 
+Created by Vivek Sadananda Pai [vivek@cs.rice.edu], Departments of
+Electrical and Computer Engineering and of Computer Science
+
+
+This software, "Flash", is distributed to individuals for personal
+non-commercial use and to non-profit entities for non-commercial
+purposes only.  It is licensed on a non-exclusive basis, free of
+charge for these uses.  All parties interested in any other use of the
+software should contact the Rice University Office of Technology
+Transfer [techtran@rice.edu]. The license is subject to the following
+conditions:
+
+1. No support will be provided by the developer or by Rice University.
+2. Redistribution is not permitted. Rice will maintain a copy of Flash
+   as a directly downloadable file, available under the terms of
+   license specified in this agreement.
+3. All advertising materials mentioning features or use of this
+   software must display the following acknowledgment: "This product
+   includes software developed by Rice University, Houston, Texas and
+   its contributors."
+4. Neither the name of the University nor the names of its
+   contributors may be used to endorse or promote products derived
+   from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY WILLIAM MARSH RICE UNIVERSITY, HOUSTON,
+TEXAS, AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES,
+INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+IN NO EVENT SHALL RICE UNIVERSITY OR CONTRIBUTORS BE LIABLE FOR ANY
+DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE
+GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+INTERRUPTIONS) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER
+IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
+OTHERWISE), PRODUCT LIABILITY, OR OTHERWISE ARISING IN ANY WAY OUT OF
+THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH
+DAMAGE.
+
+This software contains components from computer code originally
+created and copyrighted by Jef Poskanzer (C) 1995. The license under
+which Rice obtained, used and modified that code is reproduced here in
+accordance with the requirements of that license:
+
+** Copyright (C) 1995 by Jef Poskanzer <jef@acme.com>.  All rights reserved.
+**
+** Redistribution and use in source and binary forms, with or without
+** modification, are permitted provided that the following conditions
+** are met:
+** 1. Redistributions of source code must retain the above copyright
+**    notice, this list of conditions and the following disclaimer.
+** 2. Redistributions in binary form must reproduce the above copyright
+**    notice, this list of conditions and the following disclaimer in the
+**    documentation and/or other materials provided with the distribution.
+** 
+** THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+** ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+** IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+** ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+** FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+** DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+** OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+** HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+** LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+** OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+** SUCH DAMAGE.
+*/
+
+#include "core.h"
+#include "char.h"
+#include "c_string.h"
+#include "scanf.h"
+
+#include "libhttpd.h"		/* for definition of httpd_conn, etc */
+#include "tdate_parse.h"
+#include "conn.h"
+#include "handy.h"
+#include "common.h"
+#include "config.h"
+
+union ReadState {
+  void RS_FIRST;
+  void RS_REST; 
+  void RS_DATA; 
+}
+
+/* RS_* codes means first line of headers, 
+   rest of header lines, and
+   then content data */
+
+#define PRR_BUFSIZE 1000
+
+?struct HeaderInfoStruct {
+  ReadState his_rs;		/* current state of request */
+  /* int his_numBuffers; */	/* can check size(hi_bufs) */
+  /* int his_numExtraStrings; *//* can check size(his_extraStrings) */
+  int his_unsentBufNum;
+  int his_unsentPos;		/* what data hasn't been processed yet */
+  int his_availBufNum;		/* index of buffer to use */
+  int his_availPos;		/* ofs in buf availBuf to place new data */
+  int his_conDataStartBuf;
+  int his_conDataStartPos;
+  int his_conDataLeft;		/* bytes of content data left to read */
+  string his_bufs[];
+  /* string his_extraStrings[];*//* don't need cuz of GC */
+}
+
+union PRRTypes {
+  void PRR_DONE; 
+  void PRR_CLOSED; 
+  void PRR_ERROR; 
+  void PRR_READMORE; 
+  void PRR_NUMTYPES;
+}
+
+/* ---------------------------------------------------------------- */
+static int 
+ProcessFirstHeaderLine(httpd_conn hc, string buf, int bufOfs)
+{
+  string method_str;
+  string url;
+  string protocol;
+  int i, len;
+  /*
+  fprintf(tal_stderr,"ProcessFirstHeaderLine: size(buf)=%d, bufOfs=%d\n",
+	  size(buf), bufOfs);
+  */
+  len = C_strnlen(buf, bufOfs);
+  /*
+  fprintf(tal_stderr,"len=%d, contents=",len);
+  C_fprint_string(tal_stderr,buf,bufOfs);
+  fprint_char(tal_stderr,'\n');
+  */  
+  /* Parse request. */
+  hc.hc_mimeFlag = false;
+  method_str = buf;
+  
+  /* Get method string */
+  i = C_strpbrk(method_str, bufOfs, " \t\n\r");
+  if (i == -1) {
+    HttpdSendErr(hc, 400, err400title, err400form, buf);
+    return -1;
+  }
+  method_str[i++] = '\000';
+  /*
+  fprint_string(tal_stderr,"method: ");
+  C_fprint_string(tal_stderr,method_str,0);
+  fprint_char(tal_stderr,'\n');
+  */
+  /* Get URL */
+  i = C_strspn(buf, i, " \t\n\r");
+  url = Core::new_string(len-i);
+  C_strncpy(url, 0, buf, i, len-i);
+  len = len-i; /* now is url's length */
+  i = C_strpbrk(url, 0, " \t\n\r");
+  if (i != -1)
+    url[i++] = '\000';
+  /*
+  fprint_string(tal_stderr,"url: ");
+  C_fprint_string(tal_stderr,url,0);
+  fprint_char(tal_stderr,'\n');
+  */
+  /* Get protocol */
+  if (i == -1)
+    protocol = "HTTP/0.9";
+  else {
+    i = C_strspn(url, i, " \t\n\r");
+    if (i != -1) /* won't have a null terminator */ {
+      hc.hc_mimeFlag = true;
+      protocol = Core::new_string(len-i);
+      C_strncpy(protocol, 0, url, i, len-i);
+      i = C_strpbrk(protocol, 0, " \t\n\r");
+      if (i != -1)
+	protocol[i] = '\000';
+    }
+    else
+      protocol = "";
+  }
+  /*
+  fprint_string(tal_stderr,"protocol: ");
+  C_fprint_string(tal_stderr,protocol,0);
+  fprint_char(tal_stderr,'\n');
+  */
+  for (i = 0; i < NUM_METHODS; i++) {
+    if (C_strcmp(method_str, 0, methodStrings[i], 0) == 0) {
+      hc.hc_method = i;
+      break;
+    }
+  }
+  
+  hc.hc_encodedurl = url;
+  hc.hc_protocol = protocol;
+  
+  return(0);
+}
+/* ---------------------------------------------------------------- */
+static union HeaderEnums { 
+  void HO_IGNORE; 
+  void HO_PERSISTENT;
+  void HO_CONTENTLENGTH;
+  void HO_CONTENTTYPE;
+  void HO_COOKIE;
+  void HO_IMSGET;
+  void HO_ACCEPTENCODING;
+  void HO_ACCEPT;
+  void HO_USERAGENT;
+  void HO_REFERER;
+}
+
+static ?struct HeaderOption {
+  string ho_name;
+  HeaderEnums ho_enum;
+  int ho_nameLen;
+  HeaderOption ho_next;
+  int ho_hashVal;
+}
+
+/* add most common entries to the end of this list */
+static HeaderOption headerOptions[] = {
+  ^HeaderOption("Accept-Charset:", ^HeaderEnums.HO_IGNORE, 0, null, 0),
+  ^HeaderOption("Accept-Language:", ^HeaderEnums.HO_IGNORE, 0, null, 0),
+  ^HeaderOption("Authorization:", ^HeaderEnums.HO_IGNORE, 0, null, 0),
+  ^HeaderOption("Cache-Control:", ^HeaderEnums.HO_IGNORE, 0, null, 0),
+  ^HeaderOption("Cache-Info:", ^HeaderEnums.HO_IGNORE, 0, null, 0),
+  ^HeaderOption("Charge-To:", ^HeaderEnums.HO_IGNORE, 0, null, 0),
+  ^HeaderOption("Client-ip:", ^HeaderEnums.HO_IGNORE, 0, null, 0),
+  ^HeaderOption("Connection:", ^HeaderEnums.HO_IGNORE, 0, null, 0),
+  ^HeaderOption("Date:", ^HeaderEnums.HO_IGNORE, 0, null, 0),
+  ^HeaderOption("Extension:", ^HeaderEnums.HO_IGNORE, 0, null, 0),
+  ^HeaderOption("Forwarded:", ^HeaderEnums.HO_IGNORE, 0, null, 0),
+  ^HeaderOption("From:", ^HeaderEnums.HO_IGNORE, 0, null, 0),
+  ^HeaderOption("Host:", ^HeaderEnums.HO_IGNORE, 0, null, 0),
+  ^HeaderOption("HTTP-Version:", ^HeaderEnums.HO_IGNORE, 0, null, 0),
+  ^HeaderOption("Message-ID:", ^HeaderEnums.HO_IGNORE, 0, null, 0),
+  ^HeaderOption("MIME-Version:", ^HeaderEnums.HO_IGNORE, 0, null, 0),
+  ^HeaderOption("Pragma:", ^HeaderEnums.HO_IGNORE, 0, null, 0),
+  ^HeaderOption("Proxy-agent:", ^HeaderEnums.HO_IGNORE, 0, null, 0),
+  ^HeaderOption("Proxy-Connection:", ^HeaderEnums.HO_IGNORE, 0, null, 0),
+  ^HeaderOption("Security-Scheme:", ^HeaderEnums.HO_IGNORE, 0, null, 0),
+  ^HeaderOption("Session-ID:", ^HeaderEnums.HO_IGNORE, 0, null, 0),
+  ^HeaderOption("UA-color:", ^HeaderEnums.HO_IGNORE, 0, null, 0),
+  ^HeaderOption("UA-CPU:", ^HeaderEnums.HO_IGNORE, 0, null, 0),
+  ^HeaderOption("UA-Disp:", ^HeaderEnums.HO_IGNORE, 0, null, 0),
+  ^HeaderOption("UA-OS:", ^HeaderEnums.HO_IGNORE, 0, null, 0),
+  ^HeaderOption("UA-pixels:", ^HeaderEnums.HO_IGNORE, 0, null, 0),
+  ^HeaderOption("User:", ^HeaderEnums.HO_IGNORE, 0, null, 0),
+  ^HeaderOption("Via:", ^HeaderEnums.HO_IGNORE, 0, null, 0),
+  ^HeaderOption("X-P:", ^HeaderEnums.HO_PERSISTENT, 0, null, 0),	/* done to reduce size of header to avoid TCP bug */
+  ^HeaderOption("X-Persistent:", ^HeaderEnums.HO_PERSISTENT, 0, null, 0),
+  /* ("Connection:", ^HeaderEnums.HO_APACHEPERSIST, 0, null, 0), */
+  ^HeaderOption("Content-Length:", ^HeaderEnums.HO_CONTENTLENGTH, 0,
+		null, 0),
+  ^HeaderOption("Content-Type:", ^HeaderEnums.HO_CONTENTTYPE, 0, null,
+		0),
+  ^HeaderOption("Cookie:", ^HeaderEnums.HO_COOKIE, 0, null, 0),
+  ^HeaderOption("If-Modified-Since:", ^HeaderEnums.HO_IMSGET, 0, null,
+		0),
+  ^HeaderOption("Accept-Encoding:", ^HeaderEnums.HO_ACCEPTENCODING, 0,
+		null, 0),
+  ^HeaderOption("Accept:", ^HeaderEnums.HO_ACCEPT, 0, null, 0),
+  ^HeaderOption("User-Agent:", ^HeaderEnums.HO_USERAGENT, 0, null, 0),
+  ^HeaderOption("Referer:", ^HeaderEnums.HO_REFERER, 0, null, 0)};
+
+#define HEADERLINEBINS 64	/* must be power of 2 */
+static HeaderOption headerBins[HEADERLINEBINS];
+static char charConversions[256];
+
+/* ---------------------------------------------------------------- */
+static void
+DoHeaderLinesSetup()
+{
+  /* add entries to head of list so that last entries
+     show up first in the search */
+  HeaderOption entry;
+  char pos;
+  int i, j;
+
+  for (pos = 'a'; pos <= 'z'; pos++) 
+    charConversions[pos] = pos - 'a';
+  for (pos = 'A'; pos <= 'Z'; pos++) 
+    charConversions[pos] = pos - 'A';
+
+  for (i = 0; i<size(headerOptions); i++) {
+    int hashVal = 0;
+    int len;
+    entry = headerOptions[i]; 
+    len = size(entry.ho_name); /* "size" assumes statically
+				  allocated strings */
+    for (j = 0; j<len; j++) {
+      char c;
+      if ((hashVal & 1) != 0)
+	hashVal ^= HEADERLINEBINS;
+      hashVal >>= 1;
+      c = entry.ho_name[j];
+      hashVal ^= charConversions[c];
+    }
+    /* XXX should be able to ditch namelen if always using statically-
+       allocated strings */
+    entry.ho_nameLen = len; 
+    entry.ho_hashVal = hashVal;
+    entry.ho_next = headerBins[hashVal & (HEADERLINEBINS-1)];
+    headerBins[hashVal & (HEADERLINEBINS-1)] = entry;
+  }
+}
+
+/* ---------------------------------------------------------------- */
+static string newCstring(string buf, int ofs) {
+  int len;
+  string tempStr;
+  len = C_strnlen(buf,ofs);
+  tempStr = Core::new_string(len);
+  C_strncpy(tempStr,0,buf,ofs,len);
+  return tempStr;
+}
+
+static bool doHeaderSetup = true;
+static bool
+ProcessRemainingHeaderLines(httpd_conn hc, string buf, int bufOfs)
+{
+  int sz;
+  int hashVal;
+  int pos;
+  char c;
+  HeaderOption entry;
+
+  if (doHeaderSetup) {
+    doHeaderSetup = false;
+    DoHeaderLinesSetup();
+  }
+
+  /* Read any other headers in the request, particularly referer. */
+  sz = C_strnlen(buf, bufOfs) + bufOfs;
+  while (sz > 0 && (buf[sz-1] == '\n' || 
+		    buf[sz-1] == '\r'))
+    buf[--sz] = '\000';
+  if (sz == bufOfs)
+    return(true);		/* done with processing the header */
+
+  hashVal = 0;
+  for (pos = bufOfs; pos < sz; pos++) {
+    c = buf[pos];
+    if ((hashVal & 1) != 0)
+      hashVal ^= HEADERLINEBINS;
+    hashVal >>= 1;
+    hashVal ^= charConversions[c];
+    if (c == ':') {
+      pos++;
+      break;
+    }
+  } 
+
+  while (buf[pos] == '\t' || buf[pos] == ' ')
+    pos++;
+
+  for (entry = headerBins[hashVal & (HEADERLINEBINS-1)];
+       entry != null; entry = entry.ho_next) {
+    /* first check hashval, then check for string match */
+    if ((entry.ho_hashVal == hashVal) && 
+	(C_strncasecmp(buf, bufOfs, entry.ho_name, 0, 
+		       entry.ho_nameLen)==0))
+      break;
+  }
+
+  if (entry == null) {
+    /* either we have an error or an X- value */
+    if (C_strncasecmp(buf, bufOfs, "X-", 0, 2) != 0)
+      fprintf(tal_stderr, "unknown MIME header: |%s|\n", buf);
+    return(false);		/* ignore, keep processing */
+  }
+  /*
+  fprintf(tal_stderr,"Found header option for %s\n",entry.ho_name);
+  */
+  switch(entry.ho_enum) {
+  case HO_COOKIE:
+    hc.hc_cookie = newCstring(buf,pos);
+    /* break; */
+  case HO_CONTENTTYPE:
+    hc.hc_contentType = newCstring(buf,pos);
+    /* break; */
+  case HO_REFERER:
+    hc.hc_referer = newCstring(buf,pos);
+    /* break; */
+  case HO_USERAGENT:
+    hc.hc_userAgent = newCstring(buf,pos);
+    /* break; */
+  case HO_ACCEPT:
+    if (size(hc.hc_accept) != 0) {
+      if (C_strlen(hc.hc_accept) > 5000) {
+	fprintf(tal_stderr, "Address %d way too much Accept: data",
+		/* XXX inet_ntoa */ (hc.hc_clientAddr));
+	return(false);		/* keep processing */
+      }
+      hc.hc_accept = realloc_str(hc.hc_accept, 
+				 C_strlen(hc.hc_accept) + 
+				   2 + C_strnlen(buf,pos));
+      C_strcat(hc.hc_accept, ", ");
+    }
+    else
+      hc.hc_accept = realloc_str(hc.hc_accept, C_strnlen(buf,pos));
+    C_strncat(hc.hc_accept, buf, pos);
+    /* break; */
+  case HO_ACCEPTENCODING:
+    if (size(hc.hc_accepte) != 0) {
+      if (C_strlen(hc.hc_accepte) > 5000) {
+	fprintf(tal_stderr, "Address %d way too much Accept-Encoding: data",
+		/* XXX inet_ntoa */ (hc.hc_clientAddr));
+	return(false);		/* keep processing */
+      }
+      hc.hc_accepte = realloc_str(hc.hc_accepte, 
+				  C_strlen(hc.hc_accepte) +
+				  2 + C_strnlen(buf, pos));
+      C_strcat(hc.hc_accepte, ", ");
+    }
+    else
+      hc.hc_accepte = realloc_str(hc.hc_accepte, C_strnlen(buf,pos));
+    C_strncat(hc.hc_accepte, buf, pos);
+    /* break; */
+  case HO_IMSGET:
+    hc.hc_ifModifiedSince = tdate_parse(buf,pos);
+    if (hc.hc_ifModifiedSince == -1) 
+      fprintf(tal_stderr, "unparsable time: |%s|\n",  newCstring(buf,pos));
+    /* break; */
+  case HO_CONTENTLENGTH:
+    *(int) int_ret = ^(0);
+    if (read_int(buf,^(pos),int_ret))
+      hc.hc_contentLength = int_ret.1;
+    else
+      hc.hc_contentLength = -1;
+    /* break; */
+  case HO_PERSISTENT:
+    *(int) int_ret = ^(0);
+    if (read_int(buf,^(pos),int_ret))
+      hc.hc_isPersistentConnection = int_ret.1 == 0 ? false : true;
+    else
+      hc.hc_isPersistentConnection = false;
+
+    /* shut off nagle's algorithm */
+
+    if (!hc.hc_nagleOff) {
+      hc.hc_nagleOff = true;
+      try {
+	unix_setsockopt(hc.hc_fd, ^socket_option.SO_TCPNODELAY, 1);
+      } handle e {
+	fprintf(tal_stderr, "failed to disable nagle\n");
+      }
+    }
+    /* break; */
+  case HO_IGNORE:
+    /* break */;
+  }
+
+  return(false);		/* keep on processing the header */
+}
+
+/* ---------------------------------------------------------------- */
+void
+ReleaseHeaderInfo(HeaderInfoStruct his, bool connClosing)
+{
+  int i;
+  int unsent;
+  int num;
+  bool allDataProcessed;
+
+  his.his_rs = ^ReadState.RS_FIRST;
+
+  num = size(his.his_bufs);
+  unsent = his.his_unsentBufNum;
+
+  allDataProcessed = 
+    (his.his_unsentBufNum == his.his_availBufNum) &&
+      (his.his_unsentPos == his.his_availPos);
+
+  if (connClosing || allDataProcessed) {
+    /* "free" all but first buffer, but # buffers stays the same */
+    for (i = 1; i < num; i++) {
+      if (size(his.his_bufs[i]) != 0) {
+	his.his_bufs[i] = "";
+      }
+    }
+    
+    his.his_unsentBufNum = his.his_unsentPos =
+      his.his_availBufNum =  his.his_availPos = 0;
+  }
+  else {
+    if (unsent != 0) {
+      /* shift remaining buffers (thereby "freeing" the existing ones */
+      for (i = unsent; i < num; i++)
+	his.his_bufs[i-unsent] = his.his_bufs[i];
+      his.his_unsentBufNum = 0;
+      his.his_availBufNum -= unsent;
+
+      /* clear rest */
+      for (i = 1+his.his_availBufNum; i < num; i++)
+	his.his_bufs[i] = "";
+    }
+  }
+}
+
+/* ---------------------------------------------------------------- */
+HeaderInfoStruct
+InitHIS(httpd_conn hc)
+{
+  string bufs[1];
+  string extras[0];
+
+  bufs[0] = Core::new_string(PRR_BUFSIZE);
+
+  hc.hc_headerInfo = 
+    ^HeaderInfoStruct{
+      his_rs = ^ReadState.RS_FIRST,
+      his_unsentBufNum = 0,
+      his_unsentPos = 0,
+      his_availBufNum = 0,
+      his_availPos = 0,
+      his_conDataStartBuf = 0,
+      his_conDataStartPos = 0,
+      his_conDataLeft = 0,
+      his_bufs = bufs
+    };
+
+  return hc.hc_headerInfo;
+}
+/* ---------------------------------------------------------------- */
+static void
+GetNewBuffer(HeaderInfoStruct his)
+{
+  string rrb;
+
+  his.his_availPos = 0;
+  his.his_availBufNum++;
+  if (his.his_availBufNum == size(his.his_bufs)) {
+    /* allocate a new buffer pointer */
+    string oldbufs[] = his.his_bufs;
+    string newbufs[];
+
+    newbufs = new_array(size(his.his_bufs)+1,"");
+    for (int i = 0; i<size(oldbufs); i++)
+      newbufs[i] = oldbufs[i];
+    his.his_bufs = newbufs;
+  }
+  
+  if (size(his.his_bufs[his.his_availBufNum]) == 0) {
+    his.his_bufs[his.his_availBufNum] = Core::new_string(PRR_BUFSIZE);
+  }
+}
+/* ---------------------------------------------------------------- */
+static *(int,string)
+MakeCrossedString(HeaderInfoStruct his)
+{
+  int i, j;
+  int sz;
+  int firstBufLen;
+  string tempString;
+  string rrb;
+
+  /* start with # of bytes in first buffer */
+  firstBufLen = sz = size(his.his_bufs[his.his_unsentBufNum]) - 
+    his.his_unsentPos;
+
+  /* add number of bytes in last buffer */
+  sz += his.his_availPos;
+
+  /* walk through intermediate buffers, add their sizes */
+  for (i = his.his_unsentBufNum+1; i < his.his_availBufNum; i++)
+    sz += size(his.his_bufs[i]);
+
+  tempString = Core::new_string(sz);
+
+  /* first copy over partial buf */
+  C_strncpy(tempString, 0,
+	    his.his_bufs[his.his_unsentBufNum], his.his_unsentPos, 
+	    firstBufLen);
+
+  /* copy intermediate bufs */
+  for (i = his.his_unsentBufNum+1, j = firstBufLen; 
+       i < his.his_availBufNum; i++) {
+    rrb = his.his_bufs[i];
+    C_strncpy(tempString, j, rrb, 0, size(rrb));
+    j += size(rrb);
+  }
+
+  /* copy final buf */
+  C_strncpy(tempString, j, his.his_bufs[his.his_availBufNum], 0,
+	    his.his_availPos);
+
+  return ^(sz,tempString);
+}
+/* ---------------------------------------------------------------- */
+PRRTypes
+ProcessRequestReading(httpd_conn hc)
+{
+  /*
+     allocate if we need space
+     read in next buffer
+     if we're processing headers, put together next string and send
+     if we're just reading content data, keep track of it
+     */
+  HeaderInfoStruct his;
+  int readStart, readEnd;
+  string buf;
+  int i;
+  PRRTypes retVal = ^PRRTypes.PRR_DONE;
+  int res;
+
+  his = hc.hc_headerInfo;
+  if (his == null) {
+    his = InitHIS(hc);
+  }
+
+  /* if the buffer for reading is full, get a new one */
+  if (his.his_availPos == size(his.his_bufs[his.his_availBufNum])) {
+    fprint_string(tal_stderr,"Shouldn't get here ...\n");
+    GetNewBuffer(his);
+  }
+
+  /* read in next piece of input */
+  buf = his.his_bufs[his.his_availBufNum];
+  try {
+    res = unix_read(hc.hc_fd, buf, his.his_availPos, 
+		    size(buf) - his.his_availPos);
+    /*
+    fprintf(tal_stderr,"unix_read returned %d\n", res);
+    for (int i =0; i<res; i++) {
+      if (Char::is_printable(buf[i]))
+	fprint_char(tal_stderr,buf[i]);
+      else {
+	fprintf(tal_stderr,"[%d]",(:int)(buf[i]));
+     }
+    }
+    */
+  } handle e {
+    switch e {
+    case Unix_error *(code,syscall):
+      if (code == EAGAIN)
+	return (^PRRTypes.PRR_READMORE);
+      return (^PRRTypes.PRR_ERROR);
+    }
+  }
+  if (res == 0)
+    return (^PRRTypes.PRR_CLOSED);
+
+  readStart = his.his_availPos;
+  his.his_availPos += res;
+  readEnd = his.his_availPos;
+
+  if (his.his_rs == ^ReadState.RS_DATA) {
+    his.his_unsentBufNum = his.his_availBufNum;
+
+    if (res >= his.his_conDataLeft) {
+      /* if we've read enough, stop */
+      his.his_unsentPos = his.his_availPos - (res - his.his_conDataLeft);
+      his.his_conDataLeft = 0;
+      return (^PRRTypes.PRR_DONE);
+    }
+    his.his_conDataLeft -= res;
+    his.his_unsentPos = his.his_availPos;
+    return(^PRRTypes.PRR_READMORE);
+  }
+
+  /* process all the newlines in this batch */
+  for (i = readStart; i < readEnd; i++) {
+    string str;
+    int strOfs;
+    int strLen;
+
+    if (buf[i] != '\n')
+      continue;
+
+    buf[i] = '\000';
+
+    /* determine if the string is simple or crosses buffers */
+    if (his.his_availBufNum != his.his_unsentBufNum) {
+      *(int,string) res;
+      his.his_unsentPos = i+1;
+
+      res = MakeCrossedString(his);
+      str = res.2;
+      strLen = res.1;
+      strOfs = 0;
+
+      his.his_unsentBufNum = his.his_availBufNum;
+    }
+    else {
+      str = buf;
+      strOfs = his.his_unsentPos;
+      strLen = i - his.his_unsentPos;
+      his.his_unsentPos = i+1;
+      /*
+      fprintf(tal_stderr,"strOfs=%d,strLen=%d,contents=",
+	      strOfs,strLen);
+      for (int j =strOfs; j<strLen+strOfs; j++) {
+	if (Char::is_printable(str[j]))
+	  fprint_char(tal_stderr,str[j]);
+	else {
+	  fprintf(tal_stderr,"[%d]",(:int)(str[j]));
+	}
+      }
+      fprint_char(tal_stderr,'\n');
+      */
+    }
+    
+    if (his.his_rs == ^ReadState.RS_REST) {
+      if (ProcessRemainingHeaderLines(hc, str, strOfs)) {
+	/*
+	fprint_string(tal_stderr,"Done reading header lines\n");
+	printConn(hc);
+	*/
+	if (hc.hc_contentLength < 1) /* no other data */
+	  return(^PRRTypes.PRR_DONE);
+
+	his.his_conDataStartBuf = his.his_unsentBufNum;
+	his.his_conDataStartPos = his.his_unsentPos;
+
+	/* if we've read in all content data, we're done */
+	if (his.his_availPos - his.his_unsentPos >= hc.hc_contentLength) {
+	  his.his_unsentPos += hc.hc_contentLength;
+	  return(^PRRTypes.PRR_DONE);
+	}
+	/*	
+	fprint_string(tal_stderr,"Preparing to read content data\n");
+	*/
+	his.his_rs = ^ReadState.RS_DATA;
+	his.his_conDataLeft = hc.hc_contentLength - 
+	  (his.his_availPos - his.his_unsentPos);
+	his.his_unsentPos = his.his_availPos;
+	return(^PRRTypes.PRR_READMORE);
+      }
+    }
+    else if (his.his_rs == ^ReadState.RS_FIRST) {
+
+      /* if we're logging, copy the first line */
+      /*
+      if (accessLoggingEnabled) {
+	if (strLen+1 > hc.hc_maxOrigFirstLine) {
+	  if (!realloc_str(&hc.hc_origFirstLine, &hc.hc_maxOrigFirstLine, 
+			   strLen+1)) {
+	    fprintf(stderr, "couldn't realloc copy of first line\n");
+	    return(^PRRTypes.PRR_ERROR);
+	  }
+	}
+	memcpy(hc.hc_origFirstLine, str, strLen+1);
+	if (strLen > 0 && hc.hc_origFirstLine[strLen-1] == '\r') {
+	  hc.hc_origFirstLine[strLen-1] = '\0';
+	  strLen--;
+	}
+	hc.hc_origFirstLineLen = strLen;
+      }
+      */
+      his.his_rs = ^ReadState.RS_REST;
+      if (ProcessFirstHeaderLine(hc, str, strOfs) < 0)
+	return(^PRRTypes.PRR_ERROR);
+      if (!hc.hc_mimeFlag)
+	return(^PRRTypes.PRR_DONE);
+    }
+  }
+
+  return(^PRRTypes.PRR_READMORE);
+}
+#ifdef notdef
+/* ---------------------------------------------------------------- */
+struct iovec *
+MakeContentDataIOV(httpd_conn* hc, int *numElements)
+{
+  /* generate an iov array for all of the contentdata buffers */
+  HeaderInfoStruct *his;
+  int i;
+  int j;
+  struct iovec *ret;
+
+  his = hc.hc_headerInfo;
+  *numElements = 1 + his.his_unsentBufNum - his.his_conDataStartBuf;
+
+  ret = malloc(*numElements * sizeof(struct iovec));
+  if (!ret)
+    return(NULL);
+
+  ret[0].iov_base = his.his_bufs[his.his_conDataStartBuf].rrb_buf +
+    his.his_conDataStartPos;
+
+  if (*numElements == 1) {
+    ret[0].iov_len = his.his_unsentPos - his.his_conDataStartPos;
+  }
+  else {
+    /* set up first buffer and last buffer, then walk middle buffers*/
+
+    ret[0].iov_len = his.his_bufs[his.his_conDataStartBuf].rrb_size -
+      his.his_conDataStartPos;
+    j = *numElements-1;
+    ret[j].iov_base = his.his_bufs[his.his_unsentBufNum].rrb_buf;
+    ret[j].iov_len = his.his_unsentPos;
+    
+    for (i = his.his_conDataStartBuf+1, j = 1; 
+	 i < his.his_unsentBufNum; 
+	 i++, j++) {
+      ret[j].iov_base = his.his_bufs[i].rrb_buf;
+      ret[j].iov_len = his.his_bufs[i].rrb_size;
+    }
+  }
+  return(ret);
+}
+/* ---------------------------------------------------------------- */
+#endif

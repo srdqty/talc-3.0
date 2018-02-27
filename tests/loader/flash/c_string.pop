@@ -1,0 +1,297 @@
+/* ----------------------------------------------------------------
+ * Routines for using strings in a C-like manner.  Uses a null
+ * terminator to allow reusing the same string
+ * ---------------------------------------------------------------- */
+
+#include "handy.h"
+#include "core.h"
+#include "char.h"
+#include "string.h"
+
+/* ---------------------------------------------------------------- */
+int C_strlen(string s) {
+  int i;
+  for (i = 0; i<size(s); i++) {
+    if (s[i] == '\000')
+      return i;
+  }
+  return i;
+}
+
+/* ---------------------------------------------------------------- */
+int C_strnlen(string s, int ofs) {
+  int i;
+  
+  if (ofs > size(s) || ofs < 0)
+    raise Core::InvalidArg("C_strnlen");
+  
+  for (i = ofs; i<size(s); i++) {
+    if (s[i] == '\000')
+      break;
+  }
+  return i-ofs;
+}
+
+/* ---------------------------------------------------------------- */
+void C_strncat(string dest,string src,int srcOfs) {
+  int i, dsize, slen, dlen;
+
+  dsize = size(dest);
+  dlen = C_strlen(dest);
+  slen = C_strnlen(src,srcOfs);
+  
+  if ((slen + dlen) <= dsize) {
+    for (i = 0; i<slen; i++) {
+      dest[i+dlen] = src[i+srcOfs];
+    }
+    if (i != dsize)
+      dest[i+dlen] = '\000';
+  }
+  else
+    raise Core::InvalidArg("C_strncat");
+}
+
+/* ---------------------------------------------------------------- */
+void C_strcat(string dest,string src) {
+  C_strncat(dest,src,0);
+}
+
+/* ---------------------------------------------------------------- */
+void C_strcpy(string dest,string src) {
+  int len;
+  len = C_strlen(src);
+  Core::strncpy(dest,0,src,0,len);
+  if (len != size(dest))
+    dest[len] = '\000';
+}
+
+/* ---------------------------------------------------------------- */
+void C_strncpy(string dest,int dest_ofs,string src,int src_ofs,int len) {
+  Core::strncpy(dest,dest_ofs,src,src_ofs,len);
+}
+
+/* ---------------------------------------------------------------- */
+int C_strchr(string s, int ofs, char c) {
+  int endOfs;
+  endOfs = C_strnlen(s,ofs) + ofs;
+  for (int i = ofs; i<endOfs; i++) {
+    if (s[i] == c)
+      return i;
+  }
+  return -1;
+}
+
+/* ---------------------------------------------------------------- */
+int C_strrchr(string s, int ofs, char c) {
+  int endOfs;
+  endOfs = C_strnlen(s,ofs) + ofs;
+  for (int i = endOfs-1; i>=ofs; i--) {
+    if (s[i] == c)
+      return i;
+  }
+  return -1;
+}
+
+/* ---------------------------------------------------------------- */
+static int case_cmp(char c1, char c2) {
+  return (c1-c2);
+  /*
+  if (c1 < c2)
+    return(-1);
+  else if (c2 < c1)
+    return(1);
+  else
+    return(0);
+  */
+}
+
+static int nocase_cmp(char c1, char c2) {
+  return case_cmp(Char::to_upper(c1),Char::to_upper(c2));
+}
+
+static int ncmp(string s1, int ofs1, string s2, int ofs2, int n,
+		int f(char, char))
+{
+  int s1len = C_strnlen(s1,ofs1);
+  int s2len = C_strnlen(s2,ofs2);
+  int min_len = (s1len > s2len) ? s2len : s1len;
+  int bound = (min_len > n) ? n : min_len;
+
+  if (n < 0) 
+    raise Core::InvalidArg("C_strncmp");
+
+  for (int i=0; i < bound; i++) {
+    int retc;
+    if ((retc = f(s1[i+ofs1],s2[i+ofs2])) != 0)
+      return retc;
+  }
+  /*
+  if (min_len <= bound)
+    return(0);
+  if (s1len < s2len)
+    return(-1);
+  else 
+    return(1);
+  */
+  return(0);
+}
+
+#ifdef notdef
+static int ncmp(string s1, int ofs1, string s2, int ofs2, int len,
+		int f(char, char)) {
+  int s1len;
+  int s2len;
+
+  if (len < 0) 
+    raise Core::InvalidArg("C_strncmp");
+
+  s1len = C_strnlen(s1,ofs1);
+  s2len = C_strnlen(s2,ofs2);
+
+  if (len > s1len || len > s2len) raise Core::InvalidArg("C_strncmp");
+
+  for (int i=0; i < len; i++) {
+    int retc;
+    if ((retc = f(s1[i+ofs1],s2[i+ofs2])) != 0)
+      return retc;
+  }
+  return(0);
+}
+#endif
+
+static int cmp(string s1, int ofs1, string s2, int ofs2, int f(char, char)) {
+  int s1len;
+  int s2len;
+
+  s1len = C_strnlen(s1,ofs1);
+  s2len = C_strnlen(s2,ofs2);
+
+  int min_length = (s1len < s2len) ? s1len : s2len;
+  int i  = -1;
+  while (++i < min_length) {
+    int diff = f(s1[i+ofs1],s2[i+ofs2]);
+    if (diff != 0)
+      return diff;
+  }
+  return s1len-s2len;
+}
+
+/* ---------------------------------------------------------------- */
+int C_strncmp(string s1, int ofs1, string s2, int ofs2, int len) {
+  return ncmp(s1,ofs1,s2,ofs2,len,case_cmp);
+}
+
+/* ---------------------------------------------------------------- */
+int C_strncasecmp(string s1, int ofs1, string s2, int ofs2, int len) {
+  return ncmp(s1,ofs1,s2,ofs2,len,nocase_cmp);
+}
+
+/* ---------------------------------------------------------------- */
+int C_strcmp(string s1, int ofs1, string s2, int ofs2) {
+  return cmp(s1,ofs1,s2,ofs2,case_cmp);
+}
+
+/* ---------------------------------------------------------------- */
+string C_strdup(string src) {
+  int len;
+  string temp;
+
+  len = C_strlen(src);
+  temp = Core::new_string(len);
+  Core::strncpy(temp,0,src,0,len);
+  return temp;
+}
+
+/* ---------------------------------------------------------------- */
+int C_strpbrk(string s, int ofs, string accept) {
+  int i, j, lenofs;
+  lenofs = C_strnlen(s,ofs) + ofs;
+
+  if (ofs < 0 || ofs >= lenofs)
+    raise Core::InvalidArg("C_strpbrk");
+
+  for (i=ofs; i<lenofs; i++)
+    for (j=0; j<size(accept); j++)
+      if (s[i] == accept[j])
+	return i;
+  return -1;
+}
+
+/* ---------------------------------------------------------------- */
+int C_strspn(string s, int ofs, string accept) {
+  int i, j, lenofs;
+  lenofs = C_strnlen(s,ofs) + ofs;
+
+  if (ofs < 0 || ofs >= lenofs)
+    raise Core::InvalidArg("C_strspn");
+
+  for (i=ofs; i<lenofs; i++) {
+    for (j=0; j<size(accept); j++)
+      if (s[i] == accept[j])
+	break; /* inner loop */
+    if (j == size(accept)) /* didn't find it */
+      return i;
+  }
+      
+  return -1;
+}
+
+/* ---------------------------------------------------------------- */
+void C_fprint_string(FILE fd, string s, int ofs) {
+  /* Inefficient, but it will be useful for now */
+  int len;
+  len = C_strnlen(s,ofs); /* performs defensive checking */
+  if (ofs == 0 && len == size(s))
+    fprint_string(fd,s);
+  else
+    fprint_string(fd,String::substring(s,ofs,len));
+}
+
+void C_fprint_raw_string(FILE fd, string s, int ofs) {
+  int lenOfs;
+  lenOfs = C_strnlen(s,ofs) + ofs; /* performs defensive checking */  
+  for (int i =ofs; i<lenOfs ; i++) {
+    if (Char::is_printable(s[i]))
+      fprint_char(tal_stderr,s[i]);
+    else {
+      fprintf(tal_stderr,"[%d]",(:int)(s[i]));
+    }
+  }
+  fprint_char(tal_stderr,'\n');
+}
+
+/* ---------------------------------------------------------------- */
+string expand(string s, int sz) {
+  string temp;
+  int slen;
+
+  slen = C_strlen(s);
+  sz = MAX(sz,slen);
+  temp = Core::new_string(sz);
+
+  Core::strncpy(temp,0,s,0,slen);
+
+  if (slen != size(s))
+    temp[slen] = '\000';
+
+  return temp;
+}
+
+/* ---------------------------------------------------------------- */
+string
+realloc_str(string str, int sz)
+{
+  int maxsizeP = size(str);
+
+  if (maxsizeP == 0) {
+    maxsizeP = MAX(30, sz);	/* arbitrary */
+    str = Core::new_string(maxsizeP);
+    str[0] = '\000';
+  }
+  else if (sz > maxsizeP) {
+    maxsizeP = MAX(maxsizeP * 2, sz * 5 / 4);
+    str = expand(str, maxsizeP);
+  }
+
+  return str;
+}

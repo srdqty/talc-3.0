@@ -1,0 +1,25 @@
+// pe_dp.pop
+// Partially evaluated dot product.
+// NOT CURRENTLY supported.
+
+int dp_gen(int s, int u[])(int [])
+{
+  int i = 0;
+
+  return(compile(
+    int dp_spec(int v[])
+    {
+      int res = 0;
+
+      int g(int, int [])(int []) = dp_gen;
+
+      int f(int) = compile(int f(int i) { return(f(i+1)); });
+
+      int j = f(2);
+
+      suspend
+        for (i=0; i<s; i++)
+          resume { res = res + hole(u[i]) * v[hole(i)]; }
+      return res;
+    }));
+}

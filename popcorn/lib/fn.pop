@@ -1,0 +1,70 @@
+////////////////////////////////////////////////////////////////////////////
+// Popcorn library, file fn.pop                                           //
+// Copyright Greg Morrisett, Dan Grossman                                 //
+// January 1999, all rights reserved                                      //
+//                                                                        //
+// Defines "closures" and operations on them                              //
+////////////////////////////////////////////////////////////////////////////
+#include "core.h"
+#include "list.h"
+
+prefix Fn;
+open Fn;
+
+// a closure is a function pointer and abstract environment
+abstype <a,b>fn[c] = *(b f(c,a), c);
+
+<a,b>fn make_fn<a,b,c>(b f(c,a), c env) {
+  return ^fn(^(f,env));
+}
+
+// convert a function pointer to a closure
+<a,b>fn fp2fn<a,b>(b f(a)) {
+  b code<a,b>(b f(a), a arg) {
+    return(f(arg));
+  };
+  return make_fn(code@<a,b>,f);
+}
+
+// apply closure f to argument x
+b apply<a,b>(<a,b>fn f, a x) {
+  with f[c] = f do 
+    return f.1(f.2,x);
+}
+
+// produce g o f = f;g i.e., fn x => f(g(x))
+<a,c>fn compose<a,b,c>(<a,b>fn g, <b,c>fn f) {
+  c code<a,b,c>(*(<b,c>fn,<a,b>fn) f_and_g,a arg) {
+    <b,c>fn f = f_and_g.1;
+    <a,b>fn g = f_and_g.2;
+    return apply(f,apply(g,arg));
+  };
+  return make_fn(code@<a,b,c>,^(f,g));
+}
+
+// fn f => (fn x => fn y => f(x,y))
+<a,<b,c>fn>fn curry<a,b,c>(<*(a,b),c>fn f) {
+  <b,c>fn outer<a,b,c>(<*(a,b),c>fn f, a first) {
+    c inner<a,b,c>(*(<*(a,b),c>fn,a) env, b second) {
+      return apply(env.1,^(env.2,second));
+    };
+    return make_fn(inner@<a,b,c>,^(f,first));
+  };
+  return make_fn(outer@<a,b,c>,f);
+}
+
+// fn f => (fn (x,y) => f x y)
+<*(a,b),c>fn uncurry<a,b,c>(<a,<b,c>fn>fn f) {
+  c lambda<a,b,c>(<a,<b,c>fn>fn f,*(a,b) arg) {
+    return apply(apply(f,arg.1),arg.2);
+  };
+  return make_fn(lambda@<a,b,c>,f);
+}
+
+// map a closure across a list
+<b>List::list map_fn<a,b>(<a,b>fn f,<a>List::list x) {
+  return List::map_c(apply@<a,b>,f,x);
+}
+
+
+

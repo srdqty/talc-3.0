@@ -1,0 +1,546 @@
+/* Test file derived from RSA.  Tests arrays declared with sizes,
+   and unsigned arithmetic. */
+
+#include "core.h"
+open Core;
+
+#define ITERATE 40
+
+/* global.h */
+
+#define UINT2 unsigned int
+#define UINT4 unsigned int
+
+/* nn.h */
+#define NN_DIGIT UINT4
+#define NN_HALF_DIGIT UINT2
+#define NN_DIGIT_BITS 32
+#define NN_HALF_DIGIT_BITS 16
+/* Length of digit in bytes */
+#define NN_DIGIT_LEN (NN_DIGIT_BITS / 8)
+/* Maximum length in digits */
+#define MAX_NN_DIGITS \
+  ((MAX_RSA_MODULUS_LEN + NN_DIGIT_LEN - 1) / NN_DIGIT_LEN + 1)
+/* Maximum digits */
+#define MAX_NN_DIGIT 0xffffffff
+#define MAX_NN_HALF_DIGIT 0xffff
+
+#define LOW_HALF(x) ((x) & MAX_NN_HALF_DIGIT)
+#define HIGH_HALF(x) \
+  (((x) >>> NN_HALF_DIGIT_BITS) & MAX_NN_HALF_DIGIT)
+#define TO_HIGH_HALF(x) (((x)) << NN_HALF_DIGIT_BITS)
+#define DIGIT_MSB(x) (((x) >>> (NN_DIGIT_BITS - 1)) & 1)
+#define DIGIT_2MSB(x) (((x) >>> (NN_DIGIT_BITS - 2)) & 3)
+
+#define NN_ASSIGN_DIGIT(a, b, digits) {NN_AssignZero (a, digits); a[0] = b;}
+
+#define MAX_RSA_MODULUS_BITS 2048
+#define MAX_RSA_MODULUS_LEN ((MAX_RSA_MODULUS_BITS + 7) / 8) 
+
+void debugMsg(string s) {
+  if (false) {
+    printf("%s",s);
+    fflush(tal_stdout);
+  }
+}
+
+void dumpArray(string s,NN_DIGIT a[], unsigned int digits)
+{
+  unsigned int i;
+
+  print_string(s);
+  print_string("[");
+  print_int(digits);
+  print_string("] ");
+
+  for (i = 0; i < digits; i++) {
+    print_int(a[i]);
+    print_string(" ");
+  }
+
+  print_string("\n");
+}
+
+int Dyn;
+
+/*****************************************************************************
+ * digit.c
+ *****************************************************************************/
+
+/* Computes a = b * c, where b and c are digits.
+
+   Lengths: a[2].
+ */
+void NN_DigitMult (NN_DIGIT a[], NN_DIGIT b, NN_DIGIT c)
+{
+  debugMsg("NN_DigitMult\n"); 
+
+  NN_DIGIT t, u;
+  NN_HALF_DIGIT bHigh, bLow, cHigh, cLow;
+
+  bHigh = HIGH_HALF (b);
+  bLow = LOW_HALF (b);
+  cHigh = HIGH_HALF (c);
+  cLow = LOW_HALF (c);
+
+  a[0] = bLow * cLow;
+  t = bLow * cHigh;
+  u = bHigh * cLow;
+
+  a[1] = bHigh * cHigh;
+  
+  if ((t += u) < u)
+    a[1] += TO_HIGH_HALF (1);
+  u = TO_HIGH_HALF (t);
+  
+  if ((a[0] += u) < u)
+    a[1]++;
+
+  a[1] += HIGH_HALF (t);
+
+}
+
+/* Sets a = b / c, where a and c are digits.
+
+   Lengths: b[2].
+   Assumes b[1] < c and HIGH_HALF (c) > 0. For efficiency, c should be
+   normalized.
+ */
+NN_DIGIT NN_DigitDiv (NN_DIGIT b[], int b_start, NN_DIGIT c)
+{
+  debugMsg("NN_DigitDiv\n"); 
+
+  NN_DIGIT t[2], u, v;
+  NN_HALF_DIGIT aHigh, aLow, cHigh, cLow;
+
+  cHigh = HIGH_HALF (c);
+  cLow = LOW_HALF (c);
+
+  t[0] = b[b_start];
+  t[1] = b[b_start+1];
+
+  /* Underestimate high half of quotient and subtract.
+   */
+  if (cHigh == MAX_NN_HALF_DIGIT) {
+    aHigh = HIGH_HALF (t[1]);
+  }
+  else {
+    aHigh = (t[1] / (cHigh + 1));
+  }
+  u = aHigh * cLow;
+  v = aHigh * cHigh;
+
+  if ((t[0] -= TO_HIGH_HALF (u)) > (MAX_NN_DIGIT - TO_HIGH_HALF (u))) {
+    t[1]--;
+  }
+
+  t[1] -= HIGH_HALF (u);
+  t[1] -= v;
+
+  /* Correct estimate.
+   */
+  while ((t[1] > cHigh) ||
+         ((t[1] == cHigh) && (t[0] >= TO_HIGH_HALF (cLow)))) {
+    if ((t[0] -= TO_HIGH_HALF (cLow)) > MAX_NN_DIGIT - TO_HIGH_HALF (cLow)) {
+      t[1]--;
+    }
+    t[1] -= cHigh;
+    aHigh++;
+  }
+
+  /* Underestimate low half of quotient and subtract.
+   */
+  if (cHigh == MAX_NN_HALF_DIGIT)
+    aLow = LOW_HALF (t[1]);
+  else
+    aLow = ((TO_HIGH_HALF (t[1]) + HIGH_HALF (t[0])) / (cHigh + 1));
+  u = aLow * cLow;
+  v = aLow * cHigh;
+
+  if ((t[0] -= u) > (MAX_NN_DIGIT - u))
+    t[1]--;
+  if ((t[0] -= TO_HIGH_HALF (v)) > (MAX_NN_DIGIT - TO_HIGH_HALF (v)))
+    t[1]--;
+  t[1] -= HIGH_HALF (v);
+
+  /* Correct estimate.
+   */
+  while ((t[1] > 0) || ((t[1] == 0) && t[0] >= c)) {
+    if ((t[0] -= c) > (MAX_NN_DIGIT - c))
+      t[1]--;
+    aLow++;
+  }
+  
+  return(TO_HIGH_HALF (aHigh) + aLow);
+}
+
+/*****************************************************************************
+ * nn.c
+ *****************************************************************************/
+
+/* Assigns a = b.
+
+   Lengths: a[digits], b[digits].
+ */
+void NN_Assign (NN_DIGIT a[], NN_DIGIT b[], unsigned int digits)
+{
+  unsigned int i;
+
+  for (i = 0; i < digits; i++)
+    a[i] = b[i];
+}
+
+/* Assigns a = 0.
+
+   Lengths: a[digits].
+ */
+void NN_AssignZero (NN_DIGIT a[], unsigned int digits)
+{
+  debugMsg("NN_AssignZero\n"); 
+
+  unsigned int i;
+
+  for (i = 0; i < digits; i++)
+    a[i] = 0;
+}
+
+/* Returns the significant length of a in digits.
+
+   Lengths: a[digits].
+ */
+int NN_Digits (NN_DIGIT a[], unsigned int digits)
+{
+  int i;
+  
+  for (i = digits - 1; i >= 0; i--)
+    if (a[i]!=0)
+      /* break; */
+      return (i + 1);
+
+  return (i + 1);
+}
+
+/* Computes a = b * 2^c (i.e., shifts left c bits), returning carry.
+
+   Lengths: a[digits], b[digits].
+   Requires c < NN_DIGIT_BITS.
+ */
+NN_DIGIT NN_LShift (NN_DIGIT a[], NN_DIGIT b[], unsigned int c, unsigned int digits)
+{
+  debugMsg("NN_LShift\n"); 
+
+  NN_DIGIT bi, carry;
+  unsigned int i, t;
+  
+  if (c >= NN_DIGIT_BITS)
+    return (0);
+  
+  t = NN_DIGIT_BITS - c;
+
+  carry = 0;
+
+  for (i = 0; i < digits; i++) {
+    bi = b[i];
+    a[i] = (bi << c) | carry;
+    carry = (c!=0) ? (bi >>> t) : 0;
+  }
+  
+  return (carry);
+}
+
+/* Computes a = c div 2^c (i.e., shifts right c bits), returning carry.
+
+   Lengths: a[digits], b[digits].
+   Requires: c < NN_DIGIT_BITS.
+ */
+NN_DIGIT NN_RShift (NN_DIGIT a[], NN_DIGIT b[], unsigned int c, unsigned int digits)
+{
+  NN_DIGIT bi, carry;
+  int i;
+  unsigned int t;
+  
+  if (c >= NN_DIGIT_BITS)
+    return (0);
+  
+  t = NN_DIGIT_BITS - c;
+
+  carry = 0;
+
+  for (i = digits - 1; i >= 0; i--) {
+    bi = b[i];
+    a[i] = (bi >>> c) | carry;
+    carry = (c!=0) ? (bi << t) : 0;
+  }
+  
+  return (carry);
+}
+
+/* Computes a = c div d and b = c mod d.
+
+   Lengths: a[cDigits], b[dDigits], c[cDigits], d[dDigits].
+   Assumes d > 0, cDigits < 2 * MAX_NN_DIGITS,
+           dDigits < MAX_NN_DIGITS.
+ */
+
+int count_nn_div = 0;
+
+void NN_Div (NN_DIGIT a[], NN_DIGIT b[], NN_DIGIT c[], unsigned int cDigits,
+             NN_DIGIT d[], unsigned int dDigits)
+{
+  debugMsg("NN_Div\n"); 
+
+  NN_DIGIT ai, cc[2*MAX_NN_DIGITS+1], dd[MAX_NN_DIGITS], t;
+  int i;
+  unsigned int ddDigits, shift;
+
+  ddDigits = NN_Digits (d, dDigits);
+  if (ddDigits == 0)
+    return;
+
+  shift = NN_DIGIT_BITS - NN_DigitBits (d[ddDigits-1]);
+  NN_AssignZero (cc, ddDigits);
+  cc[cDigits] = NN_LShift (cc, c, shift, cDigits);
+  NN_LShift (dd, d, shift, ddDigits);
+  t = dd[ddDigits-1];
+  
+  NN_AssignZero (a, cDigits);
+
+  for (i = cDigits-ddDigits; i >= 0; i--) {
+
+    if (t == MAX_NN_DIGIT)
+      ai = cc[i+dDigits];
+    else
+      ai = NN_DigitDiv (cc, i+ddDigits-1, t + 1);
+
+    cc[i+ddDigits] -= NN_SubDigitMult (cc, cc, i, ai, dd, ddDigits);
+
+    while ((cc[i+ddDigits]!=0) || (NN_Cmp (cc, i, dd, ddDigits) >= 0)) {
+      ai++;
+      cc[i+ddDigits] -= NN_Sub (cc, cc, i, dd, ddDigits);
+    }
+    
+    a[i] = ai;
+  }
+
+  NN_AssignZero (b, dDigits);
+  NN_RShift (b, cc, shift, ddDigits);
+
+}
+
+/* Computes a = b + c*d, where c is a digit. Returns carry.
+
+   Lengths: a[digits], b[digits], d[digits].
+ */
+NN_DIGIT NN_AddDigitMult (NN_DIGIT a[], NN_DIGIT b[], int ab_start,
+                          NN_DIGIT c, NN_DIGIT d[], unsigned int digits)
+{
+  debugMsg("NN_AddDigitMult\n"); 
+
+  NN_DIGIT carry, t[2];
+  unsigned int i;
+
+  if (c == 0)
+    return (0);
+
+  carry = 0;
+  for (i = 0; i < digits; i++) {
+    NN_DigitMult (t, c, d[i]);
+    if ((a[ab_start+i] = b[ab_start+i] + carry) < carry)
+      carry = 1;
+    else
+      carry = 0;
+    if ((a[ab_start+i] += t[0]) < t[0])
+      carry++;
+    carry += t[1];
+  }
+  
+  return (carry);
+}
+
+/* Computes a = b - c. Returns borrow.
+
+   Lengths: a[digits], b[digits], c[digits].
+ */
+NN_DIGIT NN_Sub (NN_DIGIT a[], NN_DIGIT b[], int ab_start,
+                 NN_DIGIT c[], unsigned int digits)
+{
+  debugMsg("NN_Sub\n"); 
+
+  NN_DIGIT ai, borrow;
+  unsigned int i;
+
+  borrow = 0;
+
+  for (i = 0; i < digits; i++) {
+    if ((ai = b[ab_start+i] - borrow) > (MAX_NN_DIGIT - borrow))
+      ai = MAX_NN_DIGIT - c[i];
+    else if ((ai -= c[i]) > (MAX_NN_DIGIT - c[i]))
+      borrow = 1;
+    else
+      borrow = 0;
+    a[ab_start+i] = ai;
+  }
+
+  return (borrow);
+}
+
+/* Computes a = b * c.
+
+   Lengths: a[2*digits], b[digits], c[digits].
+   Assumes digits < MAX_NN_DIGITS.
+ */
+void NN_Mult (NN_DIGIT a[], NN_DIGIT b[], NN_DIGIT c[], unsigned int digits)
+{
+  debugMsg("NN_Mult\n"); 
+
+  NN_DIGIT t[2*MAX_NN_DIGITS];
+  unsigned int bDigits, cDigits, i;
+
+  NN_AssignZero (t, 2 * digits);
+  
+  bDigits = NN_Digits (b, digits);
+  cDigits = NN_Digits (c, digits);
+
+  for (i = 0; i < bDigits; i++)
+    t[i+cDigits] += NN_AddDigitMult (t, t, i, b[i], c, cDigits);
+  
+  NN_Assign (a, t, 2 * digits);
+  
+}
+
+/* Computes a = b mod c.
+
+   Lengths: a[cDigits], b[bDigits], c[cDigits].
+   Assumes c > 0, bDigits < 2 * MAX_NN_DIGITS, cDigits < MAX_NN_DIGITS.
+ */
+void NN_Mod (NN_DIGIT a[], NN_DIGIT b[], unsigned int bDigits, NN_DIGIT c[], unsigned int cDigits)
+{
+  debugMsg("NN_Mod\n"); 
+
+  NN_DIGIT t_mod[2 * MAX_NN_DIGITS];
+  
+  NN_Div (t_mod, a, b, bDigits, c, cDigits);
+  
+}
+
+/* Computes a = b * c mod d.
+
+   Lengths: a[digits], b[digits], c[digits], d[digits].  Assumes d > 0, digits
+< MAX_NN_DIGITS.  */ 
+
+void NN_ModMult (NN_DIGIT a[], NN_DIGIT b[], NN_DIGIT c[], NN_DIGIT d[],
+                 unsigned int digits)
+{
+  debugMsg("NN_ModMult\n"); 
+
+  NN_DIGIT t_mm[2*MAX_NN_DIGITS];
+  NN_Mult (t_mm, b, c, digits);
+  NN_Mod (a, t_mm, 2 * digits, d, digits);
+  
+}
+
+/* Returns sign of a - b.
+
+   Lengths: a[digits], b[digits].
+ */
+int NN_Cmp (NN_DIGIT a[], int a_start, NN_DIGIT b[], unsigned int digits)
+{
+  debugMsg("NN_Cmp\n"); 
+
+  int i;
+  
+  for (i = digits - 1; i >= 0; i--) {
+    if (a[a_start+i] > b[i]) {
+      return (1);
+    }
+    if (a[a_start+i] < b[i]) {
+      return (-1);
+    }
+  }
+
+  return (0);
+}
+
+/* Computes a = b - c*d, where c is a digit. Returns borrow.
+
+   Lengths: a[digits], b[digits], d[digits].
+ */
+NN_DIGIT NN_SubDigitMult (NN_DIGIT a[], NN_DIGIT b[], int ab_start,
+                          NN_DIGIT c, NN_DIGIT d[], unsigned int digits)
+{
+  debugMsg("NN_SubDigitMult\n"); 
+
+  NN_DIGIT borrow, t[2];
+  unsigned int i;
+
+  if (c == 0)
+    return (0);
+
+  borrow = 0;
+  for (i = 0; i < digits; i++) {
+    NN_DigitMult (t, c, d[i]);
+    if ((a[ab_start+i] = b[ab_start+i] - borrow) > (MAX_NN_DIGIT - borrow))
+      borrow = 1;
+    else
+      borrow = 0;
+    if ((a[ab_start+i] -= t[0]) > (MAX_NN_DIGIT - t[0]))
+      borrow++;
+    borrow += t[1];
+  }
+  
+  debugMsg("exit NN_SubDigitMult\n"); 
+
+  return (borrow);
+}
+
+/* Returns the significant length of a in bits, where a is a digit.
+ */
+unsigned int NN_DigitBits (NN_DIGIT a)
+{
+  unsigned int i;
+  
+  for (i = 0; i < NN_DIGIT_BITS; i++) {
+    if (a == 0)
+      /* break; */
+      return (i);
+    a >>>= 1;
+  }    
+  return (i);
+}
+
+/*****************************************************************************
+ * main
+ *****************************************************************************/
+
+void pop_main()
+{
+  /* These arrays no longer the same as in rsa. */
+  unsigned int t[] = {(: unsigned int)4, 11, 41, 32, 75, 40, 19, 56,
+             0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+             0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+             0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+             0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+             0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+             0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+             0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+             0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
+  unsigned int d[] = {(: unsigned int)15, 34, 30, 14, 27, 34, 14, 82,
+             0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+             0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+             0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+             0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+             0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+             0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+             0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+             0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
+  int i;
+
+  /* Computes t = t^t mod d. */
+  for(i = 0; i < ITERATE; i++) {
+    NN_ModMult (t, t, t, d, 8);
+  }
+
+  dumpArray("t",t, 8);
+
+}
+

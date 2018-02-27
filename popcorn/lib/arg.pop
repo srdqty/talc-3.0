@@ -1,0 +1,148 @@
+
+// doesn't call exit b/c tal.tali doesn't give it a Popcorn type
+// instead raises exception which is perhaps better anyway.
+
+// Dan blatantly stole this from these guys:
+/***********************************************************************)
+(*                                                                     *)
+(*                           Objective Caml                            *)
+(*                                                                     *)
+(*            Xavier Leroy, projet Cristal, INRIA Rocquencourt         *)
+(*                                                                     *)
+(*  Copyright 1996 Institut National de Recherche en Informatique et   *)
+(*  Automatique.  Distributed only by permission.                      *)
+(*                                                                     *)
+(***********************************************************************/
+
+#include "core.h"
+#include "list.h"
+open Core;
+open List;
+
+prefix Arg;
+open   Arg;
+
+exception Error;
+
+struct bool_ref { bool v; }
+
+
+union spec {
+  void Unit();          // Call the function with unit argument     
+  bool_ref Set;         // Set the reference to true                
+  bool_ref Clear;       // Set the reference to false               
+  void String(string);  // Call the function with a string argument 
+  void Int(int);        // Call the function with an int argument   
+  void Rest(string);    // Stop interpreting keywords and call the
+                           // function with each remaining argument 
+}
+
+exception Bad(string);
+
+static union error {
+  string Unknown;
+  string Missing;
+  string Message;
+  *(string,string,string) Wrong;  // option, actual, expected 
+}
+
+static b assoc3<a,b,c> (int compare(a,a), a x, <*(a,b,c)>list l) {
+  while (l != null) {
+    if (compare(x,l.hd.1) == 0) 
+      return l.hd.2;
+    l = l.tl;
+  }
+  raise Not_found();
+}
+
+void usage(<*(string,spec,string)>list speclist, string errmsg) {
+  fprintf(tal_stderr, "%s\n", errmsg);
+  while (speclist != null) {
+    fprintf(tal_stderr, " %s %s\n", speclist.hd.1, speclist.hd.3);
+    speclist = speclist.tl;
+  }
+}
+
+int current = 0;
+
+static void stop(int prog_pos, error e,
+	  <*(string,spec,string)>list speclist, string errmsg ) {
+  string progname = prog_pos < size(tal_args) ? tal_args[prog_pos] : "(?)";
+  switch e {
+  case Unknown(s): 
+     if (strcmp(s,"-help")!=0) 
+       fprintf(tal_stderr, "%s: unknown option `%s'.\n", progname, s);
+  case Missing(s):
+     fprintf(tal_stderr, "%s: option `%s' needs an argument.\n", progname, s);
+  case Wrong(x):
+     fprintf(tal_stderr, "%s: wrong argument `%s'; option `%s' expects %s.\n",
+             progname, x.2, x.1, x.3);
+  case Message(s):
+     fprintf(tal_stderr, "%s: %s.\n", progname, s);
+  }
+  usage(speclist, errmsg);
+  raise Error(); // should exit here
+}
+
+string tal_args[] = {:string};
+
+void parse(<*(string,spec,string)>list speclist, void anonfun(string),
+	       string errmsg) {
+  tal_args = std_args();
+
+  int initpos = current;
+  int l       = size(tal_args);
+  ++current;
+  while (current < l) {
+    string s = tal_args[current];
+    if (size(s) >= 1 && s[0] == '-') {
+      spec action = ^spec.Set(^bool_ref(true)); // dummy initialization 
+      try 
+	action = assoc3(strcmp, s, speclist);
+      handle y switch y { 
+      case Not_found: stop(initpos, ^error.Unknown(s), speclist, errmsg);
+      }
+      try 
+      switch action {
+      case Unit(f): f();
+      case Set(r):   r.v = true;
+      case Clear(r): r.v = false;
+      case String(f): 
+	if (current+1 < l) {
+	  f(tal_args[current+1]);
+          ++current;
+    	} else 
+	  stop(initpos, ^error.Missing(s), speclist, errmsg);
+      case Int(f):
+	string arg = tal_args[current+1];
+	int n;
+	try n = int_of_string(arg);
+	handle y switch y { 
+	case InvalidArg(x): 
+	  return stop(initpos,^error.Wrong(^(s,arg, "an integer")),
+		      speclist,errmsg);
+	default: raise (y);
+	}
+	f(n);
+	++current;
+      case Rest(f):
+	while (current < l-1) {
+	  f(tal_args[current+1]);
+	  ++current;
+	}
+      }
+      handle y switch y {
+      case Bad(s): stop(initpos, ^error.Message(s), speclist, errmsg);
+      }
+      ++current;
+    }
+    else {
+      try anonfun(s);
+      handle y switch y {
+      case Bad(s): stop(initpos, ^error.Message(s), speclist, errmsg);
+      }
+      ++current;
+    }
+  }
+}
+

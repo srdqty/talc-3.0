@@ -1,0 +1,85 @@
+/* This is the top-level loop of a simple, event-based program. */
+
+#include "events2.h"
+#include "core.h"
+#include "dlpop.h"
+#include "queue.h"
+#include "string.h"
+open Core;
+
+/* Event actions.  The loop will call this function with each received
+   event.  In the future, the loop will tend not change, but this
+   function will. */
+
+bool process_event(event e) {
+  print_string(event2string(e));
+  print_string("\n");
+  switch e {
+  case Tick: 
+    ; /* nothing */
+  case Load(filename):
+    load_file(filename);
+  }
+  return true;
+}
+
+static void load_file(string filename) {
+  print_string("Loading file ");
+  print_string(filename);
+  print_string("...\n");
+  try {
+    handle_t h;
+    h = dlopen(filename);
+  } handle y {
+    switch y {
+    case WrongType(s): {
+      print_string ("Wrong type for symbol : ");
+      print_string (s);
+    }
+    case SymbolNotFound(s): {
+      print_string ("Can't find symbol : ");
+      print_string (s);
+    }
+    case FailsTypeCheck: {
+      print_string ("File doesn't type-check");
+    }
+    case Core::FileOpenError(s): {
+      print_string ("Can't open file : ");
+      print_string (s);
+    }
+    // default:
+      // print_string ("Exception Raised");
+    }
+    print_string ("\n");
+  }
+}
+
+/* Obtaining events. */
+
+exception No_event;
+
+static FILE events_fd;
+static string eventstr = /* hack to create a string buffer */
+"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+event get_next_event() {
+  event e;
+  Core::print_string("in proc_events2:get_next_event\n");
+  try {
+    int numc = Core::file_gets(eventstr,0,events_fd);
+    printf("proc_events2:file_gets returned %d\n",numc);
+    if (numc == 0)
+      raise (^No_event());
+    e = string2event(String::substring(eventstr,0,numc));
+  } handle x {
+    Core::file_close(events_fd);
+    raise (^No_event());
+  }
+  return e;
+}
+
+void init_events(string filename) {
+  printf("proc_events2: opening %s\n",filename);
+  events_fd = Core::file_open(filename,"r");
+}
+

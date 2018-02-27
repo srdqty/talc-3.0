@@ -1,0 +1,1321 @@
+
+// TO DO: ccinfo printing, Chptr tco field printing
+// TO DO: pp_tal_int_type
+
+#include "core.h"
+#include "list.h"
+#include "dict.h"
+#include "id.h"
+#include "xarray.h"
+#include "tal.h"
+
+open Core;
+open List;
+open Id;
+open Tal;
+
+prefix Talpp;
+open   Talpp;
+
+////////////////////////////////////////////////////////////////////////////
+// Tal in popcorn, file talpp.pop                                         //
+// Copyright Greg Morrisett, Dan Grossman                                 //
+// January 1999, all rights reserved                                      //
+// Ported from caml code Copyright June 1998, Morrisett, Glew             //
+////////////////////////////////////////////////////////////////////////////
+
+// This is the pseudo-port of talpp
+// Notice we don't actually pretty-print -- just spit and put line
+// breaks at obvious places (like after each instruction).
+// We'll drop any pretense of pp formatting and GAS support as well.
+// Also drop error message formatting, etc.  Just print
+// the tal datatype.
+
+FILE output_file = null; // set in pp_tal_imp
+
+exception Unimplemented(string);
+//extern exception InvalidArg   (string);
+
+void pp_string(string s) { fprint_string (output_file,s); }
+void pp_newline()        { fprint_newline(output_file)  ; }
+void pp_int   (int  i)   { fprint_int    (output_file,i); }
+void pp_char  (char c)   { fprint_char   (output_file,c); }
+void pp_id    (id   i)   { id_prn        (output_file,i); }
+
+/////////////////////////////STRING SHARING///////////////////
+// Feel free to remove all this if the popcorn compiler ever does it for us
+static  string empty_str = "";
+static  string comma_str = ",";
+static  string lp_str    = "(";
+static  string rp_str    = ")";
+
+////////////////////////////UTILITIES/////////////////////////
+static void sep<a>(void f(a), string s, <a>list l) {
+  if (l == null) return;
+  while (l.tl != null) {
+    f(l.hd);
+    pp_string(s);
+    l = l.tl;
+  }
+  f(l.hd);
+}
+static void sep_env<a,b>(void f(b,a), b env, string s, <a>list l) {
+  if (l == null) return;
+  while (l.tl != null) {
+    f(env,l.hd);
+    pp_string(s);
+    l = l.tl;
+  }
+  f(env,l.hd);
+} 
+static void sepc<a>(void f(a), <a>list l) { sep(f, comma_str, l); }
+    
+/////////////////////////////MISC/////////////////////////////
+
+void pp_scale(scale s) {
+  switch s {
+  case Byte1: pp_char('1');
+  case Byte2: pp_char('2');
+  case Byte4: pp_char('4');
+  case Byte8: pp_char('8');
+  }
+}
+
+void pp_fpstack(fpstack f) {
+  bool first = true;
+  for(_ i=0;i<8;i++) {
+    switch fpstack_get(f,i) {
+    case FPempty: ;
+    case FPfull: 
+      if(!first) pp_char(',');
+      first = false;
+      pp_string("ST");
+      pp_int(i);
+    case FPany:
+      if(!first) pp_char(',');
+      first = false;
+      pp_string("ST");
+      pp_int(i);
+      pp_string("?");
+    }
+  }
+}
+
+void pp_fpreg(int i) {
+  if(i==0) pp_string("ST");
+  else {
+    pp_string("ST(");
+    pp_int(i);
+    pp_char(')');
+  }
+}
+
+void pp_fpregs(bool b,int i) {
+  if(b) { pp_fpreg(0); pp_char(','); pp_fpreg(i); }
+  else  { pp_fpreg(i); pp_char(','); pp_fpreg(0); } 
+}
+
+void pp_fpmem(scale sc, genop g) {
+  switch sc {
+  case Byte2:
+    switch g {
+    case Reg(r): if(r==^.Eax) { pp_string("AX"); return; }
+    default: ;
+    }
+  default: ;
+  }
+
+  switch sc {
+  case Byte2: pp_string("WORD PTR ");
+  case Byte4: pp_string("DWORD PTR ");
+  case Byte8: pp_string("QWORD PTR ");
+  default: raise InvalidArg("pp_fpmem");
+  }
+  pp_genop(g);
+}
+
+bool implicit_st(fpsomeargs p) {
+  switch p {
+  case Fcom:   return true;
+  case Fcomp:  return true;
+  case Fucom:  return true;
+  case Fucomp: return true;
+  default:     return false;
+  }
+}
+
+void pp_fpargs(bool implicit_st, fpargs args) {
+  switch args {
+  case FPstack(i): pp_fpreg(i);
+  case FPstack2 *(b,i):
+    if(implicit_st) pp_fpreg(i);
+    else pp_fpregs(b,i);
+  case FPgenop *(s,g): pp_fpmem(s,g);
+  }
+}
+
+string string_of_fpnoargs(fpnoargs op) {
+  switch op {
+    case F2xm1:   return "F2XM1";
+    case Fabs:    return "FABS";
+    case Fchs:    return "FCHS";
+    case Fclex:   return "FCLEX";
+    case Fnclex:  return "FNCLEX";
+    case Fcompp:  return "FCOMPP";
+    case Fucompp: return "FUCOMPP";
+    case Fcos:    return "FCOS";
+    case Fdecstp: return "FDECSTP";
+    case Fincstp: return "FINCSTP";
+    case Finit:   return "FINIT";
+    case Fninit:  return "FNINIT";
+    case Fld1:    return "FLD1";
+    case Fldz:    return "FLDZ";
+    case Fldpi:   return "FLDPI";
+    case Fldl2e:  return "FLDL2E";
+    case Fldl2t:  return "FLDL2T";
+    case Fldlg2:  return "FLDLG2";
+    case Fldln2:  return "FLDLN2";
+    case Fnop:    return "FNOP";
+    case Fpatan:  return "FPATAN";
+    case Fprem:   return "FPREM";
+    case Fprem1:  return "FPREM1";
+    case Fptan:   return "FPTAN";
+    case Frndint: return "FRNDINT";
+    case Fscale:  return "FSCALE";
+    case Fsin:    return "FSIN";
+    case Fsincos: return "FSINCOS";
+    case Fsqrt:   return "FSQRT";
+    case Ftst:    return "FTST";
+    case Fwait:   return "FWAIT";
+    case Fxam:    return "FXAM";
+    case Fxtract: return "FXTRACT";
+    case Fyl2x:   return "FYL2X";
+    case Fyl2xp1: return "FYL2XP1";
+  }
+}
+
+void pp_fpnoargs(fpnoargs op) {
+  pp_string (string_of_fpnoargs(op));
+}
+
+string string_of_fpsomeargs(fpsomeargs op) {
+  switch op {
+    case Fadd:    return "FADD";
+    case Fcom:    return "FCOM";
+    case Fcomp:   return "FCOMP";
+    case Fdiv:    return "FDIV";
+    case Fdivr:   return "FDIVR";
+    case Fmul:    return "FMUL";
+    case Fsub:    return "FSUB";
+    case Fsubr:   return "FSUBR";
+    case Fucom:   return "FUCOM";
+    case Fxch:    return "FXCH";
+    case Fiadd:   return "FIADD";
+    case Ficom:   return "FICOM";
+    case Ficomp:  return "FICOMP";
+    case Fidiv:   return "FIDIV";
+    case Fidivr:  return "FIDIVR";
+    case Fimul:   return "FIMUL";
+    case Fisub:   return "FISUB";
+    case Fisubr:  return "FISUBR";
+    case Faddp:   return "FADDP";
+    case Fdivp:   return "FDIVP";
+    case Fdivrp:  return "FDIVRP";
+    case Fmulp:   return "FMULP";
+    case Fsubp:   return "FSUBP";
+    case Fsubrp:  return "FSUBRP";
+    case Fucomp:  return "FUCOMP";
+    case Fst:     return "FST";
+    case Fstp:    return "FSTP";
+    case Fist:    return "FIST";
+    case Fistp:   return "FISTP";
+    case Fld:     return "FLD";
+    case Fild:    return "FILD";
+    case Ffree:   return "FFREE";
+    case Fcomi:   return "FCOMI";
+    case Fcomip:  return "FCOMIP";
+    case Fucomi:  return "FUCOMI";
+    case Fucomip: return "FUCOMIP";
+    case Fstsw:   return "FSTSW";
+    case Fnstsw:  return "FNSTSW";
+  }
+}
+
+void pp_fpsomeargs(fpsomeargs op) {
+  pp_string(string_of_fpsomeargs(op));
+}
+
+string string_of_log(log l) {
+  switch l {
+  case Cadd:  return "++";
+  case Csub:  return "-";
+  case Cmuls: return "*#";
+  case Cmulu: return "*u";
+  case Cand:  return " && ";
+  case Cor:   return " | ";
+  case Cimp:  return " =!> ";
+  case Ciff:  return " iff ";
+  case Cnot:  return "~";
+  case Clts:  return "<#";
+  case Cltu:  return "<";
+  case Cltes: return "<=#";
+  case Clteu: return "<=";
+  }
+}
+string string_of_reg(reg r) {
+  switch r {               // ml has lowercase since used elsewhere
+  case Eax:     return "A";
+  case Ebx:     return "B";
+  case Ecx:     return "C";
+  case Edx:     return "D";
+  case Esi:     return "SI";
+  case Edi:     return "DI";
+  case Ebp:     return "BP";
+  case Esp:     return "SP";
+  case Virt(i): return strconcat("V",Id::id_to_string(i));
+  }
+}
+void pp_reg_part(reg r, reg_part p) {
+  bool   x_reg  = false;
+  string before = empty_str;
+  string after  = empty_str;
+  
+  switch r {
+  case Eax:     x_reg = true;
+  case Ebx:     x_reg = true;
+  case Ecx:     x_reg = true;
+  case Edx:     x_reg = true;
+  case Virt(i): x_reg = true; // why not?
+  default:      ;
+  }
+  switch p {
+  case RPe: before = "E"; if (x_reg) after = "X";
+  case RPx:               if (x_reg) after = "X";
+  case RPh: after = "H";  // if (!x_reg) raise InvalidArg("pp_reg_part");
+  case RPl: after = "L";  // if (!x_reg) raise InvalidArg("pp_reg_part");
+  }
+  pp_string(before); pp_string(string_of_reg(r)); pp_string(after);
+}
+void pp_reg(reg r) { return pp_reg_part(r,^reg_part.RPe); }
+
+/////////////////////////////KINDS/////////////////////////////
+void pp_kind (kind k) {               pp_kind_b(k,false); }
+void pp_ckind(kind k) { pp_char(':'); pp_kind_b(k,false);}
+
+static void pp_kind_b(kind k, bool p) {
+  switch k {
+  case Kbyte(s):  pp_char  ('T');   pp_scale(s);
+  case Ktype:     pp_char  ('T');
+  case Kmemi(i):  pp_string("Tm "); pp_int(i);
+  case Kmem:      pp_string("Tm");
+  case Kstack:    pp_string("Ts");
+  case Kint:      pp_string("Sint");
+  case Kbool:     pp_string("Tbool");
+  case Karrow(x): 
+    if (p) pp_char('(');  pp_kind_b(x.1, true);  if (p) pp_char(')');
+    pp_string("-!>");
+    pp_kind_b(x.2, false);
+  case Kprod(x):
+    pp_string("*["); sepc(pp_kind,x); pp_string("]");
+  case Kname: pp_string("Tn");
+  case Kcap:  pp_string("Tcap");
+  case Kms:   pp_string("Tms");
+  }
+}
+
+/////////////////////////////CONSTRUCTORS///////////////////////
+void pp_con (con c) {               pp_con_a(0, c); }
+void pp_ccon(con c) { pp_char(':'); pp_con_a(0, c); }
+
+void pp_primcon(primcon pc) {
+  switch pc {
+  case PCbytes(b): pp_string("B");       pp_scale(b);
+  case PCfloat32:  pp_string("F4");
+  case PCfloat64:  pp_string("F8");
+  case PCjunk(i):  pp_string("junk ");   pp_int(i);
+  case PCjunkbytes(sc): pp_string("junk"); pp_scale(sc);
+  case PCint(i):   pp_int(i);
+  case PCtrue:     pp_string("true");
+  case PCfalse:    pp_string("false");
+  }
+}
+void pp_variance(variance v) {
+  switch v {
+  case Read:      pp_string("^r");
+  case Write:     pp_string("^w");
+  case ReadWrite: pp_string("^rw");
+  }
+}
+static int log_prec(log l) {
+  switch l {
+  case Cadd:  return 10;
+  case Csub:  return 10;
+  case Cmuls: return 11;
+  case Cmulu: return 11;
+  case Cand:  return 6;
+  case Cor:   return 7;
+  case Cimp:  return 5;
+  case Ciff:  return 5;
+  case Cnot:  return 12;
+  case Clts:  return 9;
+  case Cltu:  return 9;
+  case Cltes: return 9;
+  case Clteu: return 9;
+  }
+}
+    
+static int prec(rcon c) {
+  switch c {
+  case Clam    (x): return 1;
+  case Capp    (x): return 2;
+  case Cproj   (x): return 3;
+  case Cforall (x): return 4;
+  case Cexist  (x): return 4;
+  case Ccode   (x): return 4;
+  case Cmsjoin (x): return 5;
+  case Chptr   (x): return 4;
+  case Cfield  (x): return 7;
+  case Csptr   (x): return 2;
+  case Ccons   (x): return 6;
+  case Cappend (x): return 5;
+  case Clog    (x): return log_prec(x.1);
+  case Cif     (x): return 4;
+    // Cyclone +
+  case Ctptr   (_): return 5;
+    // Cyclone -
+  default:          return 100;
+  }
+}
+
+// Cyclone +
+void pp_id_con(*(id,con) x) {
+  pp_id(x.1); pp_char(':'); pp_con_a(0,x.2);
+}
+
+void pp_templ_state(*(id,<*(id,con)>list,<*(id,con)>list) x) {
+  pp_char('(');
+  pp_id(x.1);
+  pp_char(',');
+  pp_char('{'); sepc(pp_id_con,x.2); pp_char('}');
+  pp_char(',');
+  pp_char('{'); sepc(pp_id_con,x.3); pp_char('}');
+  pp_char(')');
+}
+// Cyclone -
+
+static void pp_con_a(int inprec, con cn) {
+  rcon   c      = cn.rcon;
+  int    myprec = prec(c);
+  string lp     = inprec > myprec ? lp_str : empty_str;
+  string rp     = inprec > myprec ? rp_str : empty_str;
+  
+  switch c {
+  case Cvar(v):    pp_id           (v);
+  case Cprim(pc):  pp_primcon       (pc);
+  case Ccode(c):   
+    pp_string(lp); pp_string("code"); pp_con_a(myprec+1,c); pp_string(rp);
+  case Cms(ms):    pp_machine_state(ms);
+  case Cmsjoin(x): 
+    pp_string(lp); pp_con_a(myprec+1,x.1); pp_char('&');
+    pp_con_a(myprec,x.2); pp_string(rp);
+  case Cempty:     pp_string        ("se");
+    
+  case Clab(l):    pp_char('`');     pp_id(l);
+  case Ctuple(cs): pp_char  ('[');   sepc(pp_con, cs);  pp_char(']');
+  case Cprod(cs):  pp_string("*[");  sepc(pp_con, cs);  pp_char(']');
+  case Csum(cs):   pp_string("+[");  sepc(pp_con, cs);  pp_char(']');
+  case Csing(c):   pp_string("S(");  pp_con(c);         pp_char(')');
+
+  case Capp(x):    
+    pp_string(lp); pp_con_a(myprec,x.1); pp_char(' '); pp_con_a(myprec+1, x.2);
+    pp_string(rp);
+  case Csptr(c):   
+    pp_string(lp); pp_string("sptr");    pp_char(' '); pp_con_a(myprec+1, c);
+    pp_string (rp);
+  case Cfield(x):  
+    pp_string(lp); pp_con_a(myprec,x.1); pp_variance(x.2);  
+    pp_string(rp);
+  case Clam(x):    
+    pp_string(lp); pp_string("fn ");     pp_con_b(myprec, x.1,x.2,x.3); 
+    pp_string(rp);
+  case Cforall(x): 
+    pp_string(lp); pp_string("All[");    pp_con_c(myprec, x.1,x.2,x.3); 
+    pp_string(rp);
+  case Cexist(x):
+    pp_string(lp); pp_string("Exist[");  pp_con_d(myprec, x.1,x.2,x.3,x.4);
+    pp_string(rp);
+
+  case Ccons(x):   
+    pp_string (lp);
+    pp_con_a  (myprec+1, x.1); pp_string("::"); pp_con_a(myprec,x.2);
+    pp_string (rp);
+  case Cappend(x): 
+    pp_string (lp);
+    pp_con_a  (myprec+1, x.1); pp_char  ('#');  pp_con_a(myprec,x.2);
+    pp_string (rp);
+  case Cproj(x):   
+    pp_string (lp); 
+    pp_con_a (myprec,x.2);     pp_char  ('.');  pp_int(x.1);    
+    pp_string (rp);
+  case Carray(x):  
+    pp_string("array("); 
+    pp_con_a (0,x.1);          pp_char  (',');  pp_con_a (0,x.2); 
+    pp_char  (')');
+
+  case Crec(x):  
+    pp_string("rec("); 
+    sepc(crec_f, x);
+    pp_string(rp_str);
+
+  case Chptr(x):
+    // complain to Neal :-)
+    pp_string(lp);
+    pp_char  ('^');
+    if (x.1 != null || x.3 != null) {
+      char left  = '(';
+      char right = ')';
+      if (x.2 == null) { left  = '['; right = ']'; }
+      pp_char('T'); 
+      if (x.3 != null)
+	pp_variance(x.3.v.2);
+      pp_char(left); 
+      if (x.3 != null) {
+        pp_con_a(myprec, x.3.v.1);
+        if (x.1 != null)
+          pp_char(',');
+      }
+      sepc(pp_int, x.1); pp_char(right);
+    }
+    if (x.2 != null) pp_con_a(myprec, x.2.v);
+    pp_string(rp);
+
+  case Cif(x):
+    pp_string(lp);   pp_string("All[");    pp_con_a(0,x.1);
+    pp_string("]."); pp_con_a(myprec,x.2); pp_string(rp);
+  case Clog(x): pp_log_a(inprec,x.1,x.2);
+
+  case Cname(c):  pp_string("Nm(");    pp_con_a(0,c);   pp_char(')');
+  case Ctagof(c): pp_string("Tagof("); pp_con_a(0,c);   pp_char(')');
+  case Cjoin(cs): 
+    pp_string("&[");     sepc(pp_con,cs); pp_char(']');
+  case Ccap(d):
+    pp_string("cap["); sepc(pp_cap_elmt, Dict::to_list(d)); pp_char(']');
+    //Cyclone +
+  case Ctmpl *(c1,c2_opt,labels,holes):
+    pp_string("tmpl(");
+    pp_con_a(0,c1);
+    pp_char(',');
+    if(c2_opt!=null) pp_con_a(0,c2_opt.v);
+    else pp_string("*");
+    pp_char(',');
+    pp_char('{'); sepc(pp_id_con,labels); pp_char('}');
+    pp_char(',');
+    pp_char('{'); sepc(pp_id_con,holes); pp_char('}');
+    pp_string(")");
+  case Ctrgn *(c1,c2_opt,t):
+    pp_string("cgregion(");
+    pp_con_a(0,c1); pp_char(',');
+    if(c2_opt!=null) pp_con_a(0,c2_opt.v);
+    else pp_string("*");
+    pp_char(',');
+    pp_char('{'); sepc(pp_templ_state,t); pp_char('}');
+    pp_char(')');
+  case Ctptr(v):
+    pp_string(lp);
+    pp_string("tptr ");
+    pp_id(v);
+    pp_string(rp);
+    // Cyclone -
+  }
+}
+static void pp_cap_elmt(*(id, *(alias_info,con)) pr) {
+  pp_id(pr.1);
+  switch pr.2.1 {
+  case MayAlias: pp_char(':');
+  case Unique:   pp_char('!');
+  }
+  pp_con_a(0,pr.2.2);
+}
+static void pp_con_b(int myprec, id v, kind k, con cn) {
+  pp_id(v); pp_ckind(k);  pp_char(' ');
+
+  switch cn.rcon {
+  case Clam(x): pp_con_b(myprec, x.1,x.2,x.3);
+  default:   
+    pp_string(". ");
+    pp_con_a(myprec, cn);
+  }
+} 
+static void pp_con_c(int myprec, id v, kind k, con cn) {
+  pp_id(v); pp_ckind(k);
+
+  switch cn.rcon {
+  case Cforall(x): pp_char(' ');    pp_con_c(myprec, x.1,x.2,x.3);
+  default:         pp_string("]."); pp_con_a(myprec,cn);
+  }
+}
+static void pp_con_d(int myprec, id v, kind k, con c1, con c2) {
+  pp_id(v); pp_ckind(k);
+  switch c1.rcon {
+  case Cprim(x): 
+    switch x {
+    case PCtrue: 
+      switch c2.rcon {
+      case Cexist(x): pp_char(' '); pp_con_d(myprec, x.1,x.2,x.3,x.4);
+      default: pp_string("]."); pp_con_a(myprec,c2);
+      }
+      return;
+    default: ;
+   }
+  default: ;
+  }
+  pp_char('|'); pp_con_a(0,c1); pp_string("]."); pp_con_a(myprec,c2);  
+}
+static void pp_log_a(int inprec, log l, <con>list cs) {
+  int myprec = log_prec(l);
+  if(inprec > myprec) pp_char('(');
+  switch l {
+  case Cnot: pp_string("~"); pp_con_a(myprec+1, cs.hd);
+  default:   sep_env(pp_con_a, myprec+1, string_of_log(l), cs);
+  }
+  if(inprec > myprec) pp_char(')');
+}
+static void pp_machine_state(machine_state ms) {
+  bool need_leading_comma = false;
+
+  pp_char('{');
+  con cap = ms_get_cap(ms);
+  
+  bool cap_empty = false;
+  switch cap.rcon {
+  case Ccap(x): cap_empty = Dict::is_empty(x);
+  default:      ;
+  }
+  if (!cap_empty) {
+    if(need_leading_comma) pp_char(',');
+    pp_string("cap: "); pp_con_a(0, cap);
+    need_leading_comma = true;
+  }
+
+  _ fps = ms_get_fpstack(ms);
+  if(!fpstack_is_empty(fps)) {
+    if(need_leading_comma) pp_char(',');
+    pp_fpstack(fps);
+    need_leading_comma = true;
+  }
+
+  switch ms_get_cc(ms) {
+  case noinfo: ;
+  case cmp(pr):
+    if(need_leading_comma) pp_char(',');
+    pp_string("cc: cmp("); pp_con_a(0,pr.1); pp_char(',');
+    pp_con_a(0,pr.2); pp_string(")");
+    need_leading_comma = true;
+  default: raise Impossible("pp_machine_state -- unimplemented cc case");
+  }
+  _ reg_list = ms_fold_reg(reg_dict2list_f, ms, null);
+  if(reg_list != null) {
+    if(need_leading_comma) pp_char(',');
+    sepc(pp_machine_state_f, reg_list);
+    need_leading_comma = true;
+  }
+  pp_char('}');
+}
+
+
+static void pp_machine_state_f(*(reg,con) rc) {
+  pp_reg(rc.1); pp_char(':'); pp_con(rc.2);
+}
+static <*(reg,con)>list reg_dict2list_f(reg r, con c, <*(reg,con)>list rl) {
+  return ^list(^(r,c),rl);
+}    
+static void crec_f(*(id,kind,con) vkc) {
+  pp_id(vkc.1); pp_ckind(vkc.2); pp_char('.'); pp_con(vkc.3);
+}
+
+//////////////////////////////CODE/////////////////////////////
+static void pp_con_coercion<a>(string name,  con c,
+				void   f(a), a  raw, <coercion>list tl) {
+  pp_string(name);       pp_string("(<"); pp_con(c); pp_string(">,");
+  pp_coerce(f, raw, tl); pp_char(')');
+}
+static void pp_nocon_coercion<a>(string name,
+				  void   f(a), a raw, <coercion>list tl) {
+  pp_string(name); pp_char('('); pp_coerce(f, raw, tl); pp_char(')');
+}
+void pp_coerce<a>(void f(a), a raw, <coercion>list clist) {
+  if (clist == null) {
+    f(raw);
+    return;
+  }
+  switch clist.hd {
+  
+  case Roll     (c): pp_con_coercion  ("roll",    c, f, raw, clist.tl);
+  case Tosum    (c): pp_con_coercion  ("sum",     c, f, raw, clist.tl);
+  case RollTosum(c): pp_con_coercion  ("rollsum", c, f, raw, clist.tl);
+  case Subsume  (c): pp_con_coercion  ("subsume", c, f, raw, clist.tl);
+  case Unroll      : pp_nocon_coercion("unroll",     f, raw, clist.tl);
+  case Fromsum     : pp_nocon_coercion("rec",        f, raw, clist.tl);
+
+  case Pack(x):
+    pp_string("pack(<"); pp_con(x.1); pp_string(">,");
+    pp_coerce(f, raw, clist.tl);
+    pp_string(",<");     pp_con(x.2); pp_string(">)");
+
+  case Tapp(c):
+    <annotate>list cs = ^list(c,null);
+    clist        = clist.tl;
+    while(clist != null)
+      switch clist.hd {
+      case Tapp(c):  cs = ^list(c,cs); clist = clist.tl;
+      default:       break;
+    }
+    pp_string("tapp("); pp_coerce(f, raw, clist);
+    pp_string(",<");    sepc(pp_annotate, cs);    pp_string(">)");
+
+  case Toarray(x):
+    pp_string("array("); pp_int(x.1);  
+    pp_char(',');        pp_int(x.2);
+    pp_char(',');        pp_char('<'); pp_con(x.3);  pp_string(">,");
+    pp_coerce(f, raw, clist.tl); pp_char(')');
+
+  case Slot(x):
+    pp_string("slot(");         pp_int(x.1);   pp_char(',');    pp_int(x.2);
+    pp_coerce(f, raw, clist.tl); pp_char(')');
+
+  case Forgetname: pp_string("forgetname("); pp_coerce(f, raw, clist.tl);
+                   pp_char(')');
+  case Prove: pp_string("prove("); pp_coerce(f, raw, clist.tl); pp_char(')');
+  }
+}
+void pp_annotate(annotate a) {
+  switch a {
+  case Con(c): pp_con(c);
+  case Reg(r): pp_reg(r);
+  case StackTail(x): pp_reg(x.1); pp_char(' '); pp_int(x.2);
+  case StackSlice(x): 
+    pp_reg(x.1);
+    pp_char(' '); pp_int(x.2);
+    pp_char(' '); pp_int(x.3);
+    pp_char(' '); pp_con(x.4);
+  }
+}
+void pp_genop(genop gop) {
+  switch gop {
+  case Immed(i): pp_int(i);
+  case Reg(r):   pp_reg(r);
+  case Addr(l):  pp_id(l);
+  case Prjr(x):  
+    pp_char('['); pp_reg_coerce(x.1);   
+    pp_genop_option_part(x.3);
+    pp_char('+'); pp_int(x.2); pp_char(']');
+  case Prjl(x):
+    pp_char('['); pp_label_coerce(x.1); 
+    pp_genop_option_part(x.3);
+    pp_char('+'); pp_int(x.2); pp_char(']');
+  }
+}
+static void pp_genop_option_part(<*(scale,reg)>Opt sropt) {
+  if(sropt != null) {
+    pp_char('+');
+    pp_scale(sropt.v.1);
+    pp_char('*');
+    pp_reg(sropt.v.2);
+  }
+}
+void pp_label_coerce(<id>coerce  lc)  { pp_coerce(pp_id,  lc.op,lc.coercions);}
+void pp_reg_coerce  (<reg>coerce rc)  { pp_coerce(pp_reg,  rc.op,rc.coercions);}
+void pp_genop_coerce(<genop>coerce gc){ pp_coerce(pp_genop,gc.op,gc.coercions);}
+
+static void pp_dword_ptr(genop g) {
+  string dp = "DWORD PTR ";
+  switch g {
+  case Prjr(x): pp_string(dp);
+  case Prjl(x): pp_string(dp);
+  default:      ;
+  }
+}
+static void pp_unary_op(genop g) { 
+  pp_dword_ptr(g); pp_genop(g); 
+}
+static void pp_unary_op_coerce(<genop>coerce cg) {
+  pp_dword_ptr(cg.op);  pp_genop_coerce(cg);
+}
+static void pp_anop(genop g)                 { return pp_unary_op(g); }
+static void pp_anop_coerce(<genop>coerce cg) { return pp_unary_op_coerce(cg); }
+
+static void pp_binop(genop g1, genop g2) {
+  pp_dword_ptr(g1); pp_genop(g1); pp_char(','); 
+  pp_dword_ptr(g2); pp_genop(g2);
+}
+static void pp_binop2(genop g1, <genop>coerce cg2) {
+  pp_dword_ptr(g1);     pp_genop(g1);          pp_char(','); 
+  pp_dword_ptr(cg2.op); pp_genop_coerce(cg2);
+}
+void pp_cc(condition cc) {
+  switch cc {
+  case Above:       pp_string("A");
+  case AboveEq:     pp_string("AE");
+  case Below:       pp_string("B");
+  case BelowEq:     pp_string("BE");
+  case Eq:          pp_string("E");
+  case Greater:     pp_string("G");
+  case GreaterEq:   pp_string("GE");
+  case Less:        pp_string("L");
+  case LessEq:      pp_string("LE");
+  case NotEq:       pp_string("NE");
+  case NotOverflow: pp_string("NO");
+  case NotSign:     pp_string("NS");
+  case Overflow:    pp_string("O");
+  case ParityEven:  pp_string("PE");
+  case ParityOdd:   pp_string("PO");
+  case Sign:        pp_string("S");
+  }
+}
+void pp_arithbin(arithbin x) {
+  switch x {
+  case Adc:   pp_string("ADC");
+  case Add:   pp_string("ADD");
+  case And:   pp_string("AND");
+  case Imul2: pp_string("IMUL");
+  case Or:    pp_string("OR");
+  case Sbb:   pp_string("SBB");
+  case Sub:   pp_string("SUB");
+  case Xor:   pp_string("XOR");
+  }
+}
+void pp_arithun(arithun x) {
+  switch x {
+  case Dec: pp_string("DEC");
+  case Inc: pp_string("INC");
+  case Neg: pp_string("NEG");
+  case Not: pp_string("NOT");
+  }
+}
+void pp_arithmd(arithmd x) {
+  switch x {
+  case Div:   pp_string("DIV");
+  case Idiv:  pp_string("IDIV");
+  case Imul1: pp_string("IMUL");
+  case Mul:   pp_string("MUL");
+  }
+}
+void pp_arithsr(arithsr x) {
+  switch x {
+  case Rcl: pp_string("RCL");
+  case Rcr: pp_string("RCR");
+  case Rol: pp_string("ROL");
+  case Ror: pp_string("ROR");
+  case Sal: pp_string("SAL");
+  case Sar: pp_string("SAR");
+  case Shl: pp_string("SHL");
+  case Shr: pp_string("SHR");
+  }
+}
+void pp_conv(conv x) {
+  switch x {
+  case Cbw:  pp_string("\tCBW");
+  case Cdq:  pp_string("\tCDQ");
+  case Cwd:  pp_string("\tCWD");
+  case Cwde: pp_string("\tCWDE");
+  }
+}
+reg_part scale_to_reg_part(int i) {
+  switch i {
+  case 1:  return ^reg_part.RPl;
+  case 2:  return ^reg_part.RPx;
+  case 4:  return ^reg_part.RPe;
+  default: raise InvalidArg("Talpp.scale_to_reg_part");
+  }
+}
+void pp_array_arg(genop g) {
+  switch g {
+  case Prjr(x): 
+    pp_reg_coerce(x.1);   
+    pp_genop_option_part(x.3);
+    pp_char('+'); pp_int(x.2);
+  case Prjl(x): 
+    pp_label_coerce(x.1); 
+    pp_genop_option_part(x.3);
+    pp_char('+'); pp_int(x.2);
+  default:      raise InvalidArg("Talpp.pp_array_arg");
+  }
+}
+static void pp_mallocarg_aux(mallocarg ma) {
+  switch ma {
+  case Mprod(mas):    pp_char('['); sepc(pp_mallocarg_aux, mas); pp_char(']');
+  case Mbytes(s):     pp_char(':'); pp_scale(s);
+  case Mbytearray(x): 
+    pp_string("array("); pp_int(x.2); pp_char(','); 
+    pp_char('B'); pp_scale(x.1); pp_char(')');
+  }
+}
+void pp_mallocarg(mallocarg ma) {
+  pp_char('<'); pp_mallocarg_aux(ma); pp_char('>');
+}
+
+void pp_proofarg(<*(id,<con>list)>list pf) {
+  sep(pp_rule, "", pf);
+}
+void pp_rule(*(id,<con>list) pr) {
+  pp_id(pr.1); pp_char('<'); sepc(pp_con, pr.2); pp_char('>');
+}
+void pp_virtuals(<instruction>list is) {
+  if(is != null) {
+    pp_string("\tvirtual<");
+    sep(pp_instruction, " ", is);
+    pp_char('>');
+  }
+}
+void pp_name(id i) {
+  pp_string("name("); pp_id(i); pp_char(')');
+}
+
+void pp_comment(string s) {
+  pp_char(';');
+  pp_string(s);
+  pp_newline();
+}
+
+void pp_instruction(instruction i) {
+  switch i {
+  case ArithBin(x): 
+    pp_char('\t'); pp_arithbin(x.1); pp_char('\t'); pp_binop(x.2,x.3);
+  case ArithUn(x):
+    pp_char('\t'); pp_arithun(x.1);  pp_char('\t'); pp_unary_op(x.2);
+  case ArithMD(x):
+    pp_char('\t'); pp_arithmd(x.1);  pp_char('\t'); pp_unary_op(x.2);
+  case ArithSR(x):
+    pp_char('\t'); pp_arithsr (x.1);  
+    pp_char('\t'); pp_unary_op(x.2);
+    pp_char(',');
+    if (x.3 == null) pp_string("CL"); else pp_int(x.3.v);
+  case Bswap(r):  pp_string("\tBSWAP\t"); pp_reg(r);
+  case Call(op):  pp_string("\tCALL\t");  pp_unary_op_coerce(op);
+  case Clc:       pp_string("\tCLC");
+  case Cmc:       pp_string("\tCMC");
+  case Cmovcc(x): 
+    pp_string("\tCMOV"); pp_cc         (x.1);   
+    pp_char('\t');       pp_reg        (x.2); 
+    pp_char(',');        pp_anop_coerce(x.3);
+  case Cmp(x):    
+    pp_string("\tCMP\t"); 
+    pp_dword_ptr(x.1.op); pp_genop_coerce(x.1); pp_char(','); 
+    pp_dword_ptr(x.2.op); pp_genop_coerce(x.2);
+  case Conv(c):   pp_conv(c);
+  case Imul3(x):
+    pp_string("\tIMUL\t"); pp_reg (x.1); 
+    pp_char(',');          pp_anop(x.2);
+    pp_char(',');          pp_int (x.3);
+  case Int(n):  pp_string("\tINT\t"); pp_int(n);
+  case Into:    pp_string("\tINTO");
+  case Jcc(x):  
+    pp_string("\tJ"); pp_cc(x.1); pp_char('\t'); pp_label_coerce(x.2);
+    pp_virtuals(x.3);
+  case Jecxz(x): pp_string("\tJECXZ\t"); pp_label_coerce(x.1);
+                 pp_virtuals(x.2);
+  case Jmp(op):  pp_string("\tJMP\t");   pp_anop_coerce(op);
+  case Label(x): pp_id(x); pp_string(":");
+  case Lahf:     pp_string("\tLAHF");
+  case Lea(x):
+    pp_string("\tLEA\t"); pp_reg(x.1); pp_char(','); pp_anop(x.2);
+  case Loopd(x):
+    pp_string("\tLOOP");
+    if (x.2 != null)
+      if (x.2.v) pp_string("NE"); else pp_char('E');
+    pp_string("D\t"); pp_label_coerce(x.1);
+  case Mov(x):   pp_string("\tMOV\t");  pp_binop2(x.1,x.2);
+  case Movpart(x): 
+    bool     zero_extend = x.1;
+    genop    g1          = x.2;
+    genop    g2          = x.4;
+    reg_part p1          = x.3;
+    reg_part p2          = x.5;
+    if (compare_regparts(p1,p2) == 0) pp_string("\tMOV\t"); 
+    else if (zero_extend)             pp_string("\tMOVZX\t"); 
+    else                              pp_string("\tMOVSX\t");
+    
+    switch g1 {
+    case Reg(r1): pp_reg_part(r1,p1);
+    case Immed(i): pp_anop(g2);
+    default:      
+      switch p1 {
+      case RPl: pp_string("BYTE PTR ");  pp_genop(g1);
+      case RPe: pp_string("DWORD PTR "); pp_genop(g1);
+      default:  raise Unimplemented("half word pretty printing");
+     }
+    }
+    pp_char(',');
+    switch g2 {
+    case Reg(r2): pp_reg_part(r2,p2);
+    case Immed(i): pp_anop(g2);
+    default:
+      switch p2 {
+      case RPl: pp_string("BYTE PTR ");  pp_genop(g2);
+      case RPe: pp_string("DWORD PTR "); pp_genop(g2);
+      default:  raise Unimplemented("half word pretty printing");
+     }  
+    }
+  case Nop:      pp_string("\tNOP");
+  case Pop(op):  pp_string("\tPOP\t");  pp_unary_op(op);
+  case Popad:    pp_string("\tPOPAD");
+  case Popfd:    pp_string("\tPOPFD");
+  case Push(op): pp_string("\tPUSH\t"); pp_unary_op_coerce(op);
+  case Pushad:   pp_string("\tPUSHAD");
+  case Pushfd:   pp_string("\tPUSHFD");
+  case Retn(no):
+    pp_string("\tRETN");
+    if (no != null) { pp_char('\t'); pp_int(no.v); }
+  case Sahf:     pp_string("\tSAHF");
+  case Setcc(x):
+    pp_string("\tSET"); pp_cc(x.1); pp_char('\t');
+    switch x.2 {
+    case Reg(r): pp_reg_part(r, ^reg_part.RPl);
+    default:     raise InvalidArg("Talpp: setcc instruction");
+    }
+  case Shld(x):
+    pp_string("\tSHLD\t"); pp_anop(x.1); 
+    pp_char(',');          pp_reg(x.2);
+    pp_char(',');
+    if (x.3 == null) pp_string("CL"); else pp_int(x.3.v);
+  case Shrd(x):
+    pp_string("\tSHRD\t"); pp_anop(x.1); 
+    pp_char(',');          pp_reg(x.2);
+    pp_char(',');
+    if (x.3 == null) pp_string("CL"); else pp_int(x.3.v);
+  case Stc:     pp_string("\tSTC");
+  case Test(x): pp_string("\tTEST\t"); pp_binop(x.1,x.2);
+  case Xchg(x): pp_string("\tXCHG\t"); pp_anop(x.1); pp_char(','); pp_reg(x.2);
+
+  case Asub(x):
+    pp_string("\tASUB\t"); pp_reg_part (x.1, scale_to_reg_part(x.3));
+    pp_char(',');          pp_array_arg(x.2);
+    pp_char(',');          pp_int      (x.3);
+    pp_char(',');          pp_reg      (x.4);
+    pp_char(',');          pp_genop    (x.5);
+  case Aupd(x):
+    pp_string("\tAUPD\t"); pp_array_arg(x.1);
+    pp_char(',');          pp_int      (x.2);
+    pp_char(',');          pp_reg      (x.3);
+    pp_char(',');          pp_reg_part (x.4, scale_to_reg_part(x.2));
+    pp_char(',');          pp_genop    (x.5);
+  case Coerce(gc):
+    pp_string("\tCOERCE\t"); pp_genop_coerce(gc);
+  case CoerceName(ic):
+    pp_string("\tCOERCE\t"); pp_coerce(pp_name, ic.op, ic.coercions);
+  case Comment(s):
+    pp_string("; "); pp_string(s);
+  case Fallthru(cs):
+    pp_string("\tFALLTHRU");
+    if (cs != null) { pp_string("\t<"); sepc(pp_con, cs); pp_char('>'); }
+  case Malloc(x):
+    pp_string("\tMALLOC\t"); pp_id(x.1); pp_char(','); pp_int (x.2); 
+    if(x.3 != null) { pp_char(','); pp_mallocarg(x.3.v); }
+  case Proof(pf):
+    pp_string("\tPROOF\t<");
+    pp_proofarg(pf);
+    pp_char('>');
+  case Unpack(x):
+    pp_string("\tUNPACK\t"); pp_id         (x.1);
+    pp_char(',');            pp_reg        (x.2);
+    pp_char(',');            pp_anop_coerce(x.3);
+  case Sunpack(x):
+    pp_string("\tSUNPACK\t"); pp_id   (x.1);
+    pp_char(',');             pp_genop(x.2);
+  case Nameobj(x): 
+    pp_string("\tNAMEOBJ\t"); pp_id(x.1); pp_char(','); pp_genop(x.2);
+  case ForgetUnique(x): pp_string("\tFORGETUNIQUE\t"); pp_id(x);
+  case RemoveName(x):   pp_string("\tREMOVENAME\t");   pp_id(x);
+  case Rdtsc:           pp_string("\tRDTSC");
+    // Floating point
+  case FPnoargs(op): pp_char('\t'); pp_fpnoargs(op);
+  case FPsomeargs *(op,args):
+    pp_char('\t');
+    pp_fpsomeargs(op);
+    pp_char('\t');
+    pp_fpargs(implicit_st(op),args);
+    // Cyclone +
+  case CgStart *(x,c):
+    pp_string("\tCGSTART\t<");
+    pp_id(x);
+    pp_char(',');
+    pp_con(c);
+    pp_string(">");
+  case CgDump *(r1,id1,r2,id2):
+    pp_string("\tCGDUMP\t"); pp_reg(r1);
+    pp_char(','); pp_id(id1);
+    pp_char(','); pp_reg(r2);
+    pp_char(','); pp_id(id2);
+  case CgHole *(r,id1,id2):
+    pp_string("\tCGHOLE\t"); pp_reg(r);
+    pp_char(','); pp_id(id1);
+    pp_char(','); pp_id(id2);
+  case CgHoleJmp *(l,lc):
+    pp_string("\tCGHOLEJMP\t"); pp_id(l);
+    pp_char(','); pp_label_coerce(lc);
+  case CgHoleJcc *(cc,l,lc,is):
+    pp_string("\tCGHOLEJCC "); pp_cc(cc);
+    pp_char(','); pp_char('\t'); pp_id(l);
+    pp_char(','); pp_label_coerce(lc);
+    pp_virtuals(is);
+  case CgFill *(r1,r2,id1,id2,r3):
+    pp_string("\tCGFILL\t"); pp_reg(r1);
+    pp_char(','); pp_reg(r2);
+    pp_char(','); pp_id(id1);
+    pp_char(','); pp_id(id2);
+    pp_char(','); pp_reg(r3);
+  case CgFillJmp *(r1,r2,l1a,l1b,r3,l2a,l2b):
+    pp_string("\tCGFILLJMP\t"); pp_reg(r1);
+    pp_char(','); pp_reg(r2);
+    pp_char(','); pp_id(l1a);
+    pp_char(','); pp_id(l1b);
+    pp_char(','); pp_reg(r3);
+    pp_char(','); pp_id(l2a);
+    pp_char(','); pp_id(l2b);
+  case CgFillJcc *(r1,r2,l1a,l1b,r3,l2a,l2b):
+    pp_string("\tCGFILLJCC\t"); pp_reg(r1);
+    pp_char(','); pp_reg(r2);
+    pp_char(','); pp_id(l1a);
+    pp_char(','); pp_id(l1b);
+    pp_char(','); pp_reg(r3);
+    pp_char(','); pp_id(l2a);
+    pp_char(','); pp_id(l2b);
+  case CgForget *(id1,id2):
+    pp_string("\tCGFORGET\t"); pp_id(id1);
+    pp_char(','); pp_id(id2);
+  case CgEnd(r):
+    pp_string("\tCGEND\t"); pp_reg(r);
+    // Cyclone -
+  }
+}
+
+void pp_code_block (code_block cb) {
+  pp_id(cb.id);
+  pp_char(':');
+  pp_newline();
+  if (cb.tipe != null) {
+    pp_string("LABELTYPE <"); pp_con(cb.tipe.v); pp_char('>'); pp_newline();
+  }
+  int i = -1;
+  while (++i < size(cb.insts)) {
+    pp_instruction(cb.insts[i]);
+    pp_newline();
+  }
+}
+void pp_code_block_x(id i, <con>Opt t, <instruction>Xarray::xarray insts) {
+  pp_id(i);
+  pp_char(':');
+  pp_newline();
+  if (t != null) {
+    pp_string("LABELTYPE <"); pp_con(t.v); pp_char('>'); pp_newline();
+  }
+  Xarray::iter(pp_instruction_and_newline, insts);
+}
+
+// Cyclone +
+void pp_template(template t) {
+  pp_string("TEMPLATE_START ");
+  pp_id(t.start_id);
+  pp_string(",<");
+  pp_con(t.tipe);
+  pp_char('>');
+  pp_newline();
+  for(_ i = 0; i<size(t.blocks); i++)
+    pp_code_block(t.blocks[i]);
+  pp_string("TEMPLATE_END");
+  pp_newline();
+}
+
+void pp_template_start(id start_id,con tipe) {
+  pp_string("TEMPLATE_START ");
+  pp_id(start_id);
+  pp_string(",<");
+  pp_con(tipe);
+  pp_char('>');
+  pp_newline();
+}
+
+void pp_template_end() {
+  pp_string("TEMPLATE_END ");
+  pp_newline();
+  pp_newline();
+}
+
+// Cyclone -
+
+void pp_instruction_and_newline(instruction inst) {
+  pp_instruction(inst);
+  pp_newline();
+}
+
+//////////////////////////////DATA/////////////////////////////
+
+bool valid_data_string(string s) {
+
+  for(int i=0; i<size(s); i++) {
+    char c = s[i];
+    if(c<'\032' || c>'~' || c=='\034') return false;
+  }
+  return true;
+}
+
+void pp_data_item(data_item di) {
+  switch di {
+  case Dlabel(cl): pp_string("\tDD\t"); pp_label_coerce(cl);
+  case Dbytes(s):  
+    if (size(s) == 0) raise InvalidArg("Talpp: Dbytes with empty array");
+    pp_string("\tDB\t");
+    if(valid_data_string(s)) {
+      pp_char('"');
+      pp_string(s);
+      pp_char('"');
+      return;
+    }
+    int i = 0;
+    pp_int(ord(s[i]));
+    while (++i < size(s)) {
+      pp_char(',');
+      pp_int(ord(s[i]));
+    }
+  case D2bytes(i):  pp_string("\tDW\t"); pp_int(i);
+  case D4bytes(ci): pp_string("\tDD\t"); pp_coerce(pp_int, ci.op, ci.coercions);
+  case Dfloat32(s): pp_string("\tREAL4\t0x"); pp_string(hexstr_of_float(s));
+  case Dfloat64(s): pp_string("\tREAL8\t0x"); pp_string(hexstr_of_double(s));
+  case Djunk:       pp_string("\tDD\t?");
+  case Dup:         pp_string("\tTAL_STRUCT");
+  case Ddown:       pp_string("\tTAL_ENDS");
+  }
+}
+
+static void pp_question(bool ignore) { pp_char('?'); }
+void pp_data_block(data_block db) {
+  pp_id(db.id);
+  pp_char(':');
+  pp_newline();
+  if(db.align != 4) {
+    pp_string("ALIGN\t"); pp_int(db.align); pp_newline(); 
+  }
+  if (db.tipe != null) {
+    pp_string("LABELTYPE <"); pp_con(db.tipe.v); pp_char('>'); pp_newline();
+  }
+  if (db.data.coercions != null) {
+    pp_string("COERCE\t"); 
+    pp_coerce(pp_question, true, db.data.coercions);
+    pp_newline();
+  }
+  // This breaks popcorn currently: list_app(pp_data_item, db.data.op);
+  <data_item>list dl = db.data.op;
+  while(dl != null) {
+    pp_data_item(dl.hd);
+    pp_newline();
+    dl = dl.tl;
+  }
+}
+
+////////////////////////////COMPILATION UNITS//////////////////
+void pp_abbrev(id l, con c) {
+  pp_string("\tTYPE\t<"); pp_id(l);
+  pp_string(" =");        pp_con(c);
+  pp_char('>');
+}
+
+
+void pp_tal_int(string name, tal_int m) {
+
+  FILE old_file = output_file;
+  output_file = file_open(name, "w");
+
+  pp_string("; TAL INTERFACE "); pp_string(name);      pp_newline();
+  pp_string("; This file was generated by POP TALC");  pp_newline();
+  int i;
+  for (i = 0; i < size(m.int_abbrevs); ++i) {
+    pp_abbrev(m.int_abbrevs[i].1, m.int_abbrevs[i].2); pp_newline();
+  }
+  for (i = 0; i < size(m.int_cons); ++i) {
+    pp_string("\tTYPE\t<"); pp_id (m.int_cons[i].1);
+    pp_string(" :");        pp_kind(m.int_cons[i].2);
+    switch m.int_cons[i].3 {
+    case AbsCon:      ;
+    case BoundCon(c): pp_string(" <= "); pp_con(c);
+    case ConcCon(c):  pp_string(" = ");  pp_con(c);
+    }
+    pp_char('>');
+    pp_newline();
+  }
+  for (i = 0; i < size(m.int_vals); ++i) {
+    pp_string("\tVAL\t"); pp_id(m.int_vals[i].1);
+    pp_string(",<");      pp_con(m.int_vals[i].2);
+    pp_char('>');
+    pp_newline();
+  }
+  file_close(output_file);
+  output_file = old_file;
+}
+
+// void pp_tal_int_type (...) NOT DONE
+
+// This stuff is new to allow better pipelining so a whole implementation
+// doesn't have to sit in memory.
+void pp_tal_before_code(string name, tal_imp m) {
+ // no code or data blocks will be written
+
+  pp_string("; TAL IMPLEMENTATION "); pp_string(name);  pp_newline();
+  pp_string("; This file was generated by POP TALC");   pp_newline();
+  pp_string("\tINCLUDE\tTAL.INC");                      pp_newline();
+  // Cyclone +
+  if(size(m.templates)>0) {
+    pp_string("\tINCLUDE\tCYCLONE.INC");                pp_newline();
+  }
+  // Cyclone -
+  pp_string("\t_begin_TAL");                            pp_newline();
+  // Cyclone +
+  if(size(m.templates)>0) {
+    pp_string("\t_begin_cyclone");                      pp_newline();
+  }
+  // Cyclone -
+  int i;
+  for (i = 0; i < size(m.imports); ++i) {
+    pp_string("\tTAL_IMPORT\t"); pp_string(m.imports[i]); pp_newline();
+  }
+  for (i = 0; i < size(m.exports); ++i) {
+    pp_string("\tTAL_EXPORT\t"); pp_string(m.exports[i]); pp_newline();
+  }
+  for (i = 0; i < size(m.imp_abbrevs); ++ i) {
+    pp_abbrev(m.imp_abbrevs[i].1, m.imp_abbrevs[i].2); pp_newline();
+  }
+  for (i = 0; i < size(m.con_blocks); ++i) {
+    pp_string("\tTYPE\t<"); pp_id (m.con_blocks[i].1);
+    pp_string(" :");        pp_kind(m.con_blocks[i].2);
+    pp_string(" = ");       pp_con (m.con_blocks[i].3);
+    pp_char('>');
+    pp_newline();
+  }
+  pp_string("\tCODE"); pp_newline();
+}
+void pp_tal_after_code(tal_imp m) {
+ // only data blocks will be written
+  pp_newline();  pp_string("\tDATA"); pp_newline();
+  for (int i = 0; i < size(m.data_blocks); ++i)
+    pp_data_block(m.data_blocks[i]);
+  pp_newline(); pp_string("\t_end_TAL");
+  pp_newline(); pp_string("\tEND");
+  pp_newline();
+}
+
+
+void pp_tal_imp(string name, tal_imp m) { // may raise File errors
+  output_file = file_open(name, "w");
+  pp_tal_before_code(name, m);
+  for (int i = 0; i < size(m.code_blocks); ++i)
+    pp_code_block(m.code_blocks[i]);
+  // Cyclone +
+  pp_newline();
+  for(_ i = 0; i < size(m.templates); ++i) {
+    pp_template(m.templates[i]);
+  }
+  pp_newline();
+  // Cyclone -
+  pp_tal_after_code(m);
+  file_close(output_file);
+}
+

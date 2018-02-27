@@ -1,0 +1,81 @@
+// Cubic spline interpolation
+// copied and modified from Tempo 
+// based on code by Glueck et. al.
+// I don't understand what this does exactly.
+#include "core.h"
+#include "math.h"
+#include "poptiming.h"
+
+open Core;
+open Math;
+
+/* csi(S, D, D); */
+/* All the arrays are the same size. */
+/* I couldn't tell you why we want to specialize on the x-components? 
+   But its damn effective. */
+void csi(float x[], float y[], float z[])
+{
+  int n = size(x) - 1;
+  // For performance, should probably make these arrrays static,
+  float h[] = new_array_float(n+1);
+  float b[] = new_array_float(n+1);
+  float u[] = new_array_float(n+1);
+  float v[] = new_array_float(n+1);
+
+  int i = 0;
+  for(; i<= n-1; i=i+1){
+    h[i] = x[i+1]-x[i];
+    b[i] = (6/h[i])*(y[i+1]-y[i]);
+  }
+
+  u[1] = 2*(h[0]+h[1]);
+  v[1] = b[1]-b[0];
+  for (int i = 2; i <= n-1; i=i+1){
+    u[i] = 2*(h[i]+h[i-1])-h[i-1]*h[i-1]/u[i-1];
+    v[i] = b[i]-b[i-1]-h[i-1]*v[i-1]/u[i-1];
+  }
+
+  z[n] = 0; // Why n? not n-1?
+
+  i=n-1;
+  if ( i>=1 )
+    do {
+      z[i] = (v[i]-h[i]*z[i+1])/u[i];
+      i=i-1;
+    } while ( i>=1 );
+  z[0] = 0;
+}
+
+void pop_main() {
+  
+  string s[] = std_args();
+  if(size(s)!=2) {
+    printf("usage: %s <num points>\n",s[0]);
+    return;
+  }
+
+  int len = int_of_string(s[1]);
+  if(len<=0) {
+    printf("number of points %d <= 0\n",len);
+    return;
+  }
+
+  float x[] = new_array_float(len);
+  float y[] = new_array_float(len);
+  float z[] = new_array_float(len);
+
+  for(int i=0;i < len; i++) {
+    x[i] =  i;
+    y[i] = i * i;
+  }
+
+  MAIN_TEST("csi",COMPILER,PLAIN_KIND,s[1],0,csi(x,y,z));
+
+#ifdef DEBUG
+  printf("Result:");
+  for(int i=0; i<len; i++) {
+    printf("%g ",z[i]);
+  }
+  printf("\n");
+#endif
+}

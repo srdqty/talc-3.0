@@ -1,0 +1,12 @@
+(* ping where the ping chunk is checksummed *)
+fun ret (source) =
+  OnRemote (|print|("Success"), source, getRB (), defaultRoute)
+
+svc checksum : 'a chunk -> unit chunk
+
+(* fun ping(source, dest) = *)
+fun ping(source, dest) =
+  let val c = |ret|(source)
+      val c2 = checksum(c) in
+    OnRemote(c2,dest,getRB(),defaultRoute)
+  end

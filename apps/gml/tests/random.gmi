@@ -1,0 +1,19 @@
+{ 100000000 /M 10000 /M1 31415821 /B
+  /last_rand 
+  last_rand M1 divi /p1
+  last_rand M1 modi /p0
+  B M1 divi /q1
+  B M1 modi /q0
+  p0 q1 muli 
+  p1 q0 muli
+  addi
+  M1
+  modi
+  p0 q0 muli
+  addi
+  M modi
+} /rand  %% Random number generator from sedgewick.  
+         %% Takes last random number as an input.
+  
+14826503 /seed
+

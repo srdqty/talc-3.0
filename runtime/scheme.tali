@@ -1,0 +1,49 @@
+; changed some things because nil is not false and such.
+
+TYPE <D:T4=^T(0,1,2,3)+[*[S(0)^r,B4^r],*[S(1)^r,`D^rw,`D^rw],*[S(2)^r,(Exist[s:Sint].^*[S(s)^r,array(s,B1^rw)])^r],*[S(3)^r,B4^r],*[S(4)^r,B4^r],*[S(5)^r,B4^r],*[S(6)^r,(Exist[Env:T4].^*[(`c0 Env)^r,Env^r])^r],*[S(7)^r,(Exist[Env:T4].^*[(`c1 Env)^r,Env^r])^r],*[S(8)^r,(Exist[Env:T4].^*[(`c2 Env)^r,Env^r])^r],*[S(9)^r,(Exist[Env:T4].^*[(`c3 Env)^r,Env^r])^r],*[S(10)^r,(Exist[Env:T4].^*[(`c4 Env)^r,Env^r])^r],*[S(11)^r,(Exist[Env:T4].^*[(`c5 Env)^r,Env^r])^r],*[S(12)^r,(Exist[Env:T4].^*[(`c6 Env)^r,Env^r])^r]]>
+TYPE <c0:T4-!>T4=fn Env:T4 . All[c:Tcap r:Ts].(code{cap: c, ebx:^*[Env^r], esp:sptr (code{cap: c, eax:`D, esp: sptr r})::r})>
+TYPE <c1:T4-!>T4=fn Env:T4 . All[c:Tcap r:Ts].(code{cap: c, ebx:^*[Env^r,`D^rw], esp:sptr (code{cap: c, eax:`D, esp: sptr r})::r})>
+TYPE <c2:T4-!>T4=fn Env:T4 . All[c:Tcap r:Ts].(code{cap: c, ebx:^*[Env^r,`D^rw,`D^rw], esp:sptr (code{cap: c, eax:`D, esp: sptr r})::r})>
+TYPE <c3:T4-!>T4=fn Env:T4 . All[c:Tcap r:Ts].(code{cap: c, ebx:^*[Env^r,`D^rw,`D^rw,`D^rw], esp:sptr (code{cap: c, eax:`D, esp: sptr r})::r})>
+TYPE <c4:T4-!>T4=fn Env:T4 . All[c:Tcap r:Ts].(code{cap: c, ebx:^*[Env^r,`D^rw,`D^rw,`D^rw,`D^rw], esp:sptr (code{cap: c, eax:`D, esp: sptr r})::r})>
+TYPE <c5:T4-!>T4=fn Env:T4 . All[c:Tcap r:Ts].(code{cap: c, ebx:^*[Env^r,`D^rw,`D^rw,`D^rw,`D^rw,`D^rw], esp:sptr (code{cap: c, eax:`D, esp: sptr r})::r})>
+TYPE <c6:T4-!>T4=fn Env:T4 . All[c:Tcap r:Ts].(code{cap: c, ebx:^*[Env^r,`D^rw,`D^rw,`D^rw,`D^rw,`D^rw,`D^rw], esp:sptr (code{cap: c, eax:`D, esp: sptr r})::r})>
+
+; various scheme runtime functions
+VAL	_scopen_in,<All[c:Tcap a:Ts].(code{cap:c, ESP: sptr (code{cap: c, EAX:B4, ESP: sptr (Exist[s:Sint].^*[S(s)^r,array(s,B1^rw)])::a})::(Exist[s:Sint].^*[S(s)^r,array(s,B1^rw)])::a})>
+VAL	_scopen_out,<All[c:Tcap a:Ts].(code{cap:c, ESP: sptr (code{cap: c, EAX:B4, ESP: sptr (Exist[s:Sint].^*[S(s)^r,array(s,B1^rw)])::a})::(Exist[s:Sint].^*[S(s)^r,array(s,B1^rw)])::a})>
+VAL	_scclose_in,<All[c:Tcap a:Ts].(code{cap:c, ESP: sptr (code{cap:c, ESP: sptr B4::a})::B4::a})>
+VAL	_scclose_out,<All[c:Tcap a:Ts].(code{cap:c, ESP: sptr (code{cap:c, ESP: sptr B4::a})::B4::a})>
+VAL	_scflush_out,<All[c:Tcap a:Ts].(code{cap:c, ESP: sptr (code{cap:c, ESP: sptr B4::a})::B4::a})>
+VAL	_scfgetchar,<All[c:Tcap a:Ts].(code{cap:c, ESP: sptr (code{cap: c, EAX:B4, ESP: sptr B4::a})::B4::a})>
+VAL	_scfpeekchar,<All[c:Tcap a:Ts].(code{cap:c, ESP: sptr (code{cap: c, EAX:B4, ESP: sptr B4::a})::B4::a})>
+VAL	_scfputchar,<All[c:Tcap a:Ts].(code{cap:c, ESP: sptr (code{cap:c, ESP: sptr B4::B4::a})::B4::B4::a})>
+;VAL	_scnewstring
+;VAL	_scnewstringchar
+VAL	_scfgetstring,<All[c:Tcap a:Ts].(code{cap:c, ESP: sptr (code{cap: c, EAX:(Exist[s:Sint].^*[S(s)^r,array(s,B1^rw)]), ESP: sptr B4::B4::a})::B4::B4::a})>
+VAL	_scfputstring,<All[c:Tcap a:Ts].(code{cap:c, ESP: sptr (code{cap:c, ESP: sptr B4::(Exist[s:Sint].^*[S(s)^r,array(s,B1^rw)])::a})::B4::(Exist[s:Sint].^*[S(s)^r,array(s,B1^rw)])::a})>
+VAL	_scgetchar,<All[c:Tcap a:Ts].(code{cap:c, ESP: sptr (code{cap: c, EAX:B4, ESP: sptr a})::a})>
+VAL	_scpeekchar,<All[c:Tcap a:Ts].(code{cap:c, ESP: sptr (code{cap: c, EAX:B4, ESP: sptr a})::a})>
+VAL	_scputchar,<All[c:Tcap a:Ts].(code{cap:c, ESP: sptr (code{cap:c, ESP: sptr B4::a})::B4::a})>
+VAL	_scgetstring,<All[c:Tcap a:Ts].(code{cap:c, ESP: sptr (code{cap: c, EAX:(Exist[s:Sint].^*[S(s)^r,array(s,B1^rw)]), ESP: sptr B4::a})::B4::a})>
+VAL	_scputstring,<All[c:Tcap a:Ts].(code{cap:c, ESP: sptr (code{cap:c, ESP: sptr (Exist[s:Sint].^*[S(s)^r,array(s,B1^rw)])::a})::(Exist[s:Sint].^*[S(s)^r,array(s,B1^rw)])::a})>
+VAL	_scprint,<All[c:Tcap a:Ts].(code{cap:c, ESP: sptr (code{cap:c, ESP: sptr `D::a})::`D::a})>
+VAL	_scgetstdin,<All[c:Tcap a:Ts].(code{cap:c, ESP: sptr (code{cap: c, EAX:B4, ESP: sptr a})::a})>
+VAL	_scgetstdout,<All[c:Tcap a:Ts].(code{cap:c, ESP: sptr (code{cap: c, EAX:B4, ESP: sptr a})::a})>
+VAL	_scgetstderr,<All[c:Tcap a:Ts].(code{cap:c, ESP: sptr (code{cap: c, EAX:B4, ESP: sptr a})::a})>
+
+VAL	_currentInPort, <All[c:Tcap a:Ts].(code{cap:c, ESP: sptr (code{cap: c, EAX:B4, ESP:sptr a})::a})>
+VAL	_currentOutPort,  <All[c:Tcap a:Ts].(code{cap:c, ESP: sptr (code{cap: c, EAX:B4, ESP:sptr a})::a})>
+VAL	_pushInPort, <All[c:Tcap a:Ts].(code{cap:c, ESP: sptr (code{cap:c, ESP: sptr (Exist[s:Sint].^*[S(s)^r,array(s,B1^rw)])::a})::(Exist[s:Sint].^*[S(s)^r,array(s,B1^rw)])::a})>
+VAL	_pushOutPort, <All[c:Tcap a:Ts].(code{cap:c, ESP: sptr (code{cap:c, ESP: sptr (Exist[s:Sint].^*[S(s)^r,array(s,B1^rw)])::a})::(Exist[s:Sint].^*[S(s)^r,array(s,B1^rw)])::a})>
+VAL	_popInPort,  <All[c:Tcap a:Ts].(code{cap:c, ESP: sptr (code{cap: c, EAX:B4, ESP:sptr a})::a})>
+VAL	_popOutPort,  <All[c:Tcap a:Ts].(code{cap:c, ESP: sptr (code{cap: c, EAX:B4, ESP:sptr a})::a})>
+
+; various error labels
+VAL	_notInt,<All[a1:Ts].(code{ESP: sptr a1})>
+VAL	_notFn,<All[a1:Ts].(code{ESP: sptr a1})>
+VAL	_notPair,<All[a1:Ts].(code{ESP: sptr a1})>
+VAL	_notChar,<All[a1:Ts].(code{ESP: sptr a1})>
+VAL	_notIndesc,<All[a1:Ts].(code{ESP: sptr a1})>
+VAL	_notOutdesc,<All[a1:Ts].(code{ESP: sptr a1})>
+VAL	_notString,<All[a1:Ts].(code{ESP: sptr a1})>

@@ -1,0 +1,67 @@
+#pragma PIL
+
+static abstype <a,b,c>foo1[d] = *(a,b,c,d);
+static abstype foo2[d] = *(d,d);
+abstype <a,b,c>foo3[d] = *(a,b,c,d);
+abstype foo4[d,e] = *(d,e);
+abstype <a,b,c>foo5[d,e,f] = *(a,b,c,d,e,f);
+abstype <a,b>closure[c] = *(b f(c,a), c);
+
+exception Foo;
+
+b apply<a,b>(<a,b>closure f,a x) {
+  with f[c] = f do {
+    return f.1(f.2,x);
+  }
+}
+
+static c compose_f_g<a,b,c>(*(<a,b>closure,<b,c>closure) env, a arg) {
+  return apply(env.2,apply(env.1,arg));
+}
+
+<a,c>closure compose<a,b,c>(<b,c>closure g,<a,b>closure f) {
+  return ^closure(^(compose_f_g@<a,b,c>,^(f,g)));
+}
+
+a id<a>(a x) {
+  return x;
+}
+
+void pop_main() {
+  <int,int,int>foo1 x1 = ^foo1 (^(1,1,1,"foo"));
+  <bool,int,char>foo3 x3 = ^foo3 (^(true,3,'a',"foo"));
+
+  foo2 x2 = ^foo2 (^("foo","bar"));
+  foo2 x4 = ^foo2 (^('a','b'));
+  foo2 x5 = ^foo2 (^(3,4));
+  foo2 x6 = ^foo2 (^(x5,x4));
+  foo2 a[] = {x2,x4,x5,x6};
+
+  with z[d] = x2 do {
+    d a = z.1;
+    d b = id(z.2);
+    z.1 = b; z.2 = a;
+  }
+
+  foo4 x10 = ^foo4 (^(3,true));
+  <int,char,bool>foo5 x11 = ^foo5 (^(3,'a',false,"foo",'b',x10));
+
+  with w[d,e,f] = x11 do {
+    d a = w.4;
+    e b = w.5;
+    while (w.1++ <= 10) {
+      if (w.1 == 8) break;
+    }
+  }
+
+  for (int x=0; x<11; x++) {
+    with z[d,e,f] = x11 do {
+      d a = z.4;
+      raise Foo();
+    }
+  }
+
+
+  return;
+}
+

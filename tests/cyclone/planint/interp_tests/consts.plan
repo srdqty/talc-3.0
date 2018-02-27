@@ -1,0 +1,21 @@
+(* tests literal constants *)
+(* test1: void -> unit *)
+(* output: 
+   false15hello( ( 1, 2 ), 4 )[ 1; 2; 3 ]
+   ()
+*)
+
+fun test1() : unit =
+  let val b : unit = false
+      val i : unit = 1
+      val c : unit = '5'
+      val s : unit = "hello"
+      val x : unit = ((1,2),4)
+      val m : unit = [1;2;3]
+      exception Head
+  in
+      (print(b); print(i); print(c); print(s); print(x); print(m);
+       print("\n"))
+  end 
+
+val entry_fun       : unit = "test1"

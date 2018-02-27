@@ -1,0 +1,199 @@
+#include <string.h>
+#include <tal_sockets.h>	/* sockets */
+#include <dlpop.h>		/* dynamic linking */
+
+#include "absyn.h"		/* FASTnet header files */
+#include "parse.h"
+#include "env.h"
+#include "network.h"
+#include "svc.h"
+#include "eval.h"
+
+
+/* process message recieved from existing client */
+void process_client_msg(FILE fd)
+{
+  *(int, sockaddr) recv_pair;
+  string_file parse_str;
+  string str = Core::new_string(MAX_PLANPROG);
+  value v;
+
+  /* read string from socket */
+  recv_pair = tal_recvfrom(fd, str, ^sockaddr.ADDR_INET(^(0, 0)));
+  parse_str = ^string_file(0, str);
+
+  if(size(parse_str.file) == 0) {
+    /* EOF encountered -->  remove from ready_fds and close socket */
+    printf("size(parse_str.file) == 0\n");
+  } else {
+    pop_pkt ppkt;
+
+    ppkt = str_to_pop_pkt(parse_str);
+    *(string, int) ev_addr = parse_hostname(ppkt.evalAddr);
+
+    /* set received_host global variable */
+    if(Core::strcmp("inject:0000", ppkt.sourceAddr) == 0)
+      /* sent by inject program */
+      received_host = "inject:0000";
+    else
+      /* find corresponding interface from pland_interfaces list */
+      List::iter_c(fun void _(FILE fd, *(FILE, string) pr) {
+	            if (fd == pr.1)
+		      received_host = pr.2;
+                  }, fd, pland_interfaces);
+
+    printf("Received packet on interface: %s\n", received_host);
+
+    if (eval_dest(ev_addr)) {
+
+      /* evalAddr is this node's addr --> evaluate packet here */
+      printf("Evaluating packet (fn:%s source:%s  eval:%s  rb: %d)\n",
+	     ppkt.fn_to_exec,
+	     /* valuelist_to_str(ppkt.actuals,","), */
+	     ppkt.sourceAddr, ppkt.evalAddr, ppkt.rb);
+      
+      try {
+
+	v = eval_pop_pkt(null, ppkt);
+	printf("\n");
+
+      } handle e
+	switch e {
+	case ResourceBound(s): printf("%s\n(Not sending packet)\n", s);
+	}
+      
+    } else {
+
+      /* evalAddr is not this node's addr --> forward packet */
+      *(string, int) hop = 
+	parse_hostname(rout_table_lookup(ppkt.evalAddr, pland_rtable));
+
+      printf("Forwarding pkt: dest = %s:%d  next_hop = %s:%d\n", 
+	     ev_addr.1, ev_addr.2, hop.1, hop.2);
+
+      tal_sendto(tal_socket(^socket_domain.PF_INET,^socket_type.SOCK_DGRAM,0),
+		 pop_pkt_to_str(^pop_pkt(ppkt.program, ppkt.fn_to_exec,
+					 ppkt.actuals, ppkt.sourceAddr,
+					 ppkt.evalAddr, ppkt.rb-1)),
+		 ^sockaddr.ADDR_INET(^(tal_gethostbyname(hop.1), hop.2)));
+    }
+  }
+}
+
+void main_function()
+{
+  string argv[] = std_args();
+  int i, c, j;
+  string rout_table_file;
+  string rout_str = Core::new_string(MAX_PLANPROG);
+  string inter_str = Core::new_string(MAX_PLANPROG);
+  FILE fp;
+  FILE listen_sock;	     
+  <FILE> List::list wait_fds, tmp; /* file descriptors waited on (by select) */
+  string_file parse_str;
+  <*(string, int)> List::list hosts_ports;
+  
+  /****************************************************************************
+   * command line processing
+   *
+   *   IP port should be: 1024 <= port <= 5000
+   *   <-rf rout_table_file>
+   ***************************************************************************/
+
+  rout_table_file = "";
+
+  /* printf("pland_hostname: %s\n", pland_hostname); */
+
+  /* must have 2 arguments (for now) */
+  if (size(argv) != 3)  {
+    printf("%s: usage: <-if interface_file>\n", argv[0]);
+    raise InternalError("");
+  }
+
+  /* print out routing table info
+     List::map (fun int _(*(string, string) s)
+     { printf("[%s %s]", s.1, s.2); return 0;}, pland_rtable);
+     printf("\n");
+  */
+  
+  /* read interface file */
+  if (Core::strcmp(argv[1], "-if") != 0) {
+    printf("%s: usage: must provide -if flag\n", argv[0]);
+    raise InternalError("");
+  }
+  
+  printf("Opening interface info file: %s\n", argv[2]);
+  fp = Core::file_open(argv[2], "r");
+
+  for(i = 0; (c = fgetc(fp)) != EOF; i++)
+    inter_str[i] = c;
+  inter_str[i] = EOF;
+  inter_str = String::substring(inter_str, 0, i+1);
+  parse_str = ^string_file(0, inter_str);
+  read_interface_file(parse_str);
+  Core::file_close(fp);
+
+  /* initialize the core services */
+  Svc::init_services();
+
+  /***************************************************************************
+   * pland
+   ***************************************************************************/
+
+  pland_interfaces = null;
+  wait_fds = null;
+  hosts_ports = pland_hosts_ports();
+
+  /* For each (host, port) pair
+   *   - create new socket and bind to port
+   *   - add (socket, host:port) pair to pland_interfaces
+   *   - add socket to wait_fds
+   */
+  while(hosts_ports != null) {
+    listen_sock = tal_socket(^socket_domain.PF_INET,^socket_type.SOCK_DGRAM,0);
+    tal_bind(listen_sock,
+	     ^sockaddr.ADDR_INET(^(TAL_INADDR_ANY, hosts_ports.hd.2)));
+
+    pland_interfaces = ^List::list(^(listen_sock,
+				     sprintf("%s:%d", hosts_ports.hd.1,
+					     hosts_ports.hd.2)),
+                                   pland_interfaces);
+
+    wait_fds = ^List::list(listen_sock, wait_fds);
+    hosts_ports = hosts_ports.tl;
+  }
+
+  
+  /* Continually process file descriptors as they become ready
+   * (multiple sockets may be open due to multi-homed hosts)
+   */
+
+  /* create array w/ FILE pts in it */
+  FILE wait[] = new_array(List::length(wait_fds), wait_fds.hd);
+  tmp = wait_fds;
+  for(i = 0; i < List::length(wait_fds); i++) {
+    wait[i] = tmp.hd;
+    tmp = tmp.tl;
+  }
+  
+  while(true) {
+    FILE ready[] = tal_select(wait, 0, 0, 0);
+
+    for(i = 0; i < size(ready); i++) {
+      process_client_msg(ready[i]);
+    }
+  }
+  return;
+}
+
+void pop_main()
+{
+  try
+    main_function();
+  handle e
+    switch e {
+    case InternalError(s):          printf("%s\n", s);
+    case PlanExcept(s):             printf("PLAN EXCEPT (pland): %s\n", s);
+    case Core::FileOpenError(name): printf("File not found: %s", name);
+    }
+}

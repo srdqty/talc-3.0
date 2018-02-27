@@ -1,0 +1,28 @@
+0) If you do not have an account set up for you on ensemble01:
+
+a) If you don't have a ssh public key then run ssh-keygen and press
+enter three times.
+
+b) Send your public key (~/.ssh/identity.pub) and your desired login to
+Dan at danieljg@cs.cornell.edu.
+
+1) Put the following into your ~/.ssh/config file:
+
+Host ensemble01.cs.cornell.edu
+Port 80
+FallBackToRsh no
+ForwardX11 no
+User <username on ensemble machine>
+
+2) Set environment variable CVS_RSH to `which ssh`.
+
+3) Make sure you are using cvs version >=1.9 (cvs -v gets version).
+Note that 1.10 is in /usr/local/gnu/cvs-1.10/bin under Solaris.
+
+4) To create new working copy:
+
+cvs -d :ext:ensemble01.cs.cornell.edu:/cvsroot checkout talc
+
+NOTE: These instructions are rarely updated.  You should try to pattern-match
+the meta-prl instructions at 
+http://ensemble01.cs.cornell.edu:12000/cvsweb/~checkout~/meta-prl/doc/htmlman/mp-cvs-rw.html.  If problems persist, ask Dan.

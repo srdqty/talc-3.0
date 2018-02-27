@@ -1,0 +1,27 @@
+// check_array.pop
+// Test array routines.
+
+#include "core.h"
+
+void pop_main()
+{
+  int a[] = {1,1,1}; 
+  int count = 0;
+
+  for (int i=0;i<size(a);i++)
+    {
+     count = count + a[i];
+    }
+
+  for (int j=0;j<size(a);j++)
+    {
+     count = count + a[j];
+    }
+
+  for (int k=0;k<size(a);k++)
+    {
+     count = count + a[k];
+    }
+ 
+  Core::print_int(count);  
+}

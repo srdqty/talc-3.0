@@ -1,0 +1,475 @@
+/////////////////////////////////////////////////////////////////////////////
+// Poptype:  provides type-checking for Popcorn abstract syntax.
+// See also poptypeenv, popunify, poptypestmt, and poptypeeexp.
+// This file primarily provides type-checking for top-level declarations
+// and thereby glues everything together.
+/////////////////////////////////////////////////////////////////////////////
+
+#include "core.h"
+#include "list.h"
+#include "dict.h"
+#include "popsyntax.h"
+#include "poperr.h"
+#include "poptypeenv.h"
+#include "popunify.h"
+#include "poptypestmt.h"
+#include "poptypeexp.h"
+#define location Gcdfec::seg
+
+// uncomment for debugging
+//#define POPTYPE_DEBUG 1
+
+open Core;
+open Popsyntax;
+open List;
+open Poptypeenv;
+open Popunify;
+open Poptypestmt;
+open Poptypeexp;
+
+prefix Poptype;
+open Poptype;
+
+// Type-check a function declaration -- this is needed when we have
+// a codegen expression
+void tcFunDecl(global_env g,c_env env,location loc,fndecl fd) {
+  typ fd_type = check_fundecl_valid_type(g,loc,fd);
+  _ synth   = tcStmt(g,env,fd.body);
+  _ returns = synth.does_jmp;
+  // hack since splice returning isn't being synthesized
+  switch env {
+  case Frame(_): returns = does_return(false,fd.body);
+  default:       ;
+  }
+  if ((fd.ret_type != ^typ.VoidType) && !returns)
+    terr2(loc,"function body must return a value of type ",
+	  typ2string(fd.ret_type));
+}
+
+static void tcGlobalDecl(global_env g,location loc,
+			 *(scope,var,typ,<exp>Opt) quad) {
+  scope    s   = quad.1;
+  var      v   = quad.2;
+  typ      t   = quad.3;
+  <exp>Opt eor = quad.4;
+  c_env env = mk_env(bogus_f_env());
+  exp e = (eor == null) ? default_initializer(g,t,loc) : eor.v;
+  check_constexp(e);
+  typ t2 = tcExp(g,env,e).typ;
+  // FMS:
+  // We need to unify this so the uninstantiated type variables (due to null) 
+  // in t2 get instantiated.  It is unfortunate but we must do this even when
+  // we create a default initializer.
+  if (!unify(g,t,t2)) {
+    string s1 = strconcat("The type of the initializer (",typ2string(t2));
+    string s2 = strconcat(") does not match the declared type (",typ2string(t));
+    terr4(loc,"the type of the initializer (",typ2string(t2),
+	  ") does not match the declared type ",typ2string(t));
+  }
+  quad.4 = ^Opt(e);
+}
+
+static void tcStructDecl(global_env g,location loc,structdecl sd) {
+  _ fs = sd.fields;
+  _ p = List::split3(fs);
+  _ names = merge_sort(strcmp,p.1);
+  _ dup = check_unique(strcmp,names);
+  if (dup != null)
+    terr4(loc,"field ",dup.v," is duplicated in struct ",sd.name);
+  dup = check_unique(strcmp,merge_sort(strcmp,sd.tyvars));
+  if (dup != null)
+    terr4(loc,"type variable ",dup.v," is duplicated in struct ",sd.name);
+  for (<typ>list ts = p.3; ts != null; ts = ts.tl)
+    check_valid_type(loc,g,sd.tyvars,ts.hd);
+}
+
+static void tcUnionDecl(global_env g,location loc,uniondecl ud) {
+  _ fs = ud.fields;
+  _ p = List::split(fs);
+  _ names = merge_sort(strcmp,p.1);
+  _ dup = check_unique(strcmp,names);
+  if (dup != null)
+    terr4(loc,"field ",dup.v," is duplicated in union ",ud.name);
+  dup = check_unique(strcmp,merge_sort(strcmp,ud.tyvars));
+  if (dup != null)
+    terr4(loc,"type variable ",dup.v," is duplicated in union ",ud.name);
+  for (<typ>list ts = p.2; ts != null; ts = ts.tl)
+    check_valid_type(loc,g,ud.tyvars,ts.hd);
+}
+
+static void tcAbsDecl(global_env g,location loc,absdecl ad) {
+  <var>list all_tyvars = append(ad.all_tyvars,ad.exist_tyvars);
+  <var>Opt dup = check_unique(strcmp,merge_sort(strcmp,all_tyvars));
+  if (dup != null)
+    terr4(loc,"type variable ",dup.v," is duplicated in abstype ",ad.name);
+  check_valid_type(loc,g,all_tyvars,ad.defn);
+}
+
+static void tcExceptionDecl(global_env g,location loc,
+			    *(var,scope,typ) ed) {
+  check_valid_type(loc,g,null,ed.3);
+}
+
+static void tcExternVal(global_env g,location loc,*(var,typ) ev) {
+  check_valid_type(loc,g,null,ev.2);
+}
+
+// eliminates open by flattening out the declarations (since the
+// prefixes have been expanded) and also eliminates unneeded extern
+// value declarations.  
+static <top_decl>list eliminate_open_and_dead_externs
+(global_env g,<top_decl>list tds) {
+  <top_decl>list result = tds;
+  <top_decl>list prev = null;
+
+  while (tds != null) {
+    switch (tds.hd.raw_top_decl) {
+    case OpenDecl(p):
+      <top_decl>list nested_tds = p.2;
+      <top_decl>list tds_tail   = List::append(nested_tds,tds.tl);
+      if (prev == null) {
+	result = tds_tail;
+	tds    = tds_tail;
+      } else {
+	prev.tl = tds_tail;
+	tds     = tds_tail;
+      }
+    case ExternVal(p):
+      // see if the external value was referenced
+      if (Dict::lookup(g.globals,p.1).2) {
+	prev = tds;
+	tds = tds.tl;
+      } else { // delete the external value
+	if (prev == null) {
+	  result = tds.tl;
+	  tds = tds.tl;
+	} else {
+	  prev.tl = tds.tl;
+	  tds = tds.tl;
+	}
+      }
+    case ExceptionDecl(p):
+      // see if the external value was referenced
+      if (Dict::lookup(g.exceptions,p.1).3) {
+	prev = tds;
+	tds = tds.tl;
+      } else { // delete the external value
+	if (prev == null) {
+	  result = tds.tl;
+	  tds = tds.tl;
+	} else {
+	  prev.tl = tds.tl;
+	  tds = tds.tl;
+	}
+      }
+    case StructDecl(sd): 
+      switch Dict::lookup(g.structs,sd.name).2 {
+      case Unused: 
+	if(prev == null) {
+	  result = tds.tl;
+	  tds = tds.tl;
+	} else {
+	  prev.tl = tds.tl;
+	  tds = tds.tl;
+	}
+	g.structs = Dict::delete(g.structs,sd.name);
+      case Mentioned:
+	tds = ^list(^top_decl(^raw_top_decl.ExternType(^(sd.name,
+							 sd.tyvars,
+							 sd.possibly_null)),
+	                      tds.hd.loc),
+	            tds.tl);
+	if(prev != null)
+	  prev.tl = tds;
+	g.structs   = Dict::delete(g.structs,sd.name);
+	g.abstracts = 
+	  Dict::insert(g.abstracts, sd.name, 
+		       ^(sd.tyvars,sd.possibly_null,^type_use.Mentioned));
+      default: 
+	prev = tds;
+	tds  = tds.tl;
+      }
+    case UnionDecl(ud): 
+      switch Dict::lookup(g.unions,ud.name).2 {
+      case Unused: 
+	if(prev == null) {
+	  result = tds.tl;
+	  tds = tds.tl;
+	} else {
+	  prev.tl = tds.tl;
+	  tds = tds.tl;
+	}
+	g.unions = Dict::delete(g.unions,ud.name);
+      case Mentioned:
+	tds = ^list(^top_decl(^raw_top_decl.ExternType(^(ud.name,
+							 ud.tyvars,
+							 false)),
+	                      tds.hd.loc),
+	            tds.tl);
+	if(prev != null)
+	  prev.tl = tds;
+	g.unions    = Dict::delete(g.unions,ud.name);
+	g.abstracts = Dict::insert(g.abstracts, ud.name, 
+				   ^(ud.tyvars,false,^type_use.Mentioned));
+      default: 
+	prev = tds;
+	tds  = tds.tl;
+      }
+    case AbsDecl(ad): 
+      switch Dict::lookup(g.abstypes,ad.name).2 {
+      case Unused: 
+	if(prev == null) {
+	  result = tds.tl;
+	  tds = tds.tl;
+	} else {
+	  prev.tl = tds.tl;
+	  tds = tds.tl;
+	}
+	g.abstypes = Dict::delete(g.abstypes,ad.name);
+      case Mentioned:
+	tds = ^list(^top_decl(^raw_top_decl.ExternType(^(ad.name,
+							 ad.all_tyvars,
+							 false)),
+	                      tds.hd.loc),
+	            tds.tl);
+	if(prev != null)
+	  prev.tl = tds;
+	g.abstypes  = Dict::delete(g.abstypes,ad.name);
+	g.abstracts = Dict::insert(g.abstracts, ad.name, 
+				   ^(ad.all_tyvars,false,^type_use.Mentioned));
+      default: 
+	prev = tds;
+	tds  = tds.tl;
+      }
+    case ExternType(x):
+      switch Dict::lookup(g.abstracts,x.1).3 {
+      case Unused:
+	if(prev == null) {
+	  result = tds.tl;
+	  tds = tds.tl;
+	} else {
+	  prev.tl = tds.tl;
+	  tds = tds.tl;
+	}
+	g.abstracts = Dict::delete(g.abstracts,x.1);
+      default:
+	prev = tds;
+	tds  = tds.tl;
+      }
+    default: 
+      prev = tds;
+      tds  = tds.tl;
+    }
+  }  
+  return(result);
+}
+
+// This pass makes sure all of the types used in the top-level declarations
+// are well-formed.  As a side-effect, the names used in the types are
+// expanded so that subsequent lookups of those types will not cause
+// problems.  
+static void check_type_top_decls(global_env g, <top_decl>list ds) {
+  for (<top_decl>list ds = ds; ds != null; ds = ds.tl) {
+    top_decl d = ds.hd;
+    location loc = d.loc;
+    raw_top_decl rd = d.raw_top_decl;
+    switch rd {
+    case FunDecl(fd):
+      check_fundecl_valid_type(g,loc,fd);
+    case StructDecl(sd): 
+      tcStructDecl(g,loc,sd);
+    case UnionDecl(ud): 
+      tcUnionDecl(g,loc,ud);
+    case AbsDecl(ad):
+      tcAbsDecl(g,loc,ad);
+    case ExceptionDecl(ed):
+      check_valid_type(loc,g,null,ed.3);
+    case ExternVal(ev):
+      check_valid_type(loc,g,null,ev.2);
+    case GlobalDecl(gd):
+      check_valid_type(loc,g,null,gd.3);
+    case OpenDecl(p): 
+      check_type_top_decls(open_prefix(g,p.1),p.2);
+    default: 
+      ; // skip
+    }
+  }
+}
+
+// This pass makes sure all of the value declarations are well-formed
+// and assumes the type declarations have already been checked and
+// that their type names have been fully expanded.  
+static void check_value_top_decls(global_env g, <top_decl>list ds) {
+  for (<top_decl>list ds = ds; ds != null; ds = ds.tl) {
+    top_decl d = ds.hd;
+    location loc = d.loc;
+    raw_top_decl rd = d.raw_top_decl;
+    switch rd {
+    case FunDecl(fd): 
+#ifdef POPTYPE_DEBUG
+      printf("checking fun %s\n",fd.name);
+#endif
+      tcFunDecl(g,mk_env(fndecl2f_env(fd)),loc,fd);
+    case StructDecl(sd): 
+      ; // skip
+    case UnionDecl(ud): 
+      ; // skip
+    case AbsDecl(ad):
+      ; // skip
+    case ExceptionDecl(p): 
+      ; // skip
+    case ExternType(p): 
+      ; // skip
+    case ExternVal(p):
+      ; // skip
+    case GlobalDecl(p): 
+#ifdef POPTYPE_DEBUG
+      printf("checking global %s\n",p.2);
+#endif
+      tcGlobalDecl(g,loc,p);
+    case PrefixDecl(p): 
+      impossible("check_decl:prefixes should be gone");
+    case OpenDecl(p): 
+      check_value_top_decls(open_prefix(g,p.1),p.2);
+    }
+  }
+}
+static void check_externs_and_exns(global_env g,<top_decl>list ds) {
+  for(; ds != null; ds = ds.tl)
+    switch ds.hd.raw_top_decl {
+    case ExceptionDecl(p):
+      location loc = ds.hd.loc;
+      tcExceptionDecl(g,loc,p);
+    case ExternVal(p):
+#ifdef POPTYPE_DEBUG
+      printf("checking extern val %s\n",p.1);
+#endif
+      location loc = ds.hd.loc;
+      tcExternVal(g,loc,p);
+    default: ;
+  }
+}
+
+static void check_top_decls(global_env g,<top_decl>list ds) {
+  // check the types and externs, then make them all unused, 
+  // then use the non-externed ones
+  // then check the values
+  // (using only the types that are necessary)
+
+  void type_unused<a>(string name, *(a,type_use) pr) {
+    pr.2 = ^type_use.Unused;
+  };
+  void abs_unused(string name, *(<var>list,bool,type_use) trip) {
+    trip.3 = ^type_use.Unused;
+  };
+
+  check_type_top_decls(g,ds);
+  check_externs_and_exns(g,ds);
+  Dict::iter(type_unused@<structdecl>, g.structs);
+  Dict::iter(type_unused@<uniondecl>,  g.unions);
+  Dict::iter(type_unused@<absdecl>,    g.abstypes);
+  Dict::iter(abs_unused,               g.abstracts);
+  Dict::iter_c(use_struct, g,          g.structs);
+  Dict::iter_c(use_union,  g,          g.unions);
+  Dict::iter_c(use_abstype,g,          g.abstypes);
+  Dict::iter_c(use_exn,    g,          g.exceptions);
+  check_value_top_decls(g,ds);
+}
+static void use_struct(global_env g, string name, *(structdecl,type_use) pr) {
+  switch pr.1.scope {
+  case Extern: ;
+  default:     destruct_struct(g,name);
+  }
+}
+static void use_union(global_env g, string name, *(uniondecl,type_use) pr) {
+  switch pr.1.scope {
+  case Extern: ;
+  default:     destruct_union(g,name);
+  }
+}
+static void use_abstype(global_env g,string name,*(absdecl,type_use) pr) {
+  switch pr.1.scope {
+  case Extern: ;
+  default:    destruct_abstype(g,name);
+  }
+}
+static void use_exn(global_env g, string name, *(typ,scope,bool) trip) {
+  switch trip.2 {
+  case Extern: ;
+  default:     destruct_exn(g,name);
+  }
+}
+
+// eliminates all prefix declarations by adding the prefix to
+// all defined identifiers
+static <top_decl>list eliminate_prefixes(<top_decl>list ds) {
+  return(elim_prefix_aux(null,ds));
+}
+static <top_decl>list elim_prefix_aux(<string>Opt preopt, <top_decl>list ds) {
+  if (ds == null) {
+    return null;
+  } else {
+    top_decl d = ds.hd;
+    if (preopt == null) {
+      switch d.raw_top_decl {
+      case PrefixDecl(pat):
+	return(List::append(elim_prefix_aux(^Opt(pat.1),pat.2),
+			    elim_prefix_aux(preopt,ds.tl)));
+      case OpenDecl(pat):
+	pat.2 = elim_prefix_aux(preopt,pat.2);
+	return(^list(d,elim_prefix_aux(preopt,ds.tl)));
+      default: 
+	return(^list(d,elim_prefix_aux(preopt,ds.tl)));
+      }
+    } else {
+      string prefx = preopt.v;
+      switch d.raw_top_decl {
+      case FunDecl(fd):
+	fd.name = add_prefix(prefx,fd.name);
+      case StructDecl(sd):
+	sd.name = add_prefix(prefx,sd.name);
+      case UnionDecl(ud):
+	ud.name = add_prefix(prefx,ud.name);
+      case AbsDecl(ad):
+	ad.name = add_prefix(prefx,ad.name);
+      case ExceptionDecl(ed):
+	ed.1 = add_prefix(prefx,ed.1);
+      case ExternType(et):
+	et.1 = add_prefix(prefx,et.1);
+      case ExternVal(ev):
+	ev.1 = add_prefix(prefx,ev.1);
+      case GlobalDecl(gd):
+	gd.2 = add_prefix(prefx,gd.2);
+      case PrefixDecl(pd):
+	<top_decl>list ds2 = elim_prefix_aux(^Opt(add_prefix(prefx,pd.1)),pd.2);
+	return(List::append(ds2,elim_prefix_aux(preopt,ds.tl)));
+      case OpenDecl(od):
+	od.2 = elim_prefix_aux(preopt,od.2);
+      }
+      return(^list(d,elim_prefix_aux(preopt,ds.tl)));
+    }
+  }
+}
+
+// a list of "inner" functions that are later added to the global top-decls 
+<top_decl>list inner_functions = null;
+
+*(global_env,<top_decl> list) type_check(<top_decl>list ds) {
+  inner_functions = null;
+  ds = eliminate_prefixes(ds);
+  // enter all the definitions into the global environment assuming that
+  // the types mentioned are well-formed
+  global_env g = initial_global_env(ds);
+
+  check_top_decls(g,ds);
+
+  // Make sure built-in exceptions are not found to be dead.
+  destruct_exn(g,null_exception_name);
+  destruct_exn(g,union_exception_name);
+  destruct_exn(g,array_exception_name);
+  destruct_struct(g,"memType");
+
+  // this could be folded into a different pass
+  ds = eliminate_open_and_dead_externs(g,ds); 
+  return ^(g,List::append(ds,inner_functions));
+}

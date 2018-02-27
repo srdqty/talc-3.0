@@ -1,0 +1,675 @@
+EXCEPTIONS
+
+These have the same problems as function pointers---the tag of the exception
+could get updated but the exception itself has the tag in-line (not
+indirect).  The problem is more insidious though, since the tag is packaged
+up in the implementation.  In other words, given
+
+exception Foo;
+exn f = ^Foo();
+
+If we change Foo, how do summarily change f to now use the new Foo tag?
+It's not clear to me that this is even sound in the case that Foo changes
+its argument type.  That is, a change to the argument type is really a "new"
+Foo.  Perhaps we do renaming here, as with types.  In particular, we share
+the exception constructor for exceptions that persist across definitions,
+and we rename them when they change.  It would be nice to prove that this is
+sound.  I think the renaming makes this straightforward.
+
+This really motivates separating the data and code segments at load-time,
+so that exception constructors in the old code that are inherited don't keep
+the entire code block around.  On the other, only one version of old code
+will be kept around:
+
+ver1    ver2     ver3     ver4
+Foo --> Foo2 --> Foo2 --> Foo2 
+
+In this case, ver2 and ver4 will be kept around, but ver3 will go away since
+it refers to, but does not define Foo2.  Thus at most two versions of some
+code should ever be around at one time, per exception.
+
+RECONSTRUCTING STATE
+
+Have the problem with the dir listing patch that some state that was known
+at program start time is lost and can't be recovered generically.  In
+particular, if the flash process changed directories to service documents,
+we lose the original location.  This prevents the slaves from being started
+from the right place.
+
+Same problem occurs in the patch from versions two to three in which the
+DataEntry of the old version is missing some information of the new version
+(like chunkLocks, refcounters, etc.), and this information is hard to
+construct (though not impossible).  Here it seems like it would be nice to
+allow the old code (or some semblance of it), run for the existing
+connections while the new code is used for the new stuff.  Or similarly,
+during initialization to finish off the old transactions before accepting
+any new ones, and then resetting bogus state that is created in the data
+cache. 
+
+STUBS
+
+Another reason to use stubs would be as "transition" functions before
+dealing with the new version.  That is, if the new version is
+overriding the old one with a new type, we might want TWO stubs: one to be
+called by the old code with the old type, and one by the new code with the
+new type.  Presumably this new version is only temporary, perhaps to
+facilitate some state transition.  This is where the UPDATE_SYMBOL
+optimization would be helpful.
+
+Not sure how I would set this up to work.  I could presumably make a new
+prefix type in the interface code file that would properly identify it.
+Then rather than register the New:: function under the proper symbol name,
+this "new-code stub" would get registered instead.
+
+AUTOMATED PATCH GENERATION
+
+Think about some kind of revision control system.  We know what the "real"
+evolution is.  We should really have something like CVS anyway.  Then do
+stuff as if you had the revision tree in hand, but do it by hand.  Save some
+intermediate files to help out with name changing.
+
+Ideally, we would like the update process to proceed as follows:
+
+1) Create a new directory and copy the existing source into that directory.
+2) Change the source however we like.  Compile it and make sure it runs.
+3) Automatically generate patches (minus difficult elements like mapper
+procedures and state transfer) for those files that have changed.
+4) Tweak the automatically generated patches 
+5) Dynamically apply the patches in a big batch.
+
+The question is how to perform step 3, keeping in mind the user intervention
+in step 4.  
+
+Patch File format
+-----------------
+
+Patch files have the following format:
+
+foo.patch
+---------
+implementation: new_foo_implementation.pop
+interface:      new_foo_stub_code.pop
+sharing:        symbols that have not changed between implementations
+renaming:       types=whose names=should be=changed
+
+The implementation file is the regular implementation file as written by the
+user.  The interface field is optional, naming the file containing code for
+state transformation and mapper procedures.  The sharing field contains a
+space-separated list of identifiers that have not changed between the old
+and new implementations.  The renaming field is a list of mappings of the
+form oldtypename=newtypename.  This simply tells the translator to replace
+the former name with the new one; if this results in the changing of a type
+of a function, the user must be careful not to include that function's name
+in the sharing list. In the renaming list, the user should specify
+New::foo=blah for newly defined types (i.e. in the implementation file), and
+simply foo=blah for old types (i.e. in the interface code file for mapping
+to the name in the running program).
+
+Generating patches
+------------------
+
+start with new version of file N, and old version of file O.
+
+sharing list = []
+stub list = []
+data list = []
+rename var list (rvl) = []
+
+fun eq(t1,t2)
+
+  recursively check if the two type definitions are equal.  The thing is, we
+  want to use the environment for the new file for t1 and the environment
+  for the old file for t2.  This is needed to make sure that the namedtypes
+  in each type have the same definition (obvious in the poptype case, not
+  here).  How to deal with abstract types?  Punt for now.  It's also not
+  clear how we want to deal with evars; don't permit them for now (since
+  typechecking should take care of them) and see how it goes.
+
+  If the types are not equal, we should add New::t1=XXX to the rename var
+  list, indicating that the type differs in the new version and should be
+  renamed.  One way to determine XXX is to calculate the MD5 hash of the
+  definition of the type (if available).
+
+fun eqdef(d1,d2)
+
+  Check if d1 and d2 are syntactically equal.  Don't fool around with
+  equivalences---just follow the tree and make sure the syntax is the same.
+  Be sure to make sure that any references to types in the file are the same
+  by calling eq(t1,t2) as above.
+
+read in and typecheck both files, N and O.  This will create the type
+environment for each file, allowing us to look up types for variables and
+definitions for types.  typeof(f) means to look up the type of f in the
+environment.
+
+for each VALUE variable v defined in N do
+  (* the same name is defined in the new file *)
+  if v is a VALUE \in O then
+    let tn = typeof(v \in N) in
+    let to = typeof(v \in 0) in
+    if (to is undefined)
+    if eq((New::v,type(v \in N)),(v,type(v \in O)))
+      if eqdef(v \in N, v \in O) then
+        they are the same---add v to sharing list
+      else
+        not the same but have same type---do nothing
+    else not the same with different types---
+      if tn is a function type
+        if to is a function type then function changed type---
+          add (v, tn, to) to stub list
+        else data became a function!!!---
+          no stub needed, will just override old def; emit warning
+      else
+        if to is a function type
+          no stub needed, will just override old def; emit warning
+        else data changed type---
+          add (v, tn, to) to data list 
+  (* otherwise it's a new def, do nothing *)
+
+for each TYPE variable t defined in N do
+  (* the same name is defined in the new file *)
+  if t is a TYPE \in O then
+    if eq(t,t)
+      they are the same---add t to sharing list
+    else
+      not the same---add (New::t,MD5(def(t))) to rename var list
+        (this will happen in eq())
+  (* otherwise it's a new def, do nothing *)
+
+At this point we should have our four lists filled in.  We now create the
+interface file N_patch.pop:
+
+for each element in the stub list (v,tn,to),
+  tn and to are assumed to be of function type---
+    make a stub having the old type that raises an exception; 
+    put the new type in comments inside the function body.
+
+generate the init function:
+  for each element in the stub list (v,tn,to),
+    tn and to are assumed to not be of function type---
+      add a comment to the user-defined init function indicating
+      that this data needs to be converted.
+
+Check the typename mapfile in the previous version's directory.  Include the
+map as part of the rename var list, removing the New:: part from the
+domain variable.  This will translate the "old" variables of the current
+version. 
+
+Create the patch file:
+
+implementation: N.pop
+interface: N_patch.pop
+sharing: sharing list
+renaming: rename var list
+
+Add to the new mapping file:
+
+ all of the New:: mappings in the rename variable list.  Make sure that the
+mappings added are consistent with the ones already there (could check this
+in determining the mapping for this file).
+
+---
+
+Have to deal with scope properly; in particular with local vs global
+symbols.
+
+1) In general, if we expect to have access to local variables when doing the
+   interface code file, the patch generation should put as externs all of
+   the symbols from the old code that were local, using the automated means
+   for generating the variable names.  We might also choose to include
+   externs for the global symbols as well, but this is less important since
+   we'll have stubs for the guys that changed.
+2) For values:
+   1) if a symbol was formerly local but is now global, it has essentially
+   changed names from (LOCAL_PREFIX)foo to foo.  The most efficient thing
+   would be, if the symbol didn't otherwise change, then we need to tie the
+   old symbol to the new one (i.e. reset the name in the old symbol table
+   entry to the new name).  Alternatively, we just add the symbol with its
+   new name, and leave the old mapping there, but this has sketchy
+   semantics.
+   2) if a symbol was formerly global but is now local, we have basically
+   the same problem.
+
+WHAT TO UPDATE
+
+At least in my context, it doesn't make sense to change the abstract type of
+a library module within a running program.  Makes more sense to change the
+use of that module.
+
+Let's consider the clients of a queue module, whose signature is
+
+  extern queue<a>;
+
+  extern exception Queue_empty;
+  extern exception Queue_full;
+
+  extern <a>queue create<a>(int max_sz);
+
+  extern void enqueue<a>(<a>queue q, a elem);
+  extern a dequeue<a>(<a>queue q);
+  extern int length<a>(<a>queue q);
+  extern int max_size<a>(<a>queue q);
+
+Consider a change to this implementation so that the representation of the
+abstract queue type changed, say from a list to an array, and thus the
+functions are also necessarily changed to accommodate the new type.  This
+change would be to improve efficiency.  Now consider the ramifications of
+this change in our approach, and Dynamic ML.
+
+In our approach, we would lose the benefit the change (improved efficiency)
+for existing clients because at each call we would have to pay the price of
+converting to old data to the new representation and then back again,
+preceding and following the call to the new version of the function,
+respectively.  This is because the new representation is fundamentally a new
+type.  For example, the interprocedure for enqueue (called enqueue_patch) is
+shown below; functions and types for the new queue implementation are
+preceded by array_.
+
+  void enqueue_patch<a>(<a>queue q, a elem) {
+    <a>array_queue aq = convert_queue_to_array(q);
+    array_enqueue(aq,a);
+    convert_array_to_queue(aq);
+  }
+
+This problem doesn't exist in Dynamic ML because it converts _existing_
+data of the old type into the new type at load time, removing all vestiges
+of the old type and its code.  In this case, the new code really _replaces_
+the old; note that the change cannot be made if the code for the old
+implementation is "active;" the definition of this is elusive, but it
+probably means that return address for the module is on any thread stack.
+Even so, in these situations, Dynamic ML is a win.
+
+But what if we want to make a change in representation that is not related
+to efficiency, but to functionality?  That is, we alter the representation
+and add some new interface functions to take advantage of the alteration.
+For example, we want to upgrade the queue implementation to be a priority
+queue implementation, and thus the signature of the enqueue function
+changes:
+
+  extern void enqueue<a>(<a>prio_queue q, a elem, int prio);
+
+Why would we do this?  Presumably some client of the queue module requires
+the new functionality; perhaps the packet queuing machinery needs to change
+to deal with QoS.  But to make use of the new queue's functionality, the
+current packet queuing code must also be changed to use the new enqueue
+function, rather than the new function through the old interface.
+
+Therefore, rather than update the library code, the client should be udpated
+instead.  In our example, rather than update the queue module, we would
+update the packet queue machinery to use a priority queue implementation,
+separate from the existing queue module.  If other parts of the program make
+use of the queue module, they don't need to be updated to use priority
+queues; this wouldn't make any sense anyway since they wouldn't make use of
+the new functionality.
+
+Changing library clients, rather than the libraries themselves, has some
+benefits:
+
+1) We only change the parts of the program that really need to be changed.
+   This controls the amount of change effecting the whole program.
+
+2) Since the size of the program that is effected is smaller, we have a
+   better handle on issues of timing, state transfer, etc.
+
+We can achieve improved efficiency in the same way, by updating the clients
+(though this is more effort than Dynamic ML).
+
+
+KINDS OF UPDATES
+
+The next question is, how likely is it that we will require changes to
+library functionality based on abstract types?  I believe the answer is
+"unlikely."  Instead, I believe updates will be to:
+
+1) Specific parts of the program that need to be tuned.  For example, rather
+   than update the generic hashtable implementation, we would probably
+   update the routing table implementation (which might have originally used
+   a hashtable) to use a new datastructure.
+
+2) Bug fixes.  Chances are, this will not involve data representation
+   changes, just the code.  However, representation changes are possible by
+   altering the clients (again, not necessary in Dynamic ML).  Similarly, we
+   might expect changes to aid in debugging, such as additional logging
+   facilities.
+
+3) New functionality added to old components.  One example is the priority
+   queue, above.  Another might be for added security.  For example, we
+   might imagine changing a function's parameter list to include some
+   security credentials.  In this case, it is interesting to consider how
+   legacy code in the program (which uses the old interface) should be
+   treated.
+
+It seems, then, that the approach proposed in Dynamic ML is complementary to
+our work.  In the cases when you want to change the implementation of an
+abstract type without changing the semantics of the module (other than
+side-effects like debugging messages, or for bug fixes), Dynamic ML seems
+like a win.  However, I believe that most changes will not be of this sort,
+in which case the work that we propose will come into play.  Combining these
+two approaches would improve overall flexibility at the cost of additional
+runtime support (for identifying and converting the old representations, and
+checking that the module being replaced is not active).
+
+Ideas for helping determine the kinds of updates that will change interfaces,
+etc.: 
+
+- look at the evolution of the JDK spec from 1.0 to 1.2.  See what sorts of
+  functions have changed and how
+
+TYPES
+
+We would like to add some flexibility with managing the running program's
+type interface, maintained by the TCB.  We want to:
+
+1) view the implementation of an abstract type so that an update can make
+   use of it.
+
+   One question is how to make this operation secure.  In particular, we
+   only want the code that updates the implementation to be able to see the
+   type representation, as opposed to client code.
+
+   Another question is the interface to this information, either through
+   load or some other function call.
+
+2) "update" a type with a new implementation.
+
+   This is problematic, because the value symbol table maintained in the
+   running program has type representations that refer to the type's name.
+   If the type's implementation changes, then these entries become invalid
+   (and constitute a security hole until changed).
+
+   One possible solution would be to run through the table and change these
+   entries.  This is inelegant and dangerous, essentially because the
+   management of symbol information is in two disconnected places.  If we
+   managed all information in the TCB, it would be reasonable, or if we
+   maintained all info in the program symbol table.
+
+   The only safe solution in our current framework is to force all "new"
+   type representations to have a different name than the old one.  This is
+   unfortunate because it taxes the namespace.
+
+   One alternative here is to transform the names of all types of
+   dynamically loadable types at compile-time to reflect an implementation
+   dependence.  For example, we could prepend the MD5 hash of the
+   implementation to the type name, providing an implicit versioning.  Even
+   better, we could hash just the declaration, simplifying the interface for
+   clients.  For example, if we have a type foo:
+
+    struct foo { int a; int b; }
+
+   This might get renamed to:
+
+    struct MD5_hash(struct foo { int a; int b; }) ## foo {
+      int a;
+      int b;
+    }
+
+   That is, just the declaration part is used in the hash, rather than the
+   entire code file containing the declaration.  Then, when some other file
+   imports this declaration:
+
+    extern struct foo { int a; int b; }
+
+   We can locally reconstruct the dynamic name, as above:
+
+    extern struct MD5_hash(struct foo { int a; int b; }) ## foo {
+      int a;
+      int b;
+    }
+
+   There are two problems with this:
+
+   1) Abstract types won't have any implementation in the extern statement.
+      That is, it will just be
+
+    extern foo;
+
+   2) For files that are statically linked, but export their symbols to
+      dynamic files, we can't change the type name because statically linked
+      files might refer to it.  One possible solution here is to somehow
+      change the type name that is registered dynamically to be the hashed
+      name.  This could occur within the dynamic loading code in combination
+      with other customizations (see below).
+
+      Alternatively, we might provide some syntax that indicates type
+      equality such that two types with the same name and implementation
+      can be used interchangeably.  We then deal with abstract types as
+      follows.
+
+       abstract struct foo {
+         int a;
+         int b;
+       }
+
+      becomes (foo' ~= MD5_hash(struct foo { int a; int b; }) ## foo)
+
+       static struct foo' {
+         int a;
+         int b;
+       }
+       abstract struct foo = foo'
+
+       int fst(foo' f) {
+         return f.a;
+       }
+
+      All clients then refer to the abstract type foo, while the
+      local functions refer to the implementation type (heretofore called
+      foo').  We would have to enforce at link time that a loaded file that
+      declares (not imports) an abstract type does not use that type
+      directly in any functions.  To update foo', I would do:
+
+       static struct foo'' {
+         int a;
+         int b;
+         int c;
+       }
+       abstract struct foo = foo''
+
+       int fst(foo'' f) {
+         return f.a;
+       }
+
+      In this example, clients that still use the foo' representation will
+      still call the old fst function.  Alternatively I could add the stub:
+
+       int Stub::fst(foo' f) {
+         return New::fst(^foo''(f.a,f.b,DEFAULT_VALUE));
+       }
+
+      New clients, however, will be linked with the new foo type, and will
+      thus get its benefits.  This trick essentially allows the name foo to
+      be used with evolving implementations.
+
+      One question is how type equality would work here.  In particular,
+      what would be the types of functions stored in the value symbol table,
+      foo are foo'?  Clearly, we want updaters to be able to see the type
+      foo', while clients should see the type foo.
+
+SYMBOL BROKERAGE
+
+I need to work on global symbol privilege management strategy.  We could
+start with Java-level privilege, since that's something we'd want to
+implement:
+
+- Public: available to anyone.
+- Package: available to related modules.
+- Private: available only to the module itself.
+
+Furthermore, we might want to worry about variances:
+
+- Read, Write: these regard to how the user is allowed to access to acquired
+  symbol.  Read is always allowed, write must be specified.  Should be able
+  to use TAL variances for these, assuming I can use subtyping.  The problem
+  will be with the rep-types stored in the symbol table.  At best, I could
+  store the most general type, and then "cast" it to what is presumably a
+  subtype (that is, a read-only version)
+
+- Update, Replace: indicates whether the element may be updated at the same
+  type (that is the element within the table stays and is re-pointed to some
+  other element of the same type) or replaced with an element of the new
+  type (the entry in the table is removed and a new one is added).  This is
+  something that shouldn't have to be reflected into the type system, since
+  it only comes into play while manipulating the symbol table.
+
+Where should access control take place?  Clearly the check must be done at
+dynamic link time, but who does the check?  There seem to be two entities of
+import:
+
+- The "system."  That is, the entire program may have a global security
+  policy.
+- The module being accessed.  This module may provide its own security
+  policy, secondary to the global policy.  This is useful for mediating
+  access to local symbols, for example.
+
+In fact, it would be nice to abstract local issues from global ones as much
+as possible.  The init function abstracts module-level linking into an
+exchange of global (public symbols).
+
+Perhaps we want to extend this model such that the global system can
+maintain named sets of symbols, where each set has associated with it some
+policy management procedure.  This follows the stuff I did in PLAN.  We
+could then change the lookup function to have the type
+
+*(a) lookup<a>(string symname, <*(a)>rep type, key principal)
+
+The key type could be null, indicating that default visibility is desired.
+
+Alternatively, the principal part could be provided to dlopen, which would
+custom-construct the lookup function (of the old type) based on the symbols
+found to be accessible by that principal; seems like we'd have to use RTCG
+for this.  Seems like this is probably the preferred choice in terms of the
+interface, since we'd probably check for authorization before allowing
+loading to occur in the first place.  Either way, the set of available
+symbols would be determined by taking the union of all available sets, each
+filtered to the symbols available to the given principle.
+
+One question is how to implement this interface scalably.  Seems like we
+want to separate the node policy from the mechanism used to store the symbol
+table.  In this way, if the policy changes, there is no need to rearrange
+the data layout of the table.  OTOH, changing the table contents would
+improve lookup times, potentially offsetting the one-time cost of
+rearranging the table.
+
+Need to think about how to apply this stuff to types as well.
+
+
+CHANGES TO SCOPE
+
+Furthermore, we would like visibility/variance to be changeable at runtime.
+For example, I might initially define a symbol as global, and then realize
+that it should really be static.  In the current system, a static symbol
+may have a different name (based on how locals are rewritten); a change in
+scope would imply a change of that name in the table.
+
+Similarly, if I try to change the type of a local variable, it will have a
+different name in the symbol table, and thus won't really replace it.
+
+
+UPDATING THE UPDATER
+
+Seems like it would be of great benefit to be able to update the dlpop
+library itself.  This way, we can make the changes mentioned 
+
+
+LOCAL VARIABLES
+
+Currently, local function calls are not indirected.  The possibilities in
+this regard are to indirect
+  1) no local functions
+  2) all local functions
+  3) only those locals that are non-static
+The motivation for 1) is that calls to local functions are sort of an
+extension of a single operation.  It may be that the old code should
+complete this "operation" without switching into a new version as a result
+of an update.  Following this logic, it may be that 3) is the right
+option---if the function is callable from outside, it must be somewhat
+independent from the file, and therefore shouldn't be considered part of the
+monolithic operation.  Finally, 2) may be the right option considering that
+the interprocedures are supposed to deal with preserving the semantics
+properly.
+
+
+FUNCTION POINTERS
+
+One problem we have is that the contents of function pointers are not
+updated---the old implementation will still be referred to.  I suspect that
+Erlang does not indirect these (how does this work with only two versions of
+the code being allowed in the system?).  I think it is preferable to have
+these be updated, even though there are some cases where it seems
+unnecessary, if not un-preferable.
+
+In the context of whole-program analysis, we could trace a function pointer
+passed around in the program and see what becomes of it.  If it simply gets
+passed in and called (perhaps more than once), we probably would like to be
+using the same function (think about the lookup function passed to init).
+However, if it is stored for later use (like in the dlpop symbol table),
+that should be updateable.
+
+---
+
+Function pointers can be updated within the state transition function if we
+can get a handle on the old value:
+
+extern int Old::a(int);
+extern int a(int);
+extern *(int (int)) Old::ptr;
+
+static void init () {
+  if (Old::ptr.1 == Old::a)
+    New::ptr.1 = a;
+  else ...
+}
+
+It would be nice to have the system make the mapping between old and new
+versions of a function, so that instead we could do:
+
+static void init () {
+  New::ptr.1 = 
+    update_ptr(Old::ptr.1, repterm@<*(int (int))>, repterm@<*(int (int))>);
+}
+
+update_fn will then go through the update list, analogous to the rollback
+list, looking to see if the value stored in Old::ptr.1 is a function that
+has changed due to an update.  If so, it will store the new version in the
+provided pointer (changed by reference).
+
+static <*(entry,entry)>List::list update_list;
+
+b update_ptr<a,b>(a oldval, <*(a)>rep oldtyp, <*(b)>rep newtyp) {
+
+  <*(entry,entry)>List::list here = update_list;
+  while (here != null) {
+    with er[c] = here.hd.1 do {
+      try {
+        *(a) oldvaltup = Poploader::pop_cast(er.2, er.1, oldtyp);
+        if (oldvaltup.1 == oldval) { // found it
+          /* assign the new value to the passed in new type */
+          with er[d] = here.hd.2 do {
+            try {
+              *(b) newvaltup = Poploader::pop_cast(er.2, er.1, newtyp);
+              return newvaltup.1;
+	    } handle e {
+	      raise (^WrongType("update_fn"));
+	    }
+	  }
+	}
+	// else this isn't it
+      } handle e { 
+        switch e {
+	case Core::Failure(s): // not the right type
+	  ;
+	case WrongType(s):     // new version not of correct type
+	  raise (e);
+	default:               // bogus exception
+	  raise (e);
+      }}
+    }
+    here = here.tl;
+  }
+  raise Core::Not_found;
+}
+
+Further changes to make:
+1) create a special "override_symbol" function.  It looks like update_symbol
+except that if it finds an old symbol entry, it
+  1) 

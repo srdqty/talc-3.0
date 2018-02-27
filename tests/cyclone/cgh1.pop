@@ -1,0 +1,30 @@
+#include "core.h"
+open Core;
+
+void pop_main()
+{
+  int a;
+
+  a = cg_test(2);
+  print_int(a);
+}
+
+int cg_test(int w)
+{
+  int i = 3;
+  int j = 0;
+
+  int f(int) = 
+      codegen(int spec(int a)
+	    {
+	      int res = 0;
+	      
+	      res = fill(i * 4) + a;
+	      
+	      return res;
+	    });
+  i = i + f(w);
+
+  return i;
+}
+

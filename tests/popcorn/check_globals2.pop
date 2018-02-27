@@ -1,0 +1,15 @@
+// check_globals.pop
+// Support file for check_globals.pop
+
+#include "core.h"
+
+extern int global_x;
+
+int print_x()
+{
+  Core::print_string("\nprint_x: global_x = ");
+  Core::print_int(global_x);
+  return global_x;
+}
+
+// EOF: check_globals.pop

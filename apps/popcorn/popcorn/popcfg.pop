@@ -1,0 +1,396 @@
+/* Popcfg
+
+  Functions to compute more precise control-flow graphs for RTCG functions.
+
+  These are based on those described in our paper "Compiling for RTCG".
+
+  One difference is that we need the successor information rather than
+  the predecessor information for dumped templates.  Therefore we
+  perform a backward rather than a forward data flow analysis.  Its
+  characteristic equations are:
+
+     out(B) = \Union_{B' \in succ(B)} in(B')
+     in(B) = t if first(B) = t, out(B) otherwise.
+  
+  -Fred Smith
+ */
+
+#include "core.h"
+#include "xarray.h"
+#include "dict.h"
+#include "set.h"
+#include "id.h"
+#include "bitvec.h"
+#include "popil.h"
+#include "poptalenv.h"
+#include "poprtcg.h"
+#include "worklist.h"
+
+open Core;
+open Popil;
+open Poptalenv;
+
+#define list   List::list
+#define dict   Dict::dict
+#define xarray Xarray::xarray
+
+prefix Popcfg;
+open Popcfg;
+
+int tptr_to_int(cf_function f, cf_operand o) {
+  switch o {
+  case Local(i): 
+    _ info = Xarray::get(f.all_operands,i);
+    _ typ = info.typ;
+    switch typ {
+    case TemplPtr(j): return j;
+    default: BUG("Expected template pointer.");
+    }
+  default: BUG("Expected local operand");
+  }
+}
+
+int rgn_to_int(cf_function f, cf_operand o) {
+ switch o {
+  case Local(i): 
+    _ info = Xarray::get(f.all_operands,i);
+    _ typ = info.typ;
+    switch typ {
+    case CodeRgn(j): return j;
+    default: BUG("Expected code region.");
+    }
+  default: BUG("Expected local operand");
+  }
+}
+
+static cf_template int_to_templ(cf_function f, int tp) {
+  return Xarray::get(f.template_pointers,tp); 
+}
+
+// Is this operand a code region generating f?
+// The operand should at very least be a code_region for some function
+// otherwise an exception may be raised.
+static bool rgn_of_fun(cf_operand r, cf_function parent, cf_function f) {
+  _ rp = rgn_to_int(parent,r);
+
+  _ fr = Xarray::get(parent.code_regions,rp).2;
+
+  return (fr == f);
+}
+
+// Computes from instruction i to the end of the block the
+// first dump instruction relevant to f.
+<int>Opt first(cf_function f,cf_block b,int i) {
+    _ insts = b.insts;
+    _ parent = b.fn;
+    _ num_insts = Xarray::length(b.insts);
+    for(_ j = i; j < num_insts; j++) {
+      _ inst = Xarray::get(insts,j);
+      switch inst {
+      case Dump *(rgn,tptr,t):
+	if(rgn_of_fun(rgn,parent,f)) {
+	  int tp = tptr_to_int(parent,tptr);
+	  return ^Opt(tp);
+	}
+      default:;
+      }
+    }
+    return null;
+}
+
+// Compute the successor information and plug it into the holeinfo structure.
+// This will be used later to construct the CFG.
+void compute_holeinfo (cf_function f) {
+  if(f.generator == null) return;
+
+  _ parent = f.generator;
+
+  // The analysis works completely over the parent.
+  // We compute with respect to template_pointers -- from which we can recover
+  // the templates later.
+
+  <cf_block>xarray     blks = parent.blocks;
+  int              num_blks = Xarray::length(blks);
+  
+  // For each block in the parent compute the first dumped template if any.
+  <int>Opt first_dumped[] = new_array(num_blks, null);
+  for(_ i = 0; i < num_blks; i++ ) {
+    _ b = Xarray::get(blks,i);
+    first_dumped[i]=first(f,b,0);
+  }
+
+  // For each block we record a bit-vector of the templates that might have
+  // been dumped immediately following leaving this block.
+  int  ins [][] = new_array(num_blks,{:int});
+  int outs [][] = new_array(num_blks,{:int});
+
+  // This is too conservative.  We don't care about template pointers
+  // that don't refer to f.
+  int num_tptrs = Xarray::length(parent.template_pointers);
+
+  for(_ i=0; i < num_blks; i++) {
+     ins[i] = Bitvec::new_empty(num_tptrs);
+    outs[i] = Bitvec::new_empty(num_tptrs);
+  }
+
+  _ df_order = get_df_order(parent);
+  _ df_sz    = size(df_order);
+  _ wl       = Worklist::create(num_blks);
+
+  // Reverse df_order because this is a backward analysis.
+  for(int i = df_sz-1;i>=0;i--) {
+    Worklist::add(wl,df_order[i]);
+  }
+  for(int i = 0; i < num_blks;i++) {
+    Worklist::add(wl,i); // Make sure all blocks are in the original worklist.
+    // Adding twice to a worklist doesn't hurt! That's the point. 
+  }
+  
+  while(!Worklist::is_empty(wl)) {
+    _ blk_num = Worklist::remove(wl);
+    _ blk = Xarray::get(parent.blocks,blk_num);
+
+    // printf("Block: %s = ", Id::id_to_string(blk.label));
+
+    _ in;
+    _ is_in_new = false;
+    _ first_d = first_dumped[blk_num];
+    if(first_d == null) {
+      // XXX - Could be smarter here to avoid allocation.
+      // printf("no dump ");
+      _ old_in = ins[blk_num];
+      in = Bitvec::new_empty(num_tptrs);
+      Bitvec::union_two(in, outs[blk_num], old_in);
+      is_in_new = !Bitvec::compare_two(in,old_in);
+      if(is_in_new) ins[blk_num] = in;
+    } else {
+      // printf("  dump ");
+      _ tp = first_d.v;
+      in = ins[blk_num];
+      is_in_new = !Bitvec::get_and_set(in,tp);
+    }
+
+    // printf("\n");
+
+    if(!is_in_new) continue;
+    
+    _ pred = blk.pred;
+    _ num_pred = Xarray::length(pred);
+    for(_ j = 0; j < num_pred; j++) {
+      _ p = Xarray::get(pred,j);
+      _ p_num = p.num;
+
+      _ old_out = outs[p_num];
+      _ out = Bitvec::new_empty(num_tptrs);
+      Bitvec::union_two(out,old_out,in);
+      // XXX - work to eliminate this allocation.
+      // Shouldn't be too hard.
+
+      if(!Bitvec::compare_two(out,old_out)) {
+	outs[p_num] = out;
+	Worklist::add(wl,p_num);
+      }
+    }    
+  }
+
+  // outs and ins reached fixpoint.
+  // Now update the holeinfo in the child function using outss and first();
+
+  // Before we begin we must clear the list of successor blocks in all jump
+  // holes.
+  _ holes = f.all_holes;
+  _ num_holes = Xarray::length(holes);
+  for(_ i = 0; i < num_holes; i++) {
+    _ hi = Xarray::get(holes,i);
+    switch hi {
+    case Jmp(bs): 
+      Xarray::set(holes,i,^cf_holeinfo.Jmp(null));
+    default: /* Do nothing. */;
+    }
+  }
+
+  // Have to crawl over all the instructions in all the blocks to get 
+  // fill edges, as well as dump edges.
+  for(_ i = 0; i < num_blks; i++) { // loop over all blocks
+    _ blk_num = i;
+    _ blk = Xarray::get(blks,i);
+
+    _ insts = blk.insts;
+    _ num_insts = Xarray::length(insts);
+
+    for(_ j = 0; j < num_insts; j++) { // loop over instructions
+      _ inst = Xarray::get(insts,j);
+
+      switch inst {
+      case Dump *(rgn,tptr,templ):
+	if(templ.exit != null && // dumped template fallsthru
+	   rgn_of_fun(rgn,parent,f)) { // dumped template is part of f.
+	  _ fallthru_hole = templ.exit.v.2;
+	  
+	  _ first_d = first(f,blk,j+1);	  
+
+	  _ succ_templates = null;
+	  if(first_d == null) { 
+	    // No next dump in this block, add edges from out.
+	    _ templs = Bitvec::to_sorted_list(outs[blk_num],num_tptrs);
+
+	    for(_ x = templs; x != null; x = x.tl)
+	      succ_templates = ^list(int_to_templ(parent,x.hd),succ_templates);
+	  } else {
+	    _ tp = first_d.v; // Integer 
+	    succ_templates = ^list(int_to_templ(parent,tp),null);
+	  }
+
+	    
+	  //if (succ_templates==null) 
+	  //  printf("hole %d unfillable.",fallthru_hole);
+	  fflush(tal_stdout);
+
+	  _ hi = ^cf_holeinfo.Terminal(succ_templates);
+	  Xarray::set(f.all_holes,fallthru_hole,hi);
+	}
+      case FillJmp *(rgn,tptr1,h,tptr2,b):
+	if(rgn_of_fun(rgn,parent,f)) {
+	  _ hi = Xarray::get(f.all_holes,h);
+	  switch hi {
+	  case Jmp(bs):
+	    // First check that b is not in the list bs.
+	    // This is practically, but not theoretically, unnecessary!
+	    _ x = bs;
+	    for(; x!=null && x.hd!=b; x=x.tl)
+	      /* Empty body. */;
+	    if(x==null) {
+	    _ bs2 = ^list(b,bs);
+	    _ hi2 = ^cf_holeinfo.Jmp(bs2);
+	    Xarray::set(f.all_holes,h,hi2);
+	    }
+	  default: BUG("Expected a jump hole.");
+	  }
+	}
+      default: ;
+      }
+    }
+  }
+}
+
+static void cfg_edge(cf_function f, cf_block b, cf_dest d) {
+  switch d {
+  case Known(b2): add_edge(b,b2);
+  case Unknown(h):
+    _ hi = Xarray::get(f.all_holes,h);
+    switch hi { 
+    case Jmp(bs):
+      for(_ x = bs; x!=null; x=x.tl) {
+	add_edge(b,x.hd);
+      }
+    case Terminal(ts):
+      for(_ x = ts; x!=null; x=x.tl) {
+	add_edge(b,x.hd.entry);
+      }
+    case Value(_): /* Do nothing. */; 
+    }
+  }
+}
+
+// Edge caused by implicit control-flow (raise, call, or other. 
+static void cfg_implicit_edge(cf_block b) {
+  if(b.handler!=null) {
+    add_edge(b,b.handler.v);
+  }
+}
+
+// Compute the cfg of the argument function.
+// Assume the cfg for the generating function is correct.
+// Makes no assumption about f's cfg
+void cfg_fun(cf_function f) {
+
+  compute_holeinfo(f);
+
+  _ blks = f.blocks;
+  _ num_blks = Xarray::length(blks);
+
+  // Now we're ready to compute the successor and predecessor information,
+  // but first clear out whatever garbage is there now.
+  for(_ i = 0; i < num_blks; i++) {
+    _ blk = Xarray::get(blks,i);
+
+    Xarray::reuse(blk.pred); //They're probably about the right size.
+    Xarray::reuse(blk.succ);
+  }
+
+  for(_ i = 0; i < num_blks; i++) {
+    _ blk = Xarray::get(blks,i);
+
+    switch blk.trans {
+    case Abort: ;
+    case Uncond(d): cfg_edge(f,blk,d);
+    case Raise(_): cfg_implicit_edge(blk); 
+    case Retn(_):  ;
+    case Call *(_,_,_,_,d): 
+      // Order matters here, although I don't know why.
+      cfg_edge(f,blk,d); cfg_implicit_edge(blk);
+    case TailCall *(_,_,_): cfg_implicit_edge(blk);
+    case Cond *(d1,d2,_,_,_): cfg_edge(f,blk,d1); cfg_edge(f,blk,d2);
+    case NumSwitch *(_,ids,d): 
+      for(_ x = ids; x != null; x=x.tl) {
+	_ d = x.hd.2;
+	cfg_edge(f,blk,d);
+      }
+      cfg_edge(f,blk,d);
+    case SumSwitch *(_,ids1,ids2,dopt):
+      for(_ x = ids1; x != null; x=x.tl) {
+	_ d = x.hd.2;
+	cfg_edge(f,blk,d);
+      }
+      for(_ x = ids2; x != null; x=x.tl) {
+	_ d = x.hd.2;
+	cfg_edge(f,blk,d);
+      }
+      if(dopt!=null)
+	cfg_edge(f,blk,dopt.v);
+
+    case ExnSwitch *(_,ids,d):
+      for(_ x = ids; x != null; x=x.tl) {
+	_ d = x.hd.2;
+	cfg_edge(f,blk,d);
+      }
+      cfg_edge(f,blk,d);
+    case NullCheck *(_,d):
+      cfg_implicit_edge(blk);
+      cfg_edge(f,blk,d);
+    case UnionCheck *(_,_,_,d):
+      cfg_implicit_edge(blk);
+      cfg_edge(f,blk,d);
+    case NullBranch *(_,d1,d2):
+      cfg_edge(f,blk,d1);
+      cfg_edge(f,blk,d2);
+    }
+  }
+
+  f.df_order = null; // Recomputing the CFG destroys depth first order.
+}
+
+void cfg_funstar(cf_function f) {
+  cfg_fun(f);
+  
+  _ code_regions = f.code_regions;
+  _ num_regions = Xarray::length(code_regions);
+  for(_ i = 0; i < num_regions; i++) {
+    _ child = Xarray::get(code_regions,i).2;
+    cfg_funstar(child);
+  }
+
+}
+
+void cfg_funstar_helper(Id::id i,cf_function f) {
+  cfg_funstar(f);
+}
+
+// Relies on each child having exactly one parent.
+// Computes cfg's for functions that may never be generated.
+void cfg_file(cf_file f) {
+  Dict::iter(cfg_funstar_helper,f.funs);
+  // Do not need to iterate over rtcg_funs, cfg_funstar takes care of them.
+}
+
+

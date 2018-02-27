@@ -1,0 +1,103 @@
+#include "core.h"
+
+#define MAX 5
+#define PI  3.1416f
+
+extern double sin(double), cos(double);
+
+extern void fprint_float  (FILE,float);
+
+
+
+void cheb_pop(float func(float), float c[], int n, float xa, float xb)
+{
+  int k, j;
+  float xm, xp, sm;
+  /* new_array doesn't work w/ floats? */
+  float f[MAX] = {1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f};
+
+  xp = (xb + xa) / 2;
+  xm = (xb - xa) / 2;
+
+  for(k = 1; k <= n; k++) {
+    f[k] = func(xp + xm * cos(PI * (k - 0.5f) / n));
+  }
+
+  for(j = 0; j <= n-1; j++) {
+    sm = 0.0f;
+    for(k = 1; k <= n; k++) {
+      sm = sm + f[k] * cos(PI * j * (k - 0.5f) / n);
+    }
+    c[j] = (2.0f / n) * sm;
+  } 
+  return;
+}
+
+void cheb_gen(int n)(float func(float), float c[], float, float)
+{
+  int k, j;
+  
+  return
+    codegen(void cheb_spec(float func(float), float c[], float xa, float xb)
+    {
+      float xm, xp, sm;
+      float f[MAX] = {1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f};
+
+      xp = (xb + xa) / 2;
+      xm = (xb - xa) / 2;
+
+      /*
+      cut
+	for(k = 1; k <= n; k++) {
+	  splice
+	    f[fill(k)] = func(xp + xm * fill(cos(PI * (k - 0.5f)) / n));
+      }
+
+      cut
+	for(j = 0; j <= n-1; j++) {
+	  splice
+	    sm = 0.0f;
+	  for(k = 1; k <= n; k++) {
+	    splice
+	      sm = sm + f[fill(k)] * fill(cos(PI * j * (k - 0.5f) / n));
+	  }
+	  c[fill(j)] = fill((2.0f / n)) * sm;
+	}
+      */
+      return;
+    }
+  );
+}
+
+void print_vector(float a[])
+{
+  int i;
+
+  for (i = 0; i < 5; i++) {
+    fprint_float(tal_stdout, a[i]);
+    printf(" ");
+  }
+  printf("\n");
+}
+  
+void test_pop(float func(float))
+{
+  float a[MAX] = {1.0f, 1.0f, 1.0f, 1.0f, 1.0f};
+
+  cheb_pop(func, a, 5, 0.0f, 2.0f);
+  print_vector(a);
+  cheb_pop(func, a, 5, 0.0f, 3.0f);
+  print_vector(a);
+  cheb_pop(func, a, 5, 0.0f, 4.0f);
+  print_vector(a);
+
+  cheb_pop(func, a, 5, 1.0f, 2.0f);
+  print_vector(a);
+  cheb_pop(func, a, 5, 1.0f, 3.0f);
+  print_vector(a);
+  cheb_pop(func, a, 5, 1.0f, 4.0f);
+  print_vector(a);
+
+  /* TODO: print out result somehow */
+  return;
+}

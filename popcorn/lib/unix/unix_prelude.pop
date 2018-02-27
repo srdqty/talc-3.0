@@ -1,0 +1,2 @@
+exception Unix_error(*(int,string));
+exn Unix_error_pkt = ^Unix_error (^(0,""));

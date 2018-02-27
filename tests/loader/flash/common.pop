@@ -1,0 +1,11 @@
+#include "core.h"
+#include "unixlib.h"
+
+/* ---------------------------------------------------------------- */
+void
+PanicBack(string name, int line, string temp)
+{
+  fprintf(tal_stderr, "file %s, line %d, %s\n", name, line, temp);
+  exit(-1);
+}
+

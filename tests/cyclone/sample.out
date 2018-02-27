@@ -1,0 +1,110 @@
+index	norm	spec
+0:	0	0
+1:	-1	-1
+2:	1	1
+3:	-1	-1
+4:	-1	-1
+5:	-1	-1
+6:	2	2
+7:	-1	-1
+8:	3	3
+9:	-1	-1
+10:	-1	-1
+11:	-1	-1
+12:	4	4
+13:	-1	-1
+14:	-1	-1
+15:	5	5
+16:	-1	-1
+17:	-1	-1
+18:	6	6
+19:	7	7
+20:	-1	-1
+21:	-1	-1
+22:	-1	-1
+23:	8	8
+24:	9	9
+25:	10	10
+26:	-1	-1
+27:	-1	-1
+28:	-1	-1
+29:	11	11
+30:	12	12
+31:	-1	-1
+32:	-1	-1
+33:	13	13
+34:	-1	-1
+35:	-1	-1
+36:	-1	-1
+37:	14	14
+38:	15	15
+39:	-1	-1
+ 0: 0
+ 1: -1
+ 2: 1
+37: 14
+38: 15
+39: -1
+ 0: 0
+ 1: -1
+ 2: 1
+ 37: 14
+ 38: 15
+ 39: -1
+This is a simple cg test
+The result of the invocation should be 22
+The result of the invocation is 22
+21
+3331
+This tests whether labels in holes are typed right
+The result of the invocation should be 17
+The result of the invocation is 17
+The answer should be 3
+The answer is 3
+This tests empty suspends
+The result of the invocation should be 12
+The result of the invocation is 12
+17
+Cyclone hole test #1
+Entering my_print
+33
+ Exiting my_print
+
+Cyclone hole test #1 complete
+32
+10
+40
+(true:1)(true:2)2
+(false)7
+
+Cyclone nested body
+Entering my_print
+Entering your_print
+9
+ Exiting your_print
+22
+ Exiting my_print
+22
+Cyclone nested complete
+qe2(2, 4, 10): 6
+qe2(2, 4, 10): 6
+Gen code: (mul_gen 3)(mul_gen 2)(mul_gen 1)(mul_gen 0)
+Run code: 
+Answer: 7
+10 10
+ *** Popcorn **** 
+Memory: 0 Memory: 1 Memory: 2 Memory: 3 
+Memory: 630 Memory: 10 Memory: 20 Memory: 3 
+
+ *** Cyclone **** 
+Memory: 0 Memory: 1 Memory: 2 Memory: 3 
+Memory: 630 Memory: 10 Memory: 20 Memory: 3 
+
+ *** Microsoft cl **** 
+Memory: 0 Memory: 1 Memory: 2 Memory: 3 
+Memory: 630 Memory: 10 Memory: 20 Memory: 3 
+
+ *** Microsoft cl /02 **** 
+Memory: 0 Memory: 1 Memory: 2 Memory: 3 
+Memory: 630 Memory: 10 Memory: 20 Memory: 3 
+

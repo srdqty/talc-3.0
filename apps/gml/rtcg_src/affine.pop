@@ -1,0 +1,59 @@
+
+#include "math.h"
+#include "core.h"
+#include "top.h"
+#include "point.h"
+#include "matrix.h"
+
+open Core;
+open Math;
+
+prefix Affine;
+open Affine;
+
+struct t { Matrix::matrix mat; Matrix::matrix imat; bool isometric; FP factor; }
+   
+t rotate_x(FP f) {
+  return ^t(Matrix::rotatex(f),Matrix::rotatex(-f),true,1);
+}
+
+t rotate_y(FP f) { 
+  return ^t(Matrix::rotatey(f),Matrix::rotatey(-f),true,1);
+}
+
+t rotate_z(FP f) {
+  return ^t(Matrix::rotatez(f),Matrix::rotatez(-f),true,1);
+}
+
+t uscale(FP f) {
+  return scale(f,f,f);
+}
+ 
+t translate(FP x,FP y,FP z) {
+  return ^t(Matrix::translate(x,y,z),Matrix::translate(-x,-y,-z),true,1.0);
+}
+
+t scale(FP x,FP y,FP z) {
+  _ vx = abs_fp(x);
+  _ vy = abs_fp(y);
+  _ vz = abs_fp(z);
+  _ vxy = (vx > vy) ? vx : vy;
+  _ f = (vxy > vz) ? vxy : vz;
+  _ isom = (x==y && x==z);
+  return ^t(Matrix::scale(x,y,z),Matrix::unscale(x,y,z),isom,f);
+}
+
+t compose(t t1,t t2) {
+  _ m1 = t1.mat;
+  _ m2 = t2.mat;
+  _ im1 = t1.imat;
+  _ im2 = t2.imat;
+  _ iso = t1.isometric && t2.isometric;
+  _ f = t1.factor * t2.factor;;
+
+  return ^t(Matrix::mul(m1,m2),Matrix::mul(im2,im1),iso,f);
+}
+
+t invert(t a) {
+  return ^t(a.imat,a.mat,a.isometric,1.0/a.factor);
+}

@@ -1,0 +1,32 @@
+/* TEMPO Version 1.190, 11/26/97, Copyright (c) IRISA/INRIA-Universite de Rennes */
+
+#include "core.h"
+
+struct inst { int opcode;
+              int val; }
+extern int p_mem[];
+extern int p_stack[];
+extern int p_prg_size;
+
+void pop_interpret_init() { return; }
+
+void pop_interpret_gen(inst prg [], int pc, int sp)()
+{
+  return
+    codegen(void interpret_1_spec() {
+      if (p_stack[fill(sp)] != 0)
+	{
+	  cut pc = (prg[pc]).val;
+	  cut sp = sp - 1;
+	  fill(pop_interpret_gen(prg, pc, sp))();
+	}
+      else
+	{
+	  cut pc = pc + 1;
+	  cut sp = sp - 1;
+	  fill(pop_interpret_gen(prg, pc, sp))(); /* here */
+	}
+      return;
+    }
+	    );
+}

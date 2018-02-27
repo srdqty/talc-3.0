@@ -1,0 +1,63 @@
+// Test harness for testing the functions in mem.pop
+
+#include "core.h"
+#include "simp.h"
+#include "mem.h"
+
+open Mem;
+open Core;
+
+void pop_main() {
+
+  unsigned int a = 0x456450000;
+
+  init(); // Must initialize memory first.
+
+  allocate_block(a);
+
+  word w = 35;
+  w_word(a,w);
+
+  _ w2 = r_word(a);
+
+  printf("%d =? %d = %s \n",w,w2,(w == w2) ? "true" : "false");
+
+  _ b0 = r_byte(a);
+  _ b1 = r_byte(a+1);
+  _ b2 = r_byte(a+2);
+  _ b3 = r_byte(a+3);
+  printf("%d %d %d %d ?= %d\n",b0,b1,b2,b3,w);
+
+  b0 = 's'; b1 = 't'; b2 = 'a'; b3 = 'r';
+  _ a2 = a+4;
+  w_byte(a2  , b0);
+  w_byte(a2+1, b1);
+  w_byte(a2+2, b2);
+  w_byte(a2+3, b3);
+
+  _ tb0 = r_byte(a2);
+  _ tb1 = r_byte(a2+1);
+  _ tb2 = r_byte(a2+2);
+  _ tb3 = r_byte(a2+3);
+
+  printf("%c %c %c %c == %c %c %c %c\n",b0,b1,b2,b3,tb0,tb1,tb2,tb3);
+
+  _ a5 = a + 32;
+
+  strcpy_in(a5,"hello there");
+
+  a5 += 32;
+  bcopy_in(a5,{'h','e','l','l','o',' ','t','h','e','r','e'},11);
+
+  a5 += 32;
+  wcopy_in(a5,{(:unsigned int)1,2,3,4,5},5);
+
+  dump(tal_stdout,a,100);
+  printf("\n");
+
+  _ s = "what is this string?";
+
+  strcpy_out(a+32,s);
+  printf("s = %s\n",s);
+}
+

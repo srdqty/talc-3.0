@@ -1,0 +1,26 @@
+svc HMACcreateKey : blob -> blob * blob
+svc HMACsignValue : ('a chunk * int * int, blob * blob) -> blob
+svc udp_deliver : (host,'a chunk) -> unit
+svc authEval : ('a chunk, blob * int * int) -> 'a
+
+(* Returns a chunk to be evaluated remotely.  Assumes that each
+   party has authenticated themselves, thus generating the passed in SPI *)
+fun start(c,secret,sender_spi,cnt,dest) =
+  let val k = HMACcreateKey(secret)
+      val sign = HMACsignValue((c,sender_spi,cnt),k) in
+    udp_deliver(dest,|authEval|(c,(sign,sender_spi,cnt)))
+  end
+ 
+svc authSvc : void -> bool
+(* Test authenticated service; will print true if authenticated *)
+fun doit() =
+  print(authSvc())
+
+svc HMACverifySignedValue : ('a chunk * int * int, blob * blob, blob) -> bool
+(* For basic testing *)
+fun test(c,secret,sender_spi,cnt) =
+  let val k = HMACcreateKey(secret)
+      val sign = HMACsignValue((c,sender_spi,cnt),k) in
+    print(HMACverifySignedValue((c,sender_spi,cnt),k,sign))
+  end
+

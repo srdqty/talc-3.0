@@ -1,0 +1,5 @@
+val a : port * key * blob * exn * dev * chunk = 0
+val b : int * char * string * bool * host = 0
+val c : int list = 0
+fun main() : unit = 1
+

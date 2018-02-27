@@ -1,0 +1,25 @@
+(*
+ *     value  done?
+ *     -----  -----
+ *      Unit  x
+ *       Int  x
+ *      Char  x
+ *    String  x
+ *      Bool  x
+ *    VTuple  x
+ *     VList  x
+ *    VChunk  
+ *      Host  
+ *      Blob  
+ *      Port  
+ *       Key  
+ * Exception  
+ *)
+
+fun main() : unit = ((), 123, 'c', "this", true, [], [1;2;3])
+
+val entry_fun  : unit = "main"
+val entry_args : unit = []
+val entry_src  : unit = "xeno"
+val entry_eval : unit = "xeno"
+val entry_rb   : unit = 7890

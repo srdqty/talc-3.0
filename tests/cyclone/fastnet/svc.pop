@@ -1,0 +1,525 @@
+#include <string.h>
+#include <core.h>
+#include <dlpop.h>
+
+#include "planbase.h"
+#include "absyn.h"
+#include "parse.h"
+#include "network.h"
+
+open Svc;
+open Core;
+open List;
+
+/***************************************************************************
+ * Services
+ **************************************************************************/
+
+/*
+ *  Dynamic linking
+ */
+
+/* all exported (and used) by the loaded code */
+int b = 3;
+exn a = new Core::FileCloseError();
+exception Foo;
+int func2(int i) {
+  raise (a);
+}
+
+static int func(int i, handle_t h) {
+  *(int) c = dlsym(h,"c",repterm@<*(*(int))>);
+  return i + c.1;
+}
+
+/***************************************************************************
+ * Services
+ **************************************************************************/
+
+prefix Svc;
+
+<*(string, value (<value> list vl, pop_pkt ppkt))> list svc_env;
+
+void print_service_env()
+{
+  printf("(");
+  map(fun int _(*(string, value (<value> list vl,
+  pop_pkt ppkt)) s) {
+    printf("%s ", s.1);
+    return 0;
+  }, svc_env);
+  printf(")\n");
+}
+
+value eval_svc(string str, <value> list actuals, pop_pkt ppkt)
+{
+  try
+    return
+    (List::assoc_cmp(strcmp, svc_env, str))(actuals, ppkt);
+  handle y
+    switch y {
+    case Not_found: 
+      raise(^InternalError("(eval_svc): Service not found"));
+    }
+}
+  
+void init_services()
+{
+  svc_env =
+    ^list(^("thisHostIs",       thisHostIs), 
+    ^list(^("thisHost",         thisHost), 
+    ^list(^("getRB",            getRB), 
+    ^list(^("getSrc",           getSrc),
+    ^list(^("getSrcDev",        getSrcDev),
+    ^list(^("getDevs",          getDevs), 
+    ^list(^("print",            plan_print), 
+    ^list(^("defaultRoute",     defaultRoute),
+    ^list(^("toString",         toString),
+    ^list(^("remove",           remove),
+    ^list(^("member",           member),
+    ^list(^("length",           plan_length),
+    ^list(^("spf_get_edges",    spf_get_edges),
+    ^list(^("spf_update_edges", spf_update_edges),
+    ^list(^("test_service",     test_service),
+    ^list(^("install_service",  install_service),
+		    null))))))))))))))));
+}
+
+value getRB(<value> list vl, pop_pkt ppkt)
+{
+  return ^value.Int(ppkt.rb);
+}
+
+value getSrc(<value> list vl, pop_pkt ppkt)
+{
+  return(^value.String(ppkt.sourceAddr));
+}
+
+value thisHostIs(<value> list vl, pop_pkt ppkt)
+{
+  <*(string, int)> list lst;
+  bool res = false;
+
+  switch (vl.hd) {
+  case String(s):
+    
+    *(string, int) name_x_port = parse_hostname(s);
+
+    lst = pland_hosts_ports();
+
+    while (lst != null) {
+      res = res ||
+	((strcmp(name_x_port.1, lst.hd.1) == 0) &&
+	 (name_x_port.2 == lst.hd.2));
+      lst = lst.tl;
+    }
+    
+    if (res)
+      {
+	/* printf("thisHostIs (%s:%d)\n", name_x_port.1, name_x_port.2); */
+	return(^ value.Bool(true));
+      } else {
+	/* printf("thisHostIs (%s:%d *NOT* %s:%d)\n",
+	       pland_hosts_ports().hd.1, pland_hosts_ports().hd.2,
+	       name_x_port.1, name_x_port.2); */
+	return(^ value.Bool(false));
+      }
+  default:
+    raise(^InternalError("(thisHostIs): host value should be (string x int) (for now)"));
+  }
+}
+
+value thisHost(<value> list vl, pop_pkt ppkt)
+{
+  return ^value.VList(
+    map(fun value _(*(string, int) x) {
+          return ^value.String(sprintf("%s:%d", x.1, x.2));
+    }, pland_hosts_ports()));
+}
+
+/* look up device (neighbor name:port) corresponding to host on which
+ * packet was received
+ */
+value getSrcDev(<value> list vl, pop_pkt ppkt)
+{
+  <*(string, string, string, int, string, int)> list lst;
+  string str, ret_str;
+  
+  /* packet received from inject */
+  if(strcmp(received_host, "inject:0000") == 0)
+    return ^value.String(received_host);
+
+  /* pakcet received from another node */
+  lst = pland_interface_info;
+  while(lst != null) {
+    str = sprintf("%s:%d", lst.hd.3, lst.hd.4);
+
+    if (strcmp(received_host, str) == 0) {
+      ret_str = sprintf("%s:%d", lst.hd.5, lst.hd.6);
+
+      return ^value.String(ret_str);
+    }
+    lst = lst.tl;
+  }
+  return(^value.String(sprintf("getSrcDev: %s not found\n", received_host)));
+}
+
+/* return a list of all devices (i.e. neighbor name:port) */
+value getDevs(<value> list vl, pop_pkt ppkt)
+{
+  <*(string, int)> list neighs = pland_neighbors_ports();
+  <value> list vs;
+
+  vs = map(fun value _(*(string, int) x) {
+
+    return ^value.String(sprintf("%s:%d", x.1, x.2));
+                 }, neighs);
+		  
+  return(^value.VList(vs));
+}
+
+value plan_print(<value> list vl, pop_pkt ppkt)
+{
+  switch (vl.hd) {
+  case Bool(b):   printf("%s", b ? "true" : "false");
+  case Char(c):   printf("%c", c);
+  case Int(i):    printf("%d", i);
+  case String(s): printf("%s", s);
+  case VTuple(t):
+    printf("(");
+    while(t != null) {
+      plan_print(^list(t.hd, null), ppkt);
+      t = t.tl;
+      if (t != null)
+	printf(",");
+    }
+    printf(")");
+  case VList(l):
+    printf("[");
+    while(l != null) {
+      plan_print(^list(l.hd, null), ppkt);
+      l = l.tl;
+      if (l != null)
+	printf(";");
+    }
+    printf("]");
+  default:
+    raise(^InternalError("(print): bad argument"));
+  }
+  return(^ value.Unit);
+}
+
+value defaultRoute(<value> list vl, pop_pkt ppkt)
+{
+  switch (vl.hd) {
+  case String(dst_str):
+    
+    value eval_dst = ^value.String((rout_table_lookup(dst_str, pland_rtable)));
+    value      dev = ^value.String("*DEV*");
+    
+    return(^value.VTuple(^list(eval_dst,
+			 ^list(dev, null))));
+  default:
+    raise(^InternalError("(defaultRoute): argument must be a String"));
+  }
+}
+
+value toString(<value> list vl, pop_pkt ppkt)
+{
+  if (vl != null)
+    return(^value.String(planval_to_string(vl.hd)));
+  else
+  return ^value.String("toString error");
+}
+
+/* remove: elem * elem list -> elem list */
+value remove(<value> list vl, pop_pkt ppkt)
+{
+  value rem_val;
+  <value> list rem_lst;
+  <value> list ret_val;
+
+  if (vl != null) {
+    if (vl.tl != null) {
+      rem_val = vl.hd;
+
+      switch((vl.tl).hd) {
+      case VList(lst): rem_lst = lst;
+      default: raise(^InternalError("remove: 2nd arg must be a list"));
+      }
+    } else
+      raise(^InternalError("remove expects two arguments"));
+  } else
+    raise(^InternalError("remove expects two arguments"));
+
+  ret_val = null;
+
+
+  while (rem_lst != null) {
+    if (strcmp(planval_to_string(rem_val),
+		     planval_to_string(rem_lst.hd)) != 0)
+      ret_val = ^list(rem_lst.hd, ret_val);
+    rem_lst = rem_lst.tl;
+  }
+  return ^value.VList(rev(ret_val));
+}
+
+value member(<value> list vl, pop_pkt ppkt)
+{
+  value mem_val;
+  <value> list mem_lst;
+
+  if (vl != null) {
+    if (vl.tl != null) {
+      mem_val = vl.hd;
+
+      switch((vl.tl).hd) {
+      case VList(lst): mem_lst = lst;
+      default: raise(^InternalError("member: 2nd arg must be a list"));
+      }
+    } else
+      raise(^InternalError("member expects two arguments"));
+  } else
+    raise(^InternalError("member expects two arguments"));
+  
+  while (mem_lst != null) {
+    if (strcmp(planval_to_string(mem_val),
+		     planval_to_string(mem_lst.hd)) == 0)
+      return ^value.Bool(true);
+    mem_lst = mem_lst.tl;
+  }
+  return ^value.Bool(false);
+}
+
+value plan_length(<value> list vl, pop_pkt ppkt)
+{
+  value len_val;
+  <value> list len_lst;
+
+  if (vl != null) {
+    switch (vl.hd) {
+    case VList(lst): return ^value.Int(length(lst));
+    default: raise(^InternalError("length: arg must be a list"));
+    }
+  } else
+    raise(^InternalError("length: expects one argument"));
+}
+
+
+int edge_cmp(*(string, string) node1, *(string, string) node2)
+{
+  return(((strcmp(node1.1, node2.1) == 0) &&
+	  (strcmp(node1.2, node2.2) == 0)) ? 0 : 1);
+}
+
+/* <*(string, string)> list pland_spf_edges; */
+value spf_get_edges(<value> list vl, pop_pkt ppkt)
+{
+  <*(string, string)> list lst;
+  <value> list vl;
+
+  vl = null;
+  lst = pland_spf_edges;
+  while (lst != null) {
+    vl = ^list(^value.VTuple(^list(^value.String(lst.hd.1),
+                             ^list(^value.String(lst.hd.2), null))),
+          vl);
+    lst = lst.tl;
+  }
+  return ^value.VList(vl);
+}
+
+value spf_update_edges(<value> list vl, pop_pkt ppkt)
+{
+  bool added = false;
+  string node1, node2;
+  <value> list new_edges;
+  <*(string, int)> list ports;
+  <*(string, string)> list new_rtable;
+  
+  if (vl == null)
+    raise(^InternalError("(spf_update_edges): expecting one argument"));
+  switch (vl.hd) {
+  case VList(lst): new_edges = lst;
+    while (new_edges != null) {
+      switch (new_edges.hd) {
+      case VTuple(e):
+	if (e == null)
+	  raise(^InternalError("(spf_update_edges): empty VTuple"));
+	else
+	  if (e.tl == null)
+	    raise(^InternalError("(spf_update_edges): singleton VTuple"));
+	switch (e.hd) {
+	case String(s1): node1 = s1;
+	default: raise(^InternalError("(spf_update_edges): expecting String s1"));
+	}
+	switch (e.tl.hd) {
+	case String(s2): node2 = s2;
+	default: raise(^InternalError("(spf_update_edges): expecting String s2"));
+	}
+	
+	/* if edge doesn't already exist, add it */
+	if (!mem(edge_cmp, pland_spf_edges, ^(node1, node2))) {
+	  pland_spf_edges = ^list(^(node1, node2), pland_spf_edges);
+	  added = true;
+	}
+      default: raise(^InternalError("(spf_update_edges): expecting VTuple"));
+      }
+      new_edges = new_edges.tl;
+    }
+
+    /* calculate spf */
+    new_rtable = null;
+    ports = pland_hosts_ports();
+    while(ports != null) {
+      string this_host = make_node(ports.hd.1, ports.hd.2);
+      new_rtable = multi_merge(do_spf(this_host,pland_spf_edges), new_rtable);
+      ports = ports.tl;
+    }
+
+    pland_rtable = new_rtable;
+
+    /*
+      List::map (fun int _(*(string, string) s)
+    { printf("%s %s\n", s.1, s.2); return 0;}, pland_rtable);
+    */
+    
+    /* if no new nodes added and lists are the same length, don't propagate */
+    return ^value.Bool(added || !(length(lst) == length(pland_spf_edges)));
+  default: raise(^InternalError("(spf_update_edges): expecting list argument"));
+  }
+}
+
+<*(string, string)> list multi_merge(<*(string, string)> list l1,
+                                     <*(string, string)> list l2)
+{
+  <string> list host_strs;
+  bool res = false;
+
+  host_strs = 
+    List::map (fun string _(*(string, int) x) {
+      return sprintf("%s:%d", x.1, x.2);
+    },
+	       pland_hosts_ports());
+
+  while (l1 != null) {
+    if(!mem(strcmp, host_strs, l1.hd.2))
+      l2 = ^list(l1.hd, l2);
+    l1 = l1.tl;
+  }
+  return l2;
+}
+  
+string planval_to_string(value v)
+{
+  switch (v) {
+  case Bool(b):   return (sprintf("%s", b ? "true" : "false"));
+  case Char(c):   return (sprintf("%c", c));
+  case Int(i):    return (sprintf("%d", i));
+  case String(s): return (sprintf("%s", s));
+  case VTuple(t): 
+    return (sprintf("%s", "<VTuple not implemented>"));
+  case VList(l):
+    return sprintf("[%s%s]",
+	   planval_to_string(l.hd),
+	   List::fold_right(fun string _(value x, string y)
+                        { return sprintf(";%s%s", planval_to_string(x), y);},
+			    l.tl, ""));
+  default:
+    raise(^InternalError("(planval_to_string): bad argument"));
+  }
+  return ("toString error");
+}
+
+/*
+ *  Dynamic linking (test_service "dserv")
+ */
+
+value test_service(<value> list vl, pop_pkt ppkt)
+{
+  if (vl == null)
+    raise(^InternalError("(test_service): expecting one argument"));
+  switch(vl.hd) {
+  case String(s):
+    printf("Loading service from: %s\n", s);
+
+  try {
+    //print_table();
+
+    handle_t h = dlopen(s);
+    //print_table();
+
+    printf("func is %d\n", func(1,h));
+
+    void foo() = dlsym(h,"foo", repterm@<*(void ())>);
+    printf("before foo(), b is %d\n", b);
+    foo();
+    printf("after foo(), b is %d\n", b);
+
+    printf("func is %d\n", func(1,h));
+
+    *(exn) loaded_exn = dlsym(h,"d",repterm@<*(*(exn))>);
+    
+    dlclose(h);
+    //print_table();
+
+    /* this should fail because the handle was closed */
+    printf("%d", (func(1,h)));
+    
+  } handle y
+    switch y {
+    case WrongType(s):      printf ("Wrong type for symbol : %s\n", s);
+    case SymbolNotFound(s): printf ("Can't find symbol : %s\n", s);
+    case FailsTypeCheck:    printf ("File doesn't type-check\n");
+    case FileOpenError(s):  printf ("Can't open file : %s\n", s);
+    default:                printf ("Exception Raised\n");
+    }
+    
+  default: raise(^InternalError("(test_service): argument must be string"));
+  }
+  return(^ value.Unit);
+}
+
+/* install_service(objfile, tofile) */
+value install_service(<value> list vl, pop_pkt ppkt)
+{
+  if (vl == null)
+    raise(^InternalError("install_service expects two arguments"));
+  if (vl.tl == null)
+    raise(^InternalError("install_service expects two arguments"));
+
+  switch(vl.hd) {
+  case String(objfile):
+    switch(vl.tl.hd) {
+    case String(tofile):
+      
+      FILE fp1 = file_open("tmp.o.uu", "w");
+      FILE fp2 = file_open("tmp.to.uu", "w");
+      
+      fprintf(fp1, "begin-base64 664 tmp.o\n%s\n====\n", objfile);
+      fprintf(fp2, "begin-base64 664 tmp.to\n%s\n====\n", tofile);
+
+      file_close(fp1);
+      file_close(fp2);
+
+      system(string_to_Cstring("uudecode tmp.o.uu"));
+      system(string_to_Cstring("uudecode tmp.to.uu"));
+
+      printf("Loading service...\n");
+
+      try {
+	dlopen("tmp");
+      } handle y
+	  switch y {
+	  case WrongType(s):      printf ("Wrong type for symbol : %s\n", s);
+	  case SymbolNotFound(s): printf ("Can't find symbol : %s\n", s);
+	  case FailsTypeCheck:    printf ("File doesn't type-check\n");
+	  case FileOpenError(s):  printf ("Can't open file : %s\n", s);
+	  default:                printf ("Exception Raised\n");
+	  }
+    default: raise(^InternalError("(install_service): arg1 not string"));
+    }
+  default: raise(^InternalError("(install_service): arg2 not string"));
+  }
+  return(^ value.Unit);
+}

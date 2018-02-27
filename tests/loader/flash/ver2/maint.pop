@@ -1,0 +1,219 @@
+/* Contains routines that process the maintenance messages. */
+
+#include "core.h"
+#include "string.h"
+#include "unixlib.h"
+#include "list.h"
+#include "dlpop.h"
+
+/* #include "libhttpd.h" */
+#include "c_string.h"
+
+open List;
+open String;
+
+/* ---------------------------------------------------------------- */
+/* reads all the data available on the given file descriptor, and
+   return it in a string (which is a static buffer). */
+static string buf = "";
+static int bufsz = 0;
+static string read_all_data(int fd) {
+  int numBytes = -1;
+  int totalBytes = 0;
+
+  if (size(buf) == 0) {
+    buf = Core::new_string(1000);
+    bufsz = 1000;
+  }
+
+  buf[0] = '\000';
+  /* for (int i = 0; i<1000000; i++); */
+  while (numBytes != 0) {
+    try {
+      numBytes = unix_read(fd,buf,totalBytes,bufsz-totalBytes);
+      totalBytes += numBytes;
+      /* fprintf(tal_stderr,"read %d bytes\n",numBytes); */
+      break;
+      if (totalBytes == bufsz) { /* could be more to read */
+	bufsz *= 2;
+	buf = realloc_str(buf,bufsz);
+      }
+    } handle e {
+      switch e {
+      case Unix_error *(code,syscall):
+	if (code == EINTR) 
+	  continue;
+	else if (code == EAGAIN)
+	  /* no data */
+	  return "";
+	else {
+	  fprintf(tal_stderr,"ProcessMaintMessage: %s:%s\n",
+		  syscall, unix_error_string(code));
+	  return "";
+	}
+      }
+    }
+  }
+
+  if (totalBytes != bufsz)
+    buf[numBytes] = '\000';
+
+  return buf;
+}
+
+/* ---------------------------------------------------------------- */
+bool ProcessMaintMessage(int fd) {
+  string msg_buf;
+  msg_buf = read_all_data(fd);
+
+  /* check for code updates */
+  if (C_strncmp(msg_buf,0,"update",0,6) == 0) {
+    /* the argument is a whitespace-separated list of files to load */
+    string files[] = parse_strings(msg_buf, 6, C_strlen(msg_buf)-6);
+    /*
+    for (int i=0; i<size(files); i++) {
+      fprint_string(tal_stderr,files[i]);
+      fprint_char(tal_stderr,'\n');
+    }
+    */
+    /* now try to load them */
+    /* print_table(); */
+    load_files(files);
+    return true;
+  }
+  else {
+    fprint_string(tal_stderr,"Unknown maintainenance command: ");
+    C_fprint_string(tal_stderr,msg_buf,0);
+    fprint_char(tal_stderr,'\n');
+    return false;
+  }
+}
+
+/* ---------------------------------------------------------------- */
+/* Breaks a string into an array of strings, as determined by
+   whitespace.  Uses a list as an intermediate data rep. */
+static string parse_strings(string s, int idx, int len) [] {
+  int ofs;
+  int i, numfiles = 0;
+  <string>list strs = null;
+  string res[];
+
+  len += idx;
+  while (idx < len) {
+    /* skip whitespace */
+    while (idx < len) {
+      if (s[idx] == ' ' ||
+	  s[idx] == '\n' ||
+	  s[idx] == '\t' ||
+	  s[idx] == '\r') {
+	idx++;
+      }
+      else {
+	break;
+      }
+    }
+    ofs = idx;
+
+    /* get the token */
+    while (idx < len) {
+      if (s[idx] == ' ' ||
+	  s[idx] == '\n' ||
+	  s[idx] == '\t' ||
+	  s[idx] == '\r') {
+	break;
+      }
+      else {
+	idx++;
+      }
+    }
+    if ((idx-ofs) != 0) {
+      string s = substring(s,ofs,idx-ofs);
+      strs = cons(s,strs);
+      numfiles++;
+    }
+  }
+
+  /* tokens are in reverse order; copy them into the array in reverse */
+  res = 
+    (fold_left
+     (fun *(string[],int) _(*(string [],int) res, string file) {
+       (res.1)[res.2] = file;
+       res.2--;
+       return res;
+     }, ^(new_array(numfiles,""),numfiles-1), strs)).1;
+
+  return res;
+}
+
+/* ---------------------------------------------------------------- */
+int StartMaintApp() 
+{
+  int sockVec[2];
+  int r;
+
+  return STDIN;
+  /* stuff below is not necessary -- we can read STDIN directly */
+  try {
+    /* create the communication socket */
+    unix_socketpair(^socket_domain.PF_UNIX, 
+                    ^socket_type.SOCK_STREAM, 
+                    0, sockVec);
+
+    /* fork off the process to become the maintenance app */
+    r = unix_fork();
+    if (r == 0) {
+      string args[2];
+      args[0] = "./maint_main.exe";
+      args[1] = Core::string_of_int(sockVec[1]);
+      unix_close(sockVec[0]); /* close the parent's end */
+      
+      unix_execv("./maint_main.exe", args, 2);
+      /* child never reaches here */
+    }
+  } handle e {
+    switch e {
+    case Unix_error *(code, syscall):
+      fprintf(tal_stderr,"StartMaintApp: %s:%s\n",
+	      syscall, unix_error_string(code));
+      unix_close(sockVec[1]);
+      exit(-1);
+    }
+  }
+  /* in the parent, close the child's end of the socket and return */
+  unix_close(sockVec[1]);
+  return sockVec[0];
+}
+
+/* ---------------------------------------------------------------- */
+/* assumes we're getting paths relative to the cwd, or
+   absolute paths */
+static bool load_files(string files[])
+{
+  handle_t hs[];
+  try {
+    hs = dlopens(files);
+  } handle y {
+    switch y {
+    case WrongType(s): {
+      fprint_string(tal_stderr,"load_files: Wrong type for symbol : ");
+      fprint_string(tal_stderr,s);
+    }
+    case SymbolNotFound(s): {
+      fprint_string(tal_stderr,"load_files: Can't find symbol : ");
+      fprint_string(tal_stderr,s);
+    }
+    case FailsTypeCheck: {
+      fprint_string(tal_stderr,"load_files: File doesn't type-check");
+    }
+    case Core::FileOpenError(s): {
+      fprint_string(tal_stderr,"load_files: Can't open file : ");
+      fprint_string(tal_stderr,s);
+    }
+    default:
+      fprint_string(tal_stderr,"load_files: Exception Raised");
+    }
+    fprint_char(tal_stderr,'\n');
+    return false;
+  }
+  return true; /* apparently successful */
+}

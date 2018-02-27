@@ -1,0 +1,99 @@
+LINUX, 233 Pentium 2 ----------------------------------------------------------
+
+Program #1 (60 instructions, mostly load/store)
+
+  [Popcorn]             Time: 1000 msec  (Time: 1220 msec using getrusage())
+  
+  [Cyclone]
+    Code generation:    Time: 60000 msec (Time: 51700 msec)
+    Code execution:     Time: 0 msec     (Time: 370 msec)
+  
+  [gcc]                 Time: 1000 msec  (Time: 720 msec)
+  
+  [gcc -O3]             Time: 0 msec     (Time: 380 msec)
+
+  Speedup due to specialization: 3.3
+  Breakeven point: 60 runs
+  Speedup over gcc -O3: 1.0
+
+Program #2 (27 instructions, mostly arithmetic)
+
+  [Popcorn]             Time: 1000 msec  (Time: 500 msec)
+
+  [Cyclone]
+    Code generation:    Time: 30000 msec (Time: 35400 msec)
+    Code execution:     Time: 1000 msec  (Time: 170 msec)
+
+  [gcc]                 Time: 0 msec     (Time: 310 msec)
+
+  [gcc -O3]             Time: 0 msec     (Time: 150 msec)
+
+  Speedup due to specialization: 2.9
+  Breakeven point: 110 runs
+  Speedup over gcc -O3: 0.9
+
+Program #3 (17 instructions, mixed load/store and arithmetic)
+
+  [Popcorn]             Time: 0 msec     (Time: 360 msec)
+
+  [Cyclone]
+    Code generation:    Time: 30000 msec (Time: 30200 msec)
+    Code execution:     Time: 0 msec     (Time: 100 msec)
+
+  [gcc]                 Time: 0 msec    (Time: 230 msec)
+
+  [gcc -O3]             Time: 0 msec    (Time: 120 msec)
+
+  Speedup due to specialization: 3.6
+  Breakeven point: 120 runs
+  Speedup over gcc -O3: 1.2
+
+WINDOWS '98, 200Pentium -------------------------------------------------------
+
+Program #1 (60 instructions, mostly load/store)
+
+  [Popcorn]             Time:  1829 msec
+  
+  [Cyclone]
+    Code generation:    Time: 134400 msec
+    Code execution:     Time:    401 msec    
+  
+  [cl]                  Time:   934 msec 
+  
+  [cl /02]              Time:   384 msec    
+
+  Speedup due to specialization: 4.6
+  Breakeven point:  90 runs
+  Speedup over cl /O2: .96
+
+Program #2 (27 instructions, mostly arithmetic)
+
+  [Popcorn]             Time:   764 msec
+
+  [Cyclone]
+    Code generation:    Time: 92490 msec
+    Code execution:     Time:   226 msec
+
+  [cl]                  Time:   401 msec   
+
+  [cl /02]              Time:   181 msec   
+
+  Speedup due to specialization: 3.4
+  Breakeven point:  170 runs
+  Speedup over cl /O2: .80
+
+Program #3 (17 instructions, mixed load/store and arithmetic)
+
+  [Popcorn]             Time:   511 msec   
+
+  [Cyclone]
+    Code generation     Time:  77770 msec
+    Code execution:     Time:   121 msec    
+
+  [cl]                  Time:   269 msec    
+
+  [cl /02]              Time:   121 msec
+
+  Speedup due to specialization: 4.2
+  Breakeven point:  200 runs
+  Speedup over cl /O2: 1.0

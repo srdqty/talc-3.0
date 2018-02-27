@@ -1,0 +1,60 @@
+
+// If you can easily read the gunk in this file, you are a sick human being.
+
+#include "core.h"
+
+#define PI(x) (Core::print_int(x))
+
+void print_three(int x, int y, int z) { PI(x); PI(y); PI(z);}
+
+int g1 = 5;
+
+void obfuscate1() {
+  // should be "01110113121"
+  int a1,a2;
+  (a1=0,PI(a1),print_three)((a2=1,PI(a2),a2),a1++,(PI(a1++),a2));
+  print_three((a2=1,PI(a2),a2),a1++,(PI(a1),a2));
+
+  Core::print_string("\n");
+
+  // should be "2331126"
+  int b1,b2,b3;
+  _ tup = ^(b1=2, ++b1, b1++, b1 += b1+= b2=3, b1 + (b3=6) + b3 + b2);
+  PI(tup.1); PI(tup.2); PI(tup.3); PI(tup.4); PI(tup.5);
+
+  Core::print_string("\n");
+
+  // should be "21110"
+  _ c1,c2[],c3;
+  c2 = new_array(c3=4,c3 %= (c1=2)+1); 
+  (c1 == 9 ? c2 : c2)[PI(c1),++c1] = --c3;
+  PI(c2[0]); PI(c2[1]); PI(c2[2]); PI(c2[3]);
+
+  Core::print_string("\n");
+
+  // should be  "512100"
+  int y = 4;
+  <int>array x = { ++y, y == 5 ? (y/=2)-1 : y--, y--, y--, y, y };
+  for(int i=0; i < size(x); ++i)
+    PI(x[i]);
+
+  Core::print_string("\n");
+
+  // should be "514303132"
+  int inc_g1 (int ignore) { PI(g1); return ++g1; };
+  int double_and_inc_g1(int ignore) { PI(g1 += g1); return g1++; };
+  PI(inc_g1(double_and_inc_g1((inc_g1(4),g1=7,double_and_inc_g1(2)))));
+
+  Core::print_string("\n");
+
+  // should be 8
+  int thunk2() { return 2;};
+  int thunk3() { return 3;};
+  int add3(int f1(), int f2(), int f3()) { return f1() + f2() + f3(); };
+  int f() = thunk2;
+  PI(add3(f, f=thunk3, f));
+
+}
+void pop_main() {
+  obfuscate1();
+}

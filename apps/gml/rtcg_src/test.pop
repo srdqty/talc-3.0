@@ -1,0 +1,33 @@
+
+#include "core.h"
+#include "matrix.h"
+
+open Matrix;
+
+void pop_main() {
+
+  matrix m = ^matrix(0.0,3.0,4.0,5.0,
+		     6.0,7.0,8.0,9.0,
+		     10.0,11.0,12.0,13.0,
+		     14.0,15.0,16.0,17.0);
+
+  vector v = ^vector(1.0,1.0,1.0,1.0);
+  vector r = ^vector(1.0,1.0,1.0,1.0);
+
+  _ vmul_spec = vmul_gen(m);
+  _ vmul2_spec = vmul2_gen(m);
+
+  vmul(r,m,v);
+  printf("vmul m * v = ");
+  vprint(tal_stdout,r);
+
+  vmul_spec(r,v);
+  printf("\nvmul m * v = ");
+  vprint(tal_stdout,r);
+
+  vmul2_spec(r,m,v);
+  printf("\nvmul m * v = ");
+  vprint(tal_stdout,r);
+
+  printf("\n");
+}

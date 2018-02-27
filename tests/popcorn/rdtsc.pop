@@ -1,0 +1,24 @@
+
+#include "core.h"
+open Core;
+
+void f() {
+  printf("hello world\n");
+}
+
+void pop_main () {
+  unsigned int x1;
+  unsigned int y1;
+  unsigned int x2;
+  unsigned int y2;
+
+  for(int i = 0; i < 5; i++) {
+
+  rdtsc x1:y1;
+  f();
+  rdtsc x2:y2;
+
+   printf("%u:%u - %u:%u = %d:%d\n",x1,y1,x2,y2,x2-x1,y2-y1);
+  }
+
+}

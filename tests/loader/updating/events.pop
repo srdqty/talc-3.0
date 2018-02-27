@@ -1,0 +1,19 @@
+#include "string.h"
+
+/* structure that defines events understandable by the program */
+union event {
+  void Tick;    /* some amount of time has passed */
+  string Load;  /* load the given file from the filesystem */
+}
+
+string event2string (event e) {
+  string s;
+  switch e {
+  case Tick:
+    s = "Sick";
+  case Load(filename):
+    s = String::strconcat_l(List::cons("Load: ",
+				       List::cons(filename,null)));
+  }
+  return s;
+}

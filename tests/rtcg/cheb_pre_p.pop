@@ -1,0 +1,92 @@
+// Stolen from Tempo
+
+#include<core.h>
+#include<math.h>
+#include "poptiming.h"
+
+#define DEBUG
+
+open Core;
+open Math;
+
+float fp1[],fp2[];
+
+void cheb_init(int n) {
+  fp1 = new_array_float(n+1);
+  for(int i=1; i<=n; i++) {
+    fp1[i] = cos(pi *(i - 0.5) / ((:float)n));
+  }
+
+  fp2 = new_array_float(n * (n+1));
+  for(int j = 0; j < n; j++) {
+    for(int k = 1; k <= n; k++) {
+      float v = cos(pi * j * (k - 0.5) / ((:float)n));
+
+      fp2[j*(n+1) + k] = v;
+    }
+  }
+}
+
+// c is the result array. Specialize on size of c.
+// Tempo set n < 50.  
+// Tempo specializes on n only.
+void cheb(float func(float), float c[], float xa, float xb)
+{
+  int n = size(c);
+  int k, j;
+  float xm, xp, sm;
+  float f[] = new_array_float(n+1);
+
+  xp = (xb + xa) / 2;
+  xm = (xb - xa) / 2;
+
+  for(k = 1; k <= n; k++) {
+    f[k] = func(xp + xm * fp1[k]);
+  }
+
+  for(j = 0; j <= n-1; j++) {
+    sm = 0.0;
+    _ offs = j * (n+1);
+    for(k = 1; k <= n; k++) {
+      sm = sm + f[k] * fp2[offs + k];
+    }
+    c[j] = (:float)(2.0 / (:float)n) * sm;
+  } 
+  return;
+}
+
+void pop_main() {
+
+  string s[] = std_args();
+  
+  if(size(s)!=2) {
+    printf("usage: %s <length>\n",s[0]);
+    return;
+  }
+
+  int len = int_of_string(s[1]);
+
+  if(len<=0 || len >= 100) {
+    printf("Invalid length %d\n",len);
+    return;
+  }
+
+  cheb_init(len+1);
+
+  float c[] = new_array_float(len+1);
+
+
+  MAIN_TEST("cheb_pre",COMPILER,PLAIN_KIND,s[1],0,cheb(mycos,c,1.0,3.0));
+
+#ifdef DEBUG
+  for(int i=0;i<len;i++) {
+    printf("%g ",c[i]);
+  }
+  printf("\n");
+#endif
+
+}
+
+static float mycos(float x) {
+  return cos(x);
+}

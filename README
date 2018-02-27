@@ -1,0 +1,93 @@
+                                      TALC
+                                      ====
+
+Release 3.0
+Copyright
+    Greg Morrisett, Neal Glew, Dave Walker, Steve Zdancewic, Stephanie Weirich,
+    Frederick Smith, Dan Grossman, Trevor Jim, Luke Hornoff, and 
+    Michael Hicks, September 2000 all rights reserved.
+
+Enclosed in this whole tarball are a number of tools:
+
+(1) the TALC type-checker, link-checker, assembler, and disassembler:
+	- These are tools for producing and type-checking TALx86, typed
+	  assembly or binaries for the Intel x86 line of processors.  The 
+          tools should work under both Linux and Win32.  In particular, 
+          the TAL assembler and disassembler can handle both COFF and ELF
+	  object file formats.  Sadly, there is little documentation.
+	  See http://www.cs.cornell.edu/talc/papers for papers that
+	  describe some of theoretical and practical aspects of TALx86.
+
+(2) Popcorn:
+	- Popcorn is a compiler for a type-safe C-like language
+	  augmented with ML-style polymorphism, exceptions, etc.
+	  The compiler produces TALx86 code and is thus usable
+	  in settings where binaries need to be verified as type-
+	  safe.
+	- Popcorn can also be used for run-time code generation
+	  using the TAL/T extensions.
+	- There are two versions of the compiler:  one written in
+	  Ocaml and one written in Popcorn itself.  The former
+	  is simpler and produces better diagnostics, but the
+	  latter produces better code.
+	- In addition, there are numerous libraries and examples
+	  scattered throughout the directories.
+
+(3) Cyclone:
+	- Cyclone will be the successor to Popcorn.  It provides
+	  much better support for type-checking ANSI-C code, better
+	  linguistic support for pattern matching, subtyping, etc.
+	- Currently, we only compile Cyclone to C.  In the future,
+	  we will be building a direct TALx86 backend.
+
+(4) There are numerous other directories that hold old code that
+    no longer works.  For instance, the scheme/ directory is an old
+    compiler that targeted an earlier version of TALx86.  If I don't
+    mention a directory below, then it contains old code that will
+    no longer work.
+
+See the file INSTALL for instructions on building and running
+the various tools.
+
+TALC Sources
+------------
+INSTALL  : instructions for installing and configuring the tools
+Makefile : builds the talc tools and non-optimizing Popcorn compiler
+README   : this file
+apps/ 
+  popcorn/: contains applications written in Popcorn
+    Makefile : builds the optimizing Popcorn compiler and other tools
+    build/   : where the optimizing compiler is deposited
+    popcorn/ : sources for the optimizing compiler
+    talx86/  : simple TAL tools for Popcorn to generate TAL code
+    tools/   : bison and ocamllex ported to generate Popcorn code
+    toplevel/: generic compiler front-end tools written in Popcorn
+    util/    : used to contain some utilities
+  sptc/   : a minimal graphics interface to Popcorn for WinNT
+build/   : where the talc and non-optimizing popcorn compiler are placed
+cogen/   : TAL support for doing dynamic code generation
+computil/: compiler utilities
+cyclone/ : the cyclone compiler 
+  Makefile  : builds the Cyclone compiler -- needs everything else built first
+  README.txt: minimal description of Cyclone and how to build
+  bin/      : where the cyclone compiler binary is placed
+  doc/      : minimal documentation on Cyclone
+  lib/      : examples of Cyclone source -- various libraries
+  src/      : Popcorn source code for the Cyclone compiler
+doc/     : documentation on Popcorn
+popcorn/ : Ocaml source code for the non-optimizing Popcorn compiler
+runtime/ : Runtime code for the Popcorn compiler and TAL assembler, including
+	   the Boehm-Demers-Weiser conservative collector for both Linux and
+	   Win32.  
+talx86/  : Ocaml source code for the talc tool which does type- and link-
+	   checking for TALx86 code (either .tal assembly code or .obj/.o
+	   files in conjunction with .to files).  
+tests/   : various test files for popcorn
+  cyclone/:  tests the run-time code generation facilities of Popcorn
+	     (not to be confused with $root/cyclone)
+  loader/ :  tests the dynamic loading facilities of Popcorn
+  popcorn/:  tests various features of Popcorn
+  talx86/ :  tests various features of TALx86.
+toplevel/: Generic compiler front end tools written in Ocaml.
+util/    : Some Ocaml libraries used throughout.
+

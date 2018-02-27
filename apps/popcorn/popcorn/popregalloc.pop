@@ -1,0 +1,2502 @@
+// The register allocator, finally with move coalescing a la Appel
+
+// Contents:
+// * Module Issues
+// * Syntactic Niceties
+// * Data Structures
+// * Construction (of interference graph, etc.)
+// * Simplification
+// * Assignment (with slot packing)
+// * Rewriting
+// * Entry point
+
+/////////////////////////////// Debugging ////////////////////////////
+
+// #define DEBUG
+#ifdef DEBUG
+#define DBG(X) X
+#else
+#define DBG(X) 
+#endif
+
+/////////////////////////////// Module Issues ////////////////////////
+
+#define POPREGALLOC_H
+
+#include "popconfig.h"
+
+#include "core.h"
+#include "list.h"
+#include "dict.h"
+#include "set.h"
+#include "xarray.h"
+#include "bitvec.h"
+open Core;
+
+#include "popil.h"
+#include "popilprint.h"
+#include "popilanalyze.h"
+#include "poptalenv.h"
+#include "tal.h"
+open Popil;
+open Popilanalyze;
+open Poptalenv;
+
+prefix Popregalloc;
+open   Popregalloc;
+
+////////////////////////////// Syntactic Niceties ///////////////////////
+#define list List::list
+#define dict Dict::dict
+#define xarray Xarray::xarray
+#define varName int
+#define blockName int
+
+// We put callee-save at the end so we're less likely to use them.
+#define NUM_REGS 6 
+#define EAX 0
+#define ECX 1
+#define EDX 2
+#define EBX 3
+#define ESI 4
+#define EDI 5
+
+#define NUM_FP_REGS 7
+#define FP0 6
+#define FP1 7
+#define FP2 8
+#define FP3 9
+#define FP4 10
+#define FP5 11
+#define FP6 12
+
+#define FP_0 0
+#define FP_1 1
+#define FP_2 2
+#define FP_3 3
+#define FP_4 4
+#define FP_5 5
+#define FP_6 6
+
+///////////////////////////// Data Structures //////////////////////////
+
+// We parametrize the register allocator so that we can call it twice.
+struct regalloc_env {
+  cf_function fn; // The function to allocate
+  int num_regs; // The number of registers
+  bool to_alloc(cf_function f, int i); // Should we allocate this variable.
+  < < < <int>Set::set>array>array>Opt all_live; //If available. Set after alloc.
+  void build(build_env); // Build the interference graph.
+  void rewrite(cf_function fn,  // Rewrite the function to load/store spills.
+	       BITVEC spilled,  // spilled big enough for num_nodes - num_regs.
+	       <int>xarray names); // len. of names = len. of fn.all_operands.
+}
+
+struct regalloc_retn {
+  int  placement[]; // -2 unplaced, -1 for stack, int for register, length = num of operands.
+  <int>list graph_list[]; // An interference graph to use for stack slot selection.
+  int names[]; // names[i] is TAL name to use for local i.
+}
+
+// the node order looks like this (0 on the top):
+// original vars (some may be spilled which means they don't interfere/coalesce)
+// new vars (cannot be spilled)
+// phys regs (cannot be spilled, pre-colored, adj list not represented)
+
+struct build_env {
+  // used by first part of register allocator
+  cf_function       fn;            // function we're talking about
+  <varName>Set::set all_live[][];  // complete live information
+  int               local_to_node[]; // Map original local variables to nodes.
+  int               node_to_local[]; // Map original nodes to locals
+  int               graph   [][];  // adj matrix rep of interference
+  int               coalesces[][]; // adj matrix rep of coalesces
+  int               num_vars;      // number of operands (including spills)
+  int               num_nodes;     // number of nodes including spills
+  int               spilled[];     // bit vector for orig vars, set iff spilled
+  // includes space for spill variables and registers.
+  int               num_orig_nodes; // number of original nodes (before spills)
+}
+
+static varName node_to_local_or_reg(build_env env, int n) {
+  _ n2l = env.node_to_local;
+  _ num_nodes = size(n2l);
+  _ num_locals = size(env.local_to_node);
+  if(n >= num_nodes)
+    return (n - num_nodes) + num_locals;
+  return n2l[n];
+}
+
+static int local_or_reg_to_node(build_env env,varName x) {
+  _ local_to_node = env.local_to_node;
+  _ num_locals = size(local_to_node);
+  if(x >= num_locals) {
+    // its either a register or a spill variable
+    _ num_nodes = size(env.node_to_local);
+    return (x - num_locals) + num_nodes;
+  } 
+  else return local_to_node[x];
+}
+
+static bool not_spilled(build_env env, varName x) {
+  return (x >= size(env.local_to_node) ||  // x is a spill variable.
+	  (x >= 0 && !Bitvec::get(env.spilled, x)));
+}
+
+static void set_if_not_spilled(build_env env, int bitmatrix[][], 
+			       varName x, varName y) {
+  if(x != y && not_spilled(env,x) && not_spilled(env,y)) {
+    // Now we have to convert these local variable names to nodes.
+    _ n_x = local_or_reg_to_node(env,x);
+    _ n_y = local_or_reg_to_node(env,y);
+
+    if(n_x<0 || n_y<0) return; // Could happen for parameters.
+
+    int t = n_x;
+    if(n_x < n_y) {
+      n_x = n_y;
+      n_y = t;
+    }
+    Bitvec::set(bitmatrix[n_x],n_y);
+  }
+} 
+static void do_if_both_local(build_env env, void f(build_env,varName,varName),
+			     cf_operand x, cf_operand y) {
+  switch x {
+  case Local(xl): 
+    switch y {
+    case Local(yl): 
+      f(env, xl, yl); 
+    default: ; 
+    }
+  default: ;
+  }
+} 
+static void interfere_locals(build_env env, varName x, varName y) {
+  set_if_not_spilled(env, env.graph, x, y);
+}
+static void interfere_operands(build_env env, cf_operand x, cf_operand y) {
+  do_if_both_local(env, interfere_locals, x, y);
+}
+static void interfere_local_phys(build_env env, varName x, int r) {
+  interfere_locals(env,x,env.num_vars+r);
+}
+static void interfere_operand_phys(build_env env, cf_operand x, int r) {
+  switch x {
+  case Local(v): 
+    interfere_local_phys(env, v, r);
+  default:       ;
+  }
+} 
+static void coalesce_locals(build_env env, varName x, varName y) {
+  set_if_not_spilled(env, env.coalesces, x, y);
+}
+static void coalesce_operands(build_env env, cf_operand x, cf_operand y) {
+  do_if_both_local(env, coalesce_locals, x, y);
+}
+static void coalesce_local_phys(build_env env, varName x, int r) {
+  coalesce_locals(env,x,env.num_vars+r);
+}
+static void coalesce_operand_phys(build_env env, cf_operand x, int r) {
+  switch x {
+  case Local(v): coalesce_local_phys(env, v, r);
+  default:       ;
+  }
+}
+static void interfere_define(build_env env,cf_operand x,<varName>Set::set live){
+  switch x {
+  case Local(w): 
+    for(<varName>list vs = Set::elements(live); vs!=null; vs=vs.tl) {
+      int v = vs.hd;
+      if(v!=w)	
+	interfere_locals(env, w, v);
+    }
+  default: ;
+  }
+}
+
+union nodePlace { void Removed, NonMove, Move, HighDegree; }
+struct adj_list_node {
+  // array of these used by second part of register allocator
+  int       color;      // -1 for spilled
+  int       degree;     // length of adjacency list (w/o removed things)
+  <int>list adj;        // adjacency list -- change to xarray
+  <int>list coalesces;  // "moves"        -- change to xarray
+  unsigned int spill_cost; // ignored for unspillable, divide by degree
+  bool      unspillable;// set for physicals, spill loads, and switch vars
+  nodePlace which_list;
+  int       worklist_pos; // if in a worklist, at what position
+  int       alias;      // itself if not coalesced
+}
+union coalescePlace { void Available, Active, Neither; }
+struct coalesce_info {
+  int           node1;
+  int           node2;
+  coalescePlace which_list;
+  int           worklist_pos;
+}
+struct node_worklist {
+  nodePlace name;
+  int       arr[];
+  int       num;
+}
+struct move_worklist {
+  coalescePlace name;
+  int       arr[];
+  int       num;
+}
+struct simplify_env {
+  int           num_regs;
+  int           matrix   [][];
+  adj_list_node nodes    [];
+  node_worklist non_move_nodes;
+  node_worklist move_nodes;
+  node_worklist high_degree_nodes;
+
+  coalesce_info coalesces[];
+  move_worklist available_moves;
+  move_worklist active_moves;
+
+  <int>list     select_stack;
+}
+
+static void add_to_worklist(simplify_env env, int node, node_worklist wlist) {
+  int pos = wlist.num++;
+  wlist.arr[pos]  = node;
+  adj_list_node n = env.nodes[node];
+  n.worklist_pos  = pos;
+  n.which_list    = wlist.name;
+}
+static void add_to_moveslist(simplify_env env, int move, move_worklist wlist) {
+  int pos = wlist.num++;
+  wlist.arr[pos]  = move;
+  coalesce_info c = env.coalesces[move];
+  c.worklist_pos  = pos;
+  c.which_list    = wlist.name;
+}
+static void remove_from_worklist(simplify_env env, int node, 
+				 node_worklist wlist) {
+#define ASSERT(X) if(!(X)) BUG("assertion failed.")
+  ASSERT(node < size(env.nodes) && node >= 0);
+  int pos = env.nodes[node].worklist_pos;
+  if(--wlist.num != pos) {
+    ASSERT(wlist.num < size(wlist.arr) && wlist.num >= 0);
+    ASSERT(pos < size(wlist.arr) && pos >= 0);
+    int end_node   = wlist.arr[wlist.num];
+    ASSERT(end_node < size(env.nodes) && end_node >= 0);
+    wlist.arr[pos] = end_node;
+    env.nodes[end_node].worklist_pos = pos;
+  }
+#undef ASSERT
+}
+static void remove_from_moveslist(simplify_env env, int move, 
+				  move_worklist wlist) {
+  int pos = env.coalesces[move].worklist_pos;
+  if(--wlist.num != pos) {
+    int end_move   = wlist.arr[wlist.num];
+    wlist.arr[pos] = end_move;
+    env.coalesces[end_move].worklist_pos = pos;
+  }
+}
+static int choose_and_remove_node(node_worklist wlist) {
+  // call this with an empty list and you'll get an array bounds error
+  return wlist.arr[--wlist.num];
+}
+static int choose_and_remove_move(move_worklist wlist) {
+  // call this with an empty list and you'll get an array bounds error
+  return wlist.arr[--wlist.num];
+}
+//////////////////////////// Initialize graph ///////////////////////
+static void init_graph(int num_regs, build_env env) {
+  // Create an empty interference & coalesce graph.
+  _ fn = env.fn;
+  int num_locals      = Xarray::length(fn.all_operands); 
+  int num_spills      = num_locals - size(env.local_to_node);
+  int num_orig_nodes  = size(env.node_to_local); 
+  int num_local_nodes = num_orig_nodes + num_spills;
+  int num_nodes       = num_regs + num_local_nodes;
+
+  int graph    [][] = new_array(num_nodes, {:int});
+  int coalesces[][] = new_array(num_nodes, {:int});
+
+  for (int i=1; i < num_local_nodes; ++i) {
+    graph    [i] = Bitvec::new_empty(i);
+    coalesces[i] = Bitvec::new_empty(i);
+  }
+  for (int i=num_local_nodes; i < num_nodes; ++i) {
+    graph    [i] = Bitvec::new_empty(num_local_nodes); 
+    coalesces[i] = Bitvec::new_empty(num_local_nodes);
+  }
+ 
+  env.graph          = graph;
+  env.coalesces      = coalesces;
+  env.num_vars       = num_locals;
+  env.num_nodes      = num_local_nodes;
+  env.num_orig_nodes = num_orig_nodes;
+
+}
+//////////////////////////// Construction ///////////////////////////
+void build_graph(build_env env) {
+  // given the liveness at every program point, construct the 
+  // register allocation interference graph.
+  // also find all the potential coalescing.
+
+  // Note:
+  // * we assume the IL has been re-written to take 
+  //   advantage of webs -- can change this later to do place --> web lookups.
+  // * we represent this graph as an array of bit vectors -- not quite as
+  // compact as a bit matrix, but it should do for now.
+  // * spilled only has the original variables, since spill
+  // introduced variables should not themselves be spilled.
+  // * spill variables are still around, but we shouldn't have
+  // them interfere or coalesce with anything
+
+  // initialize the graph
+  cf_function fn    = env.fn;
+
+  // temporary conservative fix: all params interfere with each other IMPROVE!
+  for(<int>list ps = fn.params; ps != null; ps = ps.tl)
+    for(<int>list qs = ps.tl; qs != null; qs = qs.tl) {
+      interfere_locals(env,ps.hd,qs.hd);
+    }
+
+  // each block contributes edges and coalesces
+  int num_blks = Xarray::length(env.fn.blocks);
+  for(blockName i=0; i < num_blks; ++i) {
+    <varName>Set::set      lives[] = env.all_live[i];
+    int                    len     = size(lives);
+    cf_block               blk     = Xarray::get(fn.blocks,i);
+    <cf_instruction>xarray insts   = blk.insts;
+    // if handler, live interfere with handler var and EAX
+    if(blk.handler_var != null) {
+      int hv = blk.handler_var.v;
+      for(<varName>list live = Set::elements(lives[0]); 
+	  live!=null; live=live.tl) {
+	int v = live.hd;
+	if(v!=hv) {
+	  interfere_local_phys(env,v,EAX);
+	  interfere_locals(env,v,hv);
+	}
+      }
+    }
+    // instructions
+    for(int j=1; j < len-1; ++j) {
+      <varName>Set::set live = lives[j];
+      _ this_inst = Xarray::get(insts,j-1);
+      
+      if(is_fp_inst(env.fn,this_inst) &&
+	 !is_partial_fp_inst(env.fn,this_inst)) continue;
+
+      switch this_inst {
+      case Nop: ;
+      case Copy(x): 
+	interfere_define (env, x.1, live); 
+	coalesce_operands(env, x.1, x.2);
+      case Nullop(x): ; // These are all FP operators.
+      case Unop(x): 
+	if(!is_partial_fp_primop(x.1)) {
+	  interfere_define (env, x.2, live);
+	  coalesce_operands(env, x.2, x.3);
+	}
+	switch x.1 {
+	case Resize*(src_signed,dest_sz,src_sz):
+	  switch src_sz {
+	  case B1:
+	    switch dest_sz {
+	    case B1: ;
+	    default: build_byte(env,x.3);
+	    }
+	  default: ;
+	  }
+	case ItoF: ;
+	case ItoD: ;
+	case DtoI: interfere_define(env,x.2,live);
+	case FtoI: interfere_define(env,x.2,live);
+	case DtoF: ;
+	case FtoD: ;
+	case Not:    build_byte(env, x.2);
+	case Bitnot: ;
+	default:     BUG("bad unary op");
+	}
+      case Binop(x):
+	interfere_define(env, x.2, live);
+	switch x.1 {
+	case Minus: // z = x - y, z and y must interfere
+	  interfere_operands(env, x.2, x.4);
+	  coalesce_operands (env, x.2, x.3);
+	case Plus:       build_commutes(env, x);
+	case Times:      build_commutes(env, x);
+	case TimesU:     build_commutes(env, x);
+	case Bitand:     build_commutes(env, x);
+	case Bitor:      build_commutes(env, x);
+	case Bitxor:     build_commutes(env, x);
+	case Div:        build_divmod  (env, x, live, EAX);
+	case DivU:       build_divmod  (env, x, live, EAX);
+	case Mod:        build_divmod  (env, x, live, EDX);
+	case ModU:       build_divmod  (env, x, live, EDX);
+	case Bitlshift:  build_shift   (env, x, live);
+	case Bitlrshift: build_shift   (env, x, live);
+	case Bitarshift: build_shift   (env, x, live);
+	case Eq:         build_byte    (env, x.2);
+	case Neq:        build_byte    (env, x.2);
+	case Gt:         build_byte    (env, x.2);
+	case GtU:        build_byte    (env, x.2);
+	case Lt:         build_byte    (env, x.2);
+	case LtU:        build_byte    (env, x.2);
+	case Gte:        build_byte    (env, x.2); 
+	case GteU:       build_byte    (env, x.2);
+	case Lte:        build_byte    (env, x.2);
+	case LteU:       build_byte    (env, x.2);
+	default:         
+	  if(is_fp_relop(x.1)) build_byte(env,x.2);
+	  else BUG("bad binary op");
+	}
+      case TypedCopy(x):    
+	interfere_define (env,x.1,live);
+	coalesce_operands(env,x.1,x.2);
+      case SelectField(x): 
+	interfere_define(env, x.2, live);
+      case AssignField*(index,dest,src): 
+	// FMS: Maybe we should just byte the bullet and put the size
+	// of the destination in the instruction?
+	// The destination is always either a tuple of an unpacked array.
+	// If the element at index is small then the src must be in a byte
+	// register -- EAX,EBX,ECX, or EDX
+	_ t;
+	switch operand_type(env.fn,dest) {
+	case UnpackedArray*(_,t1): t = t1;
+	case Tuple(x)            : t = x[index].typ;
+	case Named *(name,_):
+	  <cf_structdecl>Opt sd = Dict::lookup_opt(env.fn.file.structs,name);
+	if(sd == null) BUG("Assignfield to a named type, but not a struct.");
+	t = (sd.v.fields[index]).typ;
+	default                  : 
+	  BUG("AssignField destination not tuple, unpacked array or struct.");
+	}
+	if(index==1 && sizeof_typ(t)<4) build_byte(env,src);
+
+      case ArrayCheck *(index,len):
+	interfere_operands(env,index,len);
+      case CArrayCheck(_): ;
+      case ArraySub *(dest,arr,index):    
+	interfere_define(env, dest, live);
+	// for strings, dest must interfere with arr and is a byte
+	switch operand_type(fn,arr) {
+	case UnpackedArray*(_,t): 
+	  if(sizeof_typ(t)==1) {
+	    // FMS: This interfere_operands used to be necessary but no more.
+	    // interfere_operands(env,dest,arr);
+	    build_byte(env,dest);
+	  }
+	default:     ;
+	}
+      case ArrayUpd*(arr,index,src):
+	interfere_operands(env,index,src);
+	// for strings, new value is a byte
+	switch operand_type(fn,arr) {
+	case UnpackedArray*(_,t): 
+	  if(sizeof_typ(t)==1) build_byte(env, src);
+	default: ;
+	}
+      case New(x):         
+	// same register behavior as a function call, but cannot raise
+	varName w = -1;
+	switch x {
+	case Local(x): 
+	  w = x; 
+	default:       ;
+	}
+	for(<varName>list vs = Set::elements(lives[j]); vs!=null; vs=vs.tl) {
+	  varName v = vs.hd;
+	  if(v != w) {
+	    interfere_locals    (env,w,v);
+	    interfere_local_phys(env,v,EAX);
+	    interfere_local_phys(env,v,ECX);
+	    interfere_local_phys(env,v,EDX);
+	  }
+	}
+	coalesce_local_phys(env, w, EAX);
+      case Rdtsc *(o1,o2): build_rdtsc(env,o1,o2,live);
+
+	// Cyclone +
+      case Start(o): 
+	// Exactly like New except only causes interference with Eax.
+	varName w;
+	switch o {
+	case Local(x): w =  x; 
+	default:       w = -1;
+	}
+	for(_ vs = Set::elements(lives[j]); vs!=null; vs=vs.tl) {
+	  _ v = vs.hd;
+	  if(v != w) {	    
+	    interfere_locals    (env,w,v);
+	    interfere_local_phys(env,v,EAX);
+	  }
+	}
+	coalesce_local_phys(env, w, EAX);
+      case Dump *(o1,o2,_) : interfere_define(env,o2,live);
+      case Hole *(i,o)     : interfere_define(env,o,live);
+      case Fill *(o1,o2,h,o3) : ; // No defines.
+      case FillJmp *(o1,o2,h,o3,b) : ; // No defines.
+      case End  *(o1,o2)   : 
+	// o1 ends up in o2! o2 must be a register.
+	interfere_define(env,o1,live);
+	coalesce_operands(env, o1, o2);
+      // Cyclone -
+      }
+    }
+    // transfer -- encode calling convention into the graph
+    switch blk.trans {
+    case Raise(x):
+      for(<varName>list vs = Set::elements(lives[len-1]); vs!=null; vs=vs.tl) 
+	interfere_local_phys(env, vs.hd, EAX);
+      coalesce_operand_phys(env, x, EAX);
+    case Retn(xo): 
+      if(xo!=null) {
+	if(!is_fp_op(env.fn,xo.v)) // FP
+	  coalesce_operand_phys(env, xo.v, EAX);
+      }
+    case Call(x): build_call(env,blk,lives[len-1],x.1);
+    case TailCall(x): build_call(env,blk,lives[len-1],null); 
+      // We must construct interference for Tail-Calls because may transfer to
+      // handler.
+    default: ; // NullCheck and UnionCheck handled by handle interferences
+    }
+  }
+}
+
+void build_call(build_env env,cf_block blk, 
+		<varName>Set::set live, <cf_operand>Opt retn_op) {
+  int d = -1;
+  if(retn_op != null) {
+    if(!is_fp_op(env.fn,retn_op.v)) { // FP
+      switch retn_op.v { 
+      case Local(w): coalesce_local_phys(env,w,EAX); d = w; 
+      default:       ;
+      }
+    }
+  }
+  <<varName>Set::set>Opt handler_live = null;
+  if(blk.handler != null) 
+    handler_live = ^Opt(env.all_live[blk.handler.v.num][0]);
+  for(<varName>list vs = Set::elements(live); vs!=null; vs=vs.tl) {
+    // interfere with caller-save registers
+    // a very slight tad conservatively, interfere with return reg
+    // (maybe we're only live in handler)
+    int v = vs.hd;
+    if(v != d) {
+      interfere_local_phys(env,v,EAX);
+      interfere_local_phys(env,v,ECX);
+      interfere_local_phys(env,v,EDX);
+      interfere_locals(env,v,d);
+    }
+    if(!USE_CALLEE_SAVE 
+       || (handler_live != null && Set::member(handler_live.v, v))) {
+      interfere_local_phys(env,v,EBX);
+      interfere_local_phys(env,v,ESI);
+      interfere_local_phys(env,v,EDI);
+      if(v==d) {
+	interfere_local_phys(env,v,EAX);
+	interfere_local_phys(env,v,ECX);
+	interfere_local_phys(env,v,EDX);
+      }
+    }
+  }
+}
+
+void build_commutes(build_env env, 
+		    *(Popsyntax::primop,cf_operand,cf_operand,cf_operand) x) {
+  coalesce_operands(env,x.2,x.3);
+  coalesce_operands(env,x.2,x.4);
+}
+void build_divmod(build_env env, 
+		  *(Popsyntax::primop,cf_operand,cf_operand,cf_operand) x,
+		  <varName>Set::set live,
+		  int ans) {
+  // live other than dest interfere with EAX and EDX
+  // src1 interferes with EDX
+  // src2 interferes with EDX and EAX
+  // coalesce src1 with EAX
+  // coalesce dest with ans
+  varName d = -1;
+  switch x.2 { case Local(w): d = w; default: ;}
+  for(<varName>list vs = Set::elements(live); vs!=null; vs=vs.tl) {
+    int v = vs.hd;
+    if(v != d) {
+      interfere_local_phys(env, v, EAX);
+      interfere_local_phys(env, v, EDX);
+    }
+  }
+  interfere_operand_phys(env, x.3, EDX);
+  interfere_operand_phys(env, x.4, EDX);
+  interfere_operand_phys(env, x.4, EAX);
+  coalesce_operand_phys (env, x.3, EAX);
+  coalesce_operand_phys (env, x.2, ans);
+}
+void build_shift(build_env env, 
+		 *(Popsyntax::primop,cf_operand,cf_operand,cf_operand) x,
+		 <varName>Set::set live) {
+  // if src2 not constant, then live except src2 interfere with ECX
+  //   and interfere src1 with ECX (else gets clobbered before operation!)
+  // coalesce src1 with dest
+  // coalesce src2 with ECX
+  bool is_const = false;
+  switch x.4 {
+  case Local(s2):
+    for(<varName>list vs = Set::elements(live); vs!=null; vs=vs.tl) {
+      int v = vs.hd;
+      if(v != s2) 
+	interfere_local_phys(env, v, ECX);
+    }
+  case Const(x): is_const = true;
+  default: ;
+  }
+  if(!is_const)
+    interfere_operand_phys(env, x.3, ECX);
+  coalesce_operands    (env, x.2, x.3);
+  coalesce_operand_phys(env, x.4, ECX);
+}
+void build_byte(build_env env, cf_operand bytearg) {
+  interfere_operand_phys(env, bytearg, ESI);
+  interfere_operand_phys(env, bytearg, EDI);
+}
+
+void build_rdtsc(build_env env,
+		 cf_operand o1, cf_operand o2, <varName>Set::set live){
+  // coalesce o1 with EDX
+  // coalesce o2 with EAX
+  // all other variables interfere with EAX and EDX
+  varName d1 = -1;
+  varName d2 = -1;
+  switch o1 { case Local(w) : d1 = w; default: ; }
+  switch o2 { case Local(w) : d2 = w; default: ; }
+
+  for(_ vs = Set::elements(live); vs!=null; vs = vs.tl) {
+    int v = vs.hd;
+    if(v != d1 && v!=d2) {
+      interfere_local_phys(env,v,EDX);
+      interfere_local_phys(env,v,EAX);
+    }
+  }
+
+  interfere_define(env,o1,live);
+  interfere_define(env,o2,live);
+
+  interfere_local_phys(env,d1,EAX);
+  coalesce_operand_phys(env,o1,EDX);
+
+  interfere_local_phys(env,d2,EDX);
+  coalesce_operand_phys(env,o2,EAX);
+
+}
+//////////////////////// FP Construction ///////////////////////////////////////
+void fp_build_graph(build_env env) {
+  // given the liveness at every program point, construct the 
+  // register allocation interference graph.
+  // also find all the potential coalescing.
+  // Similar to non-floating point version except we only look at fp
+  // instructions.
+
+  cf_function fn = env.fn;
+
+  // temporary conservative fix: all params interfere with each other IMPROVE!
+  for(<int>list ps = fn.params; ps != null; ps = ps.tl)
+    for(<int>list qs = ps.tl; qs != null; qs = qs.tl) {
+      interfere_locals(env,ps.hd,qs.hd);
+    }
+
+  // each block contributes edges and coalesces
+  int num_blks = Xarray::length(env.fn.blocks);
+  for(blockName i=0; i < num_blks; ++i) {
+    <varName>Set::set      lives[] = env.all_live[i];
+    int                    len     = size(lives);
+    cf_block               blk     = Xarray::get(fn.blocks,i);
+    <cf_instruction>xarray insts   = blk.insts;
+    // if handler, live interfere with handler var and FP_0
+    if(blk.handler_var != null) {
+      int hv = blk.handler_var.v;
+      for(<varName>list live = Set::elements(lives[0]); 
+	  live!=null; live=live.tl) {
+	int v = live.hd;
+	if(v!=hv) {
+	  interfere_local_phys(env,v,FP_0);
+	  interfere_locals(env,v,hv);
+	}
+      }
+    }
+
+    // instructions
+    for(int j=1; j < len-1; ++j) {
+      <varName>Set::set live = lives[j];
+      _ this_inst = Xarray::get(insts,j-1);
+      
+      if(!is_fp_inst(fn,this_inst)) {
+	switch this_inst {
+	case New(_): ;// Have to clear FP stack around new!
+	default: continue;
+	}
+      }
+
+      switch this_inst {
+      case Copy(x): 
+	interfere_define (env, x.1, live); 
+	coalesce_operands(env, x.1, x.2);
+      case Nullop *(p,d):
+	interfere_define(env,d,live);
+      case Unop *(p,d,s):
+	_ dest_fp, src_fp;
+	switch p {
+	case ItoF: dest_fp = true;  src_fp = false;
+	case ItoD: dest_fp = true;  src_fp = false;
+	case FtoI: dest_fp = false; src_fp = true;
+	case DtoI: dest_fp = false; src_fp = true;
+	default:   dest_fp = true;  src_fp = true;
+	}
+	if(dest_fp) {
+	  interfere_define(env,d,live);
+	  if(src_fp) coalesce_operands(env,d,s);
+	}
+
+      case Binop *(p,d,s1,s2): 
+	if(!is_fp_relop(p)) {
+	    interfere_define(env, d, live);
+	    coalesce_operands(env,d,s1);
+	    coalesce_operands(env,d,s2);
+	}
+      case SelectField *(offset,d,s): 
+	interfere_define(env, d, live);
+      case AssignField(x): ;          
+      case ArraySub *(dest,arr,index):    
+	interfere_define(env, dest, live);
+      case ArrayUpd*(arr,index,src): ;
+      case New(_):         
+	// same register behavior as a function call, but cannot raise
+	// must empty the stack!
+	fp_build_call(env,live,null);
+      default: BUG("Not a FP instruction!");
+      }
+    }
+
+    // transfer -- encode calling convention into the graph
+    switch blk.trans {
+    case Raise(x): ; // ??? Shouldn't this clear the FP stack.
+    case Retn(xo): 
+      if(xo!=null) {
+	if(is_fp_op(env.fn,xo.v)) // FP
+	  coalesce_operand_phys(env, xo.v, FP_0);
+      }
+    case Call(x): 
+      // We don't care about the handler because everything must be kicked
+      // out of the stack.
+      fp_build_call(env,lives[len-1],x.1); // -2 == Before the transfer
+    case TailCall(x):
+      fp_build_call(env,lives[len-1],null);
+    default: ; // NullCheck and UnionCheck handled by handle interferences
+    }
+  }
+}
+
+static void fp_build_call(build_env env,<varName>Set::set lives,
+		<cf_operand>Opt retn) {
+
+  _ d = -1;
+  if(retn != null) {
+    switch retn.v {
+    case Local(i): 
+      d=i;
+      coalesce_local_phys(env,d,FP_0);
+    default: ;
+    }
+  }
+
+  for(_ vs = Set::elements(lives); vs!=null; vs=vs.tl) {
+    int v = vs.hd;
+    if(v!=d) {
+      interfere_local_phys(env,v,FP_0);
+      interfere_local_phys(env,v,FP_1);
+      interfere_local_phys(env,v,FP_2);
+      interfere_local_phys(env,v,FP_3);
+      interfere_local_phys(env,v,FP_4);
+      interfere_local_phys(env,v,FP_5);
+      interfere_local_phys(env,v,FP_6);  
+      interfere_locals    (env,v,   d);
+    }
+  }
+}
+
+//////////////////////// Conversion to Phase 2 ////////////////////////////////
+static simplify_env build_env2simplify_env(regalloc_env renv, build_env env) {
+  int           num_regs       = renv.num_regs;
+  int           num_var_nodes  = env.num_nodes;
+  int           num_orig_nodes = env.num_orig_nodes;
+  <int>list     mt             = null;
+
+  //printf("num_var_nodes = %d, num_orig_nodes = %d \n");
+
+  adj_list_node nodes[] = 
+    new_array(num_var_nodes,
+	      ^adj_list_node(0,0,mt,mt,0,false,^nodePlace.Removed,0,0));
+  unsigned int costs[] = spill_costs(env.fn); // Computed for all locals.
+  _ node_to_local = env.node_to_local;
+  for(int i=0; i < num_orig_nodes; ++i) {
+    _ local_i = node_to_local[i];
+
+    if(local_i < 0) BUG("node does not correspond to a local operand.");
+
+    nodes[i] = ^adj_list_node(0,0,mt,mt,costs[local_i],false,
+			      ^nodePlace.NonMove,0,i); 
+    if(!not_spilled(env,local_i)) {
+      nodes[i].color      = -1;
+      nodes[i].which_list = ^nodePlace.Removed;
+    }
+  }
+
+  for(int i=num_orig_nodes; i < num_var_nodes; ++i)
+    nodes[i] = ^adj_list_node(0,0,mt,mt,0,true,^nodePlace.NonMove,0,i);
+
+  // would be better if we didn't have to search for the switch vars:
+  // Why do we have to do this here?
+  // FMS: I commented all this out and nothing broke.  I suspect this is
+  // the WRONG thing to do. But if you leave this in popiltal fails during
+  // bootstrapping.  It is wrong because we need this code to appease the
+  // verifier -- I believe.
+  /*
+  <cf_block>xarray blks     = env.fn.blocks;
+  int              num_blks = Xarray::length(blks);
+   for(int i=0; i < num_blks; ++i) {
+    varName sx;
+    switch Xarray::get(blks,i).trans { 
+    case SumSwitch(x):  sx = x.1.Local;
+    case ExnSwitch(x):  sx = x.1.Local;
+    case UnionCheck(x): sx = x.1.Local;
+    default:            sx = -1;
+    }
+    if(sx>=0) {
+      // sx is a local variable name, we must convert it to a node name.
+      _ n_sx = local_or_reg_to_node(env,sx);
+      if(n_sx >= 0) nodes[n_sx].unspillable = true;
+    }
+  }
+  */
+
+  int graph    [][] = env.graph;
+  int coalesces[][] = env.coalesces;
+  <coalesce_info>xarray xcoalesces = 
+     Xarray::create(25, ^coalesce_info(0,0,^coalescePlace.Available,0));
+  for(int i=0; i < num_var_nodes; ++i) {
+    <int>list edges = Bitvec::to_sorted_list(graph[i],i);
+    nodes[i].adj     = edges;
+    nodes[i].degree  = List::length(edges);
+    for(; edges != null; edges=edges.tl) {
+      int hd = edges.hd;
+      nodes[hd].adj = ^list(i,nodes[hd].adj);
+      ++nodes[hd].degree;
+    }
+    <int>list coalesces = Bitvec::to_sorted_list(coalesces[i],i);
+    for(; coalesces != null; coalesces=coalesces.tl) {
+      int hd = coalesces.hd;
+      int c  = Xarray::length(xcoalesces);
+      Xarray::add(xcoalesces,^coalesce_info(i,hd,^coalescePlace.Available,c));
+      nodes[i].coalesces  = ^list(c,nodes[i].coalesces);
+      nodes[hd].coalesces = ^list(c,nodes[hd].coalesces);
+    }
+  }
+  _ num_nodes = num_var_nodes + num_regs;
+  for(int i=num_var_nodes; i < num_nodes; ++i) {
+    <int>list edges = Bitvec::to_sorted_list(graph[i],num_var_nodes);
+    for(; edges != null; edges=edges.tl) {
+      int hd = edges.hd;
+      nodes[hd].adj = ^list(i,nodes[hd].adj);
+      ++nodes[hd].degree;
+    }
+    <int>list coalesces = Bitvec::to_sorted_list(coalesces[i],num_var_nodes);
+    for(; coalesces != null; coalesces=coalesces.tl) {
+      int hd = coalesces.hd;
+      int c  = Xarray::length(xcoalesces);
+      Xarray::add(xcoalesces,^coalesce_info(i,hd,^coalescePlace.Available,c));
+      nodes[hd].coalesces = ^list(c,nodes[hd].coalesces);
+    }
+  }
+  node_worklist non_move_nodes    = 
+    ^node_worklist(^nodePlace.NonMove, new_array(num_var_nodes,0),    0);
+  node_worklist move_nodes        = 
+    ^node_worklist(^nodePlace.Move,    new_array(num_var_nodes,0),    0);
+  node_worklist high_degree_nodes = 
+    ^node_worklist(^nodePlace.HighDegree, new_array(num_var_nodes,0), 0);
+  int num_coalesces = Xarray::length(xcoalesces);
+  move_worklist available_moves   = 
+    ^move_worklist(^coalescePlace.Available, new_array(num_coalesces,0),0);
+  move_worklist active_moves      = 
+    ^move_worklist(^coalescePlace.Active, new_array(num_coalesces,0),0);
+  
+  simplify_env ans = 
+    ^simplify_env(num_regs,
+		  graph, nodes, non_move_nodes, move_nodes, high_degree_nodes,
+		  Xarray::to_array(xcoalesces), available_moves, active_moves,
+		  null);
+  for(int i=0; i < num_var_nodes; ++i) {
+    adj_list_node n = nodes[i];
+    switch n.which_list {
+    case Removed: ;
+    default:
+      if(n.degree >= num_regs)
+	add_to_worklist(ans,i,high_degree_nodes);
+      else if(n.coalesces != null)
+	add_to_worklist(ans,i,move_nodes);
+      else
+	add_to_worklist(ans,i,non_move_nodes);
+    }
+  }
+  for(int i=0; i < num_coalesces; ++i)
+    add_to_moveslist(ans,i,ans.available_moves);
+//    for(int i=0; i < num_var_nodes; ++i) {
+//      printf("\n%d: ", i);
+//      for(<int>list l = ans.nodes[i].coalesces; l!=null; l=l.tl)
+//        printf(" %d ", l.hd);
+//    }
+    
+  return ans;
+}
+
+///////////////////////////// Simplification ///////////////////////////
+
+static void simplify(cf_function fn, simplify_env env) {
+#ifdef DEBUG
+  printf("\nMoves: ");
+  for(int i=0; i < size(env.coalesces); ++i)
+    printf(" (%d,%d) ", env.coalesces[i].node1, env.coalesces[i].node2);
+#endif
+  while(true) {
+#ifdef DEBUG
+    printf("\nNon-move: ");
+    for(int i=0; i < env.non_move_nodes.num; ++i)
+      printf(" %d ", env.non_move_nodes.arr[i]);
+    printf("\nMove: ");
+    for(int i=0; i < env.move_nodes.num; ++i)
+      printf(" %d ", env.move_nodes.arr[i]);
+    printf("\nHigh: ");
+    for(int i=0; i < env.high_degree_nodes.num; ++i)
+      printf(" %d ", env.high_degree_nodes.arr[i]);
+#endif
+    if(env.non_move_nodes.num > 0) {
+      int removed = choose_and_remove_node(env.non_move_nodes);
+      DBG(printf("\nREMOVE %d", removed));
+      env.select_stack   = ^list(removed,env.select_stack);
+      adj_list_node node = env.nodes[removed];
+      node.which_list    = ^nodePlace.Removed;
+      List::iter_c(decrement_degree, env, node.adj);
+    } 
+    else if(env.available_moves.num > 0) {
+      int           removed = choose_and_remove_move(env.available_moves);
+      DBG(printf("\nCOALESCE %d", removed));
+      coalesce_info c = env.coalesces[removed];
+      int           u = get_alias(env,c.node1);
+      int           v = get_alias(env,c.node2);
+      if(v > u) {
+	int tmp = v;
+	v = u;
+	u = tmp;
+      }
+      c.which_list = ^coalescePlace.Neither; // is undone in last else branch
+
+      if(u == v) {
+	add_worklist(env, u);
+      }
+      else if(v >= size(env.nodes) || Bitvec::get(env.matrix[u],v))  { 
+	add_worklist(env,u);
+	add_worklist(env,v);
+      } else if((u >= size(env.nodes) 
+		 && List::forall_c(okay,^(env,u),env.nodes[v].adj))
+		|| (u < size(env.nodes) && conservative(env,u,v) &&
+		    coalesce_ok(env,u,v))) {
+	adj_list_node v_node = env.nodes[v];
+	switch v_node.which_list {
+	case Move:       remove_from_worklist(env,v,env.move_nodes);
+	case HighDegree: remove_from_worklist(env,v,env.high_degree_nodes);
+	default:  
+	  BUG("move coalescing == pain in the ass");
+	}
+	v_node.alias = u;
+	if(u < size(env.nodes)) {
+	  // this should remove duplicates for speed!!!
+	  adj_list_node u_node = env.nodes[u];
+	  u_node.coalesces = List::append(u_node.coalesces,v_node.coalesces);
+	}
+	for(<int>list l = v_node.adj; l!=null; l=l.tl) {
+	  int t = l.hd;
+	  if(still_in_graph(env,t)) {
+	    int smaller = u < t ? u : t;
+	    int larger  = u < t ? t : u;
+	    int nodes = size(env.nodes);
+
+	    if(t != u && 
+	       (t<nodes || u<nodes) && 
+	       !Bitvec::get_and_set(env.matrix[larger],smaller)) {
+	      if(u < nodes) {
+		adj_list_node u_node = env.nodes[u];
+		u_node.adj = ^list(t,u_node.adj);
+		++u_node.degree;
+	      }
+	      if(t < nodes) {
+		adj_list_node t_node = env.nodes[t];
+		t_node.adj = ^list(u,t_node.adj);
+		++t_node.degree;
+	      }
+	    }
+	    decrement_degree(env,t);
+	  }
+	}
+	if(u < size(env.nodes)) {
+	  adj_list_node u_node = env.nodes[u];
+	  if(u_node.degree >= env.num_regs)
+	    switch u_node.which_list {
+	    case Move: 
+	      remove_from_worklist(env,u,env.move_nodes);
+	      add_to_worklist     (env,u,env.high_degree_nodes);
+	    default: ;
+	  }
+	  add_worklist(env,u);
+	}
+      } else {
+	add_to_moveslist(env,removed,env.active_moves);
+      }
+    }
+    else if (env.move_nodes.num > 0) {
+      int removed = choose_and_remove_node(env.move_nodes);
+      DBG(printf("\nFREEZE %d", removed));
+      add_to_worklist(env,removed,env.non_move_nodes);
+      freeze_moves(env,removed);
+    } else if (env.high_degree_nodes.num > 0) {
+      // Select a spill node.
+      unsigned int mincost = 0x7FFFFFFF; // lose a bit because of Ocaml
+      int minnode = -1;
+      for(int i=0; i < env.high_degree_nodes.num; ++i) {
+	int           node_num = env.high_degree_nodes.arr[i];
+	adj_list_node node     = env.nodes[node_num];
+	if(!node.unspillable) {
+	  unsigned int cost = node.spill_cost / node.degree;
+	  if(cost <= mincost) {
+	    mincost = cost;
+	    minnode = node_num;
+	  }
+	}
+      }
+
+      if(minnode == -1) {
+	Popilprint::suppress_output = false;
+	Popilprint::prn_fun(fn);
+	
+	_ liveness = compute_all_liveness(fn);
+	Popilanalyze::print_liveness(Popilanalyze::ilf,liveness);
+
+	printf("high_degree_nodes = %d \n",env.high_degree_nodes.num);
+	for(int i=0; i < env.high_degree_nodes.num; ++i) {
+	  int           node_num = env.high_degree_nodes.arr[i];
+	  adj_list_node node     = env.nodes[node_num];
+	  if(!node.unspillable) {
+	    unsigned int cost = node.spill_cost / node.degree;
+	    printf("(%d cost %x) ",node_num,cost);
+	  }
+	  else printf("(%d unspillable) ",node_num);
+	}
+	BUG("All the high degree nodes are unspillable.");
+      }
+
+      remove_from_worklist(env,minnode,env.high_degree_nodes);
+      add_to_worklist     (env,minnode,env.non_move_nodes);
+      freeze_moves(env,minnode);
+    } else
+      break;
+  }
+}
+
+void decrement_degree(simplify_env env, int node_num) {
+  if(still_in_graph(env,node_num) && node_num < size(env.nodes)) {
+    adj_list_node node = env.nodes[node_num];
+    switch node.which_list {
+    case HighDegree: 
+      if(--env.nodes[node_num].degree == env.num_regs-1) {
+	// enable the moves of the node and those adjacent
+	enable_moves(env,node_num);
+	List::iter_c(enable_moves,env,node.adj);
+	// move the node out of high degree
+	remove_from_worklist(env,node_num,env.high_degree_nodes);
+	if(is_move_related(env,node))
+	  add_to_worklist(env,node_num,env.move_nodes);
+	else
+	  add_to_worklist(env,node_num,env.non_move_nodes);
+      }
+    default: ;
+    }
+  }
+}
+void enable_moves(simplify_env env, int node_num) {
+  if(still_in_graph(env,node_num)) {
+    if(node_num >= size(env.nodes)) {
+      return;
+    }
+    adj_list_node node = env.nodes[node_num];
+    switch node.which_list {
+    case Removed: return;
+    default:      ;
+    }
+    <int>list moves = env.nodes[node_num].coalesces;
+    List::iter_c(active_to_available,env,moves);
+  }
+}
+void active_to_available(simplify_env env, int move) {
+  coalesce_info c = env.coalesces[move];
+  switch c.which_list {
+  case Active:
+    remove_from_moveslist(env,move,env.active_moves);
+    add_to_moveslist     (env,move,env.available_moves);
+  default: ;
+  }
+}
+void freeze_moves(simplify_env env, int node_num) {
+  if(node_num < size(env.nodes))
+    for(<int>list l = env.nodes[node_num].coalesces; l!=null; l=l.tl) {
+      int           move = l.hd;
+      coalesce_info c    = env.coalesces[move];
+      switch c.which_list {
+      case Neither:   continue;
+      case Active:    remove_from_moveslist(env,move,env.active_moves);
+      case Available: remove_from_moveslist(env,move,env.available_moves);
+      }
+      c.which_list = ^coalescePlace.Neither;
+      int other_node_num = (c.node1 == node_num) ? c.node2 : c.node1;
+      if(other_node_num < size(env.nodes) 
+	 && still_in_graph(env,other_node_num)) {
+	adj_list_node other_node = env.nodes[other_node_num];
+	if(other_node.degree < env.num_regs && 
+	   !is_move_related(env,other_node)) {
+	  remove_from_worklist(env,other_node_num,env.move_nodes);
+	  add_to_worklist     (env,other_node_num,env.non_move_nodes);
+	}
+      }
+    }
+}
+bool is_move_related(simplify_env env, adj_list_node n) {
+  coalesce_info coalesces[] = env.coalesces;
+  for(<int>list l = n.coalesces; l!=null; l=l.tl) 
+    switch coalesces[l.hd].which_list {
+    case Neither: ; 
+    default:      return true;
+  }
+  return false;
+}
+int get_alias(simplify_env env, int node_num) {
+  if(node_num >= size(env.nodes))
+    return node_num;
+  adj_list_node nodes[] = env.nodes;
+  int           sz      = size(nodes);
+  int orig_num = node_num;
+  int alias    = nodes[node_num].alias;
+  while(node_num < sz && (alias=nodes[node_num].alias) != node_num)
+    node_num = alias;
+  // side effect: path compression
+  while(orig_num < sz && orig_num != alias) {
+    int old = nodes[orig_num].alias;
+    nodes[orig_num].alias = alias;
+    orig_num = old;
+  }
+  return alias;
+}
+void add_worklist(simplify_env env, int node_num) {
+  if(node_num < size(env.nodes)
+     && !is_move_related(env,env.nodes[node_num])
+     && env.nodes[node_num].degree < env.num_regs) {
+    remove_from_worklist(env,node_num,env.move_nodes);
+    add_to_worklist     (env,node_num,env.non_move_nodes);
+  }
+}
+
+// Prevent coalescing of unspillable and high degree nodes.
+// XXX - If something breaks this might be the culprit.
+static bool coalesce_ok(simplify_env env, int node1, int node2) {
+  if(node1 >= size(env.nodes) || node2 >= size(env.nodes)) return false;
+
+  if(env.nodes[node1].unspillable && env.nodes[node2].degree >= env.num_regs)
+    return false;
+
+  if(env.nodes[node2].unspillable && env.nodes[node1].degree >= env.num_regs)
+    return false;
+    
+  return true;
+}
+bool conservative(simplify_env env, int node1, int node2) {
+  // note a phys reg adjacent to a non-phys definitely has significant degree
+  int k = 0;
+  adj_list_node nodes[] = env.nodes;
+  int sz = size(nodes);
+  for(<int>list l = nodes[node1].adj; l!=null; l=l.tl) {
+    int hd = l.hd;
+    if(still_in_graph(env,hd))
+      if(hd >= sz || nodes[hd].degree >= env.num_regs) ++k;
+  }
+  for(<int>list l = nodes[node2].adj; l!=null; l=l.tl) {
+    int hd = l.hd;
+    if(still_in_graph(env,hd))
+      if(hd >= sz || nodes[hd].degree >= env.num_regs) ++k;
+  }
+  return k < env.num_regs;
+}
+bool okay(*(simplify_env,int) env_phys, int node) {
+  simplify_env env = env_phys.1;
+  if(!still_in_graph(env,node)) {
+    return true;
+  }
+
+  bool result = 
+       node >= size(env.nodes) 
+    || env.nodes[node].degree < env.num_regs 
+    || Bitvec::get(env.matrix[env_phys.2],node);
+
+  return result;
+}
+bool still_in_graph(simplify_env env, int node) {
+  if(node >= size(env.nodes))
+    return true;
+  adj_list_node n = env.nodes[node];
+  if(n.alias != node)
+    return false;
+  switch n.which_list {
+  case Removed: return false;
+  default:      return true;
+  }
+}
+
+////////////////////////////// Register Assignment ////////////////////
+static <int>list assign_regs(simplify_env env) {
+  <int>list ans      = null;
+  int       avail[]  = Bitvec::new_full(env.num_regs);
+  adj_list_node nodes[]     = env.nodes;
+  int           num_vars    = size(nodes);
+  <int>list     prune_order = env.select_stack;
+  for(; prune_order != null; prune_order = prune_order.tl) {
+    Bitvec::set_all(avail);
+    adj_list_node to_color = nodes[prune_order.hd];
+    to_color.which_list = ^nodePlace.NonMove; // anything not Removed is fine
+    for(<int>list adj = to_color.adj; adj!=null; adj=adj.tl) {
+      int next = get_alias(env,adj.hd);
+      if(next >= num_vars)
+	Bitvec::clear(avail,next-num_vars);
+      else {
+	adj_list_node m = nodes[next];
+	if(m.color != -1) 
+	  switch m.which_list {
+	  case Removed: ;
+	  default:      Bitvec::clear(avail,m.color);
+	}
+      }
+    }
+    int i=0;
+    _ num_regs = env.num_regs;
+    for(; i < num_regs; ++i)
+      if(Bitvec::get(avail,i)) {
+	to_color.color = i;
+	break;
+      }
+    if(i == num_regs) {
+      //printf("\n%d:\t%d\t%d", 
+      //           prune_order.hd, to_color.degree, to_color.spill_cost);
+      to_color.color = -1;
+      ans = ^list(prune_order.hd, ans);
+    }
+  }
+  for(int i=0; i < num_vars; ++i) {
+    int alias = get_alias(env,i);
+    if(alias != i) {
+      adj_list_node n = env.nodes[i];
+      if(alias >= num_vars)
+	n.color = alias - num_vars;
+      else
+	n.color = env.nodes[alias].color;
+      if(n.color == -1)
+	ans = ^list(i,ans);
+    }
+  }
+  return ans;
+}
+
+open Tal {
+
+tal_place eax_place = ^tal_place.Reg(^reg.Eax);
+tal_place ebx_place = ^tal_place.Reg(^reg.Ebx);
+tal_place ecx_place = ^tal_place.Reg(^reg.Ecx);
+tal_place edx_place = ^tal_place.Reg(^reg.Edx);
+tal_place esi_place = ^tal_place.Reg(^reg.Esi);
+tal_place edi_place = ^tal_place.Reg(^reg.Edi);
+
+tal_place fp0_place = ^tal_place.Fpreg(0);
+tal_place fp1_place = ^tal_place.Fpreg(1);
+tal_place fp2_place = ^tal_place.Fpreg(2);
+tal_place fp3_place = ^tal_place.Fpreg(3);
+tal_place fp4_place = ^tal_place.Fpreg(4);
+tal_place fp5_place = ^tal_place.Fpreg(5);
+tal_place fp6_place = ^tal_place.Fpreg(6);
+
+ tal_place int2fp_reg(int i) {
+   switch i {
+   case FP_0: return fp0_place;
+   case FP_1: return fp1_place;
+   case FP_2: return fp2_place;
+   case FP_3: return fp3_place;
+   case FP_4: return fp4_place;
+   case FP_5: return fp5_place;
+   case FP_6: return fp6_place;
+   default: BUG("Unexpected value, int2fp_reg");
+   }
+ }
+
+ tal_place int2reg(int i) {
+   switch i {
+   case EDI: return edi_place;
+   case ESI: return esi_place;
+   case EDX: return edx_place;
+   case ECX: return ecx_place;
+   case EBX: return ebx_place;
+   case EAX: return eax_place;
+   default: BUG("Unexpected value, int2reg");
+   }
+ }
+
+static int less_eq_param(cf_function fn, int x, int y) {
+  _ px = Xarray::get(fn.all_operands,x).usage.Param.2;
+  _ py = Xarray::get(fn.all_operands,y).usage.Param.2;
+
+  return (py - px);
+}
+
+ static void print_int_array(FILE f, string heading, int x[]) {
+   fprintf(f,"%s",heading);
+   for(int i = 0; i < size(x); i++) {
+     printf("%d ", x[i]);
+   }
+   printf("\n");
+ }
+
+ // graph2place chooses stack slots for spilled operands.
+ // If is passed the coloring determined for FP and non-FP operands
+ // separately, and interference information for each.
+ // On the stack. word-sized operands are followed by the doubleword sized
+ // operands. That means stack slots 0--(# of  double word arguments) are 
+ // used for doubles.  We never move word_sized parameters, and do our
+ // best not to move doubles.
+ static *(int,int) graph2place(cf_function fn, 
+			       int coloring[],
+			       int fp_coloring[],
+			       <int>list graph[],
+			       <int>list fp_graph[],
+			       tal_place ans[]) {
+
+
+
+   // WARNING: fp_coloring may be empty if no FP variables are present.
+   // Otherwise it is always longer than coloring since it includes the FP
+   // spills in addition to the regular spills.
+   _ num_vars = size(ans);
+
+   // We don't have interference information between these three kinds of
+   // variables: floats, doubles, and other.
+   // So we assign them to disjoint sets of stack slots.
+   _ double_slots = Bitvec::new_empty(num_vars);
+   _ fp_slots     = Bitvec::new_empty(num_vars);
+   _ non_fp_slots = Bitvec::new_empty(num_vars);   
+
+   _ temp_bv      = Bitvec::new_empty(num_vars);
+   // During this pass we assign arbitrary stack slot numbers
+   // These will be reordered at the end to enforce a number of
+   // invariants.
+   _ max_slot = -1;
+   _ var2slot = new_array(num_vars,-1);   
+   for(int i=0; i < num_vars; i++) {
+     _ col = (i<size(coloring)) ? coloring[i] : -2; 
+     _ fp_col = (i<size(fp_coloring)) ? fp_coloring[i] : -2;
+
+     if(col >= 0) {
+       ans[i] = int2reg(col);
+       continue;
+     }
+     if(fp_col >= 0) {
+       ans[i] = int2fp_reg(fp_col);
+       continue;
+     }
+
+     // The variable must be placed on the stack.
+     
+     _ interfering_vars;
+     _ good_slots = temp_bv;
+     _ related_slots;
+     _ related_coloring;
+     Bitvec::set_all(good_slots);
+     if(col == -1) { // Non-fp variable.
+       interfering_vars = graph[i];
+       related_slots    = non_fp_slots;
+       related_coloring = coloring;
+       Bitvec::diff_two(good_slots,good_slots,fp_slots);
+       Bitvec::diff_two(good_slots,good_slots,double_slots);
+     }
+     else { // fp variable
+       interfering_vars = fp_graph[i];
+       related_coloring = fp_coloring;
+       Bitvec::diff_two(good_slots,good_slots,non_fp_slots);
+       if(sizeof_typ(Xarray::get(fn.all_operands,i).typ) == 8) {
+	 related_slots = double_slots;
+	 Bitvec::diff_two(good_slots,good_slots,fp_slots);
+       } else {
+       related_slots    = fp_slots;
+       Bitvec::diff_two(good_slots,good_slots,double_slots);
+       }
+     }
+
+     for(_ l = interfering_vars; l != null; l=l.tl) {
+       _ v = l.hd ;       
+       if(v < size(related_coloring)) { // not true for physical registers.
+	 _ slot = var2slot[v];
+	 if(slot>=0) Bitvec::clear(good_slots,slot);
+       }
+     }
+
+     // Pick the first set bit out of good_slots
+     _ slot = Bitvec::next(good_slots,0);
+     if(slot<0 || slot >= num_vars) {
+       BUG("Could not find a slot for this variable.");
+     }
+     if(slot>max_slot) max_slot = slot;
+     Bitvec::set(related_slots,slot);
+     var2slot[i] = slot;
+   }
+
+   _ num_initial_slots = max_slot + 1;
+   
+   // var2slot[i] == -1 if variable i is in a register
+   // var2slot[i] is the slot assigned to each variable
+   // These slot numbers do not obey invariants required by popiltal
+   //   1. Doubles occur from 0 to x
+   //   2. Parameters occur deepest and in order.
+   //   3. Word-sized parameters always occur in place (are not moved).
+   //   4. Doubles always begin after an even number of word sized slots.
+   
+   // We use the below mapping to rename stack slots.
+   // May have to copy double parameters out of the way hence the + ... 
+   // below. +1 is for stack alignment space.
+   int mapping[] = new_array(num_initial_slots+ 1+ List::length(fn.params),0); 
+   for(int i = 0; i<size(mapping); i++)
+     mapping[i] = i;
+
+   // Remap double slots to the beginning of the array.
+   _ num_double_slots = 0; // Number of doubleword sized slots
+   _ num_slots = num_initial_slots;
+   _ s = Bitvec::next(double_slots,0);
+   while(s >= 0 && s < num_slots) {
+     remap(mapping,s,num_double_slots);
+     num_double_slots++;
+     s = Bitvec::next(double_slots,s+1);
+   }
+
+   // We have to sort the parameters.  For some reason they're not sorted.
+   // Sort them from deepest to shallowest.
+   _ params = List::merge_sort_c(less_eq_param,fn,fn.params);
+
+   // Want to ensure we never move word-sized parameters!
+   // Compute number of words from bottom of stack to shallowest word
+   // sized parameter.
+   int p_words = 0;
+   int p_slots = 0;
+   int max_p_word_offset = 0;
+   for(_ x = params; x!=null; x=x.tl) {
+     _ info = Xarray::get(fn.all_operands,x.hd);
+     _ sz = sizeof_typ(info.typ) / 4;
+     
+     p_slots++;
+     p_words += sz;
+     if(sz==1) max_p_word_offset = p_words;
+   }
+
+   // To avoid moving word sized parameters need at least max_p_word_offset
+   // word_sized stack slots.
+   _ num_word_slots = num_slots - num_double_slots;
+   if(num_word_slots < max_p_word_offset) num_word_slots = max_p_word_offset;
+
+   // We need at least as many words worth of slots as the parameters use
+   // even if not all parameters reside on the stack.
+   _ num_words = num_word_slots + 2 * num_double_slots;
+   if(num_words < p_words) {
+     // Would rather add double slots so that double parameters can remain
+     // uncopied but doing so requires remapping all word-sized parameters
+     // to higher stack slots.
+     // For now never add doubles -- means more parameters must be moved.
+     num_word_slots += (p_words - num_words);
+   }
+
+   // num_word_slots must be even if doubles occur in parameter positions.
+   if(num_word_slots < p_words) {
+     if(p_words %2 != 0) num_word_slots = p_words;
+     else if (num_word_slots%2 != 0) num_word_slots++;
+   }
+   
+   num_slots = num_double_slots + num_word_slots;
+
+   //print_int_array(tal_stdout,"mapping = ", mapping);
+
+   _ p_slot = num_slots; // Slot last parameter "went in".
+   for(_ x = params; x!=null; x=x.tl) {
+     _ p = x.hd;
+     _ p_op = Xarray::get(fn.all_operands,p);
+     _ is_double = (sizeof_typ(p_op.typ) == 8);
+
+     _ slot = var2slot[p];
+
+     if(!is_double || (p_slot <= num_double_slots)) {
+       p_slot -=1;
+       // Make sure it gets assigned to p_slot 
+       if(slot>=0) remap(mapping,slot,p_slot);
+     }
+     else {
+       // It cannot go in p_slot because its a double. Leave it where it is.
+       p_slot -=2;
+     }
+   }
+
+   //print_int_array(tal_stdout,"mapping = ", mapping);
+   
+   // Now apply the mapping.
+   for(int i = 0; i < size(ans); i++) {
+     _ slot = var2slot[i];
+     if(slot>=0) {
+       slot = mapping[slot]; // Apply the mapping
+       ans[i] = ^.Stackslot(slot);
+     }
+   }
+
+   return ^(num_slots,num_double_slots);
+}
+
+ // Remaps x to y, keeping x a valid function.
+ void remap(int m[], int x, int y) {
+
+   _ mx = m[x];
+   if(mx == y) return;
+
+   for(int i = 0; i < size(m); i++) {
+     if(m[i] == y) m[i] = mx;
+   }
+
+   m[x] = y;
+ }
+} // End of open TAL
+
+////////////////////////////// Spill Rewriting /////////////////////////
+
+#define EMIT(x) Xarray::add(new_insts, ^cf_instruction.x)
+
+// Rewrite a function so that it satisfies the invariants assumed by register
+// allocation, specifically:
+//  * At most one Global or Spill operand per instruction (except Call)
+//  * Global or Spill operand may not be the second argument to a shift op.
+//    or, for type reasons at the moment, the second arg to a div or mod.
+//  * No Global or Spill operands allowed in AssignField
+//  * Destination of SelectField can't be Global or Spill
+//  * Various other restrictions on array instructions too
+//  * At most one constant in a relop or Cond
+//  * Operand to SumSwitch or ExnSwitch must be in a register
+// If an operand "must be a register", then we make sure it is fresh at each
+//  use point, otherwise allocation may be impossible.
+// We add to "names" as necessary -- when a copy is made for spilling reasons,
+//  its name points back to the original so that the TAL name is the same for
+//  the copy and the original.
+//  We do not rewrite floating point expressions!
+static void regalloc_rewrite(cf_function fn, BITVEC spilled, 
+			     <int>xarray names) {
+  // for efficiency, could avoid copying block when nothing changes
+  <cf_block> xarray blks     = fn.blocks;
+  <cf_idinfo>xarray operands = fn.all_operands;
+  int               num_blks = Xarray::length(blks);
+  for(int i=0; i < num_blks; ++i) {
+    cf_block               blk       = Xarray::get(blks,i);
+    <cf_instruction>xarray old_insts = blk.insts;
+    int                    num_insts = Xarray::length(old_insts);
+    <cf_instruction>xarray new_insts =
+       Xarray::create(num_insts, ^cf_instruction.Nop);
+    blk.insts = new_insts;
+    for(int j=0; j < num_insts; ++j) {
+      bool copy_old_inst = true;
+      int  num_mem_ops   = 0;
+      cf_instruction old_inst = Xarray::get(old_insts,j);
+      if(is_fp_inst(fn,old_inst) && !is_partial_fp_inst(fn,old_inst)) { // FP
+	Xarray::add(new_insts,old_inst);
+	continue;
+      }
+      switch old_inst {
+      case Nop: copy_old_inst = false;
+      case Copy(x): 
+	//	;
+	if(is_memory_op(spilled, x.1)) ++num_mem_ops;
+	if(is_memory_op(spilled, x.2)) ++num_mem_ops;
+	if(num_mem_ops == 2) {
+	  copy_old_inst = false;
+	  cf_operand temp = insert_mem_load(fn, names, new_insts, x.2);
+	  EMIT(Copy(^(x.1, temp)));
+	}
+      case Nullop *(p,dest):
+	// Nullary operators are currently all FP.
+	;
+      case Unop *(p,dest,src):
+	if(!is_partial_fp_primop(p)) {
+	  if(is_memory_op(spilled, dest)) ++num_mem_ops;
+	  if(is_memory_op(spilled, src)) ++num_mem_ops;
+	  if(num_mem_ops == 2) {
+	    copy_old_inst = false;
+	    cf_operand temp = insert_mem_load(fn, names, new_insts, src);
+	    EMIT(Unop(^(p, dest, temp)));
+	  }
+	} 
+	// For the cast operations the integer should be in memory,
+	// not in a register. We put it on the stack in popiltal if
+	// necessary!
+
+      case Binop(x):
+	// IMHO, this code is a mess!
+	// first we must take care of shifts, mods, divides, and mults
+	// since some of their args shall not be in memory
+	cf_operand x2 = x.2;
+	cf_operand x3 = x.3;
+	cf_operand x4 = x.4;
+	bool is_shift = false; // x4 must be a reg or Const
+	bool is_div   = false; // x4 must not be a global
+	bool dest_reg = false; // x2 must be a reg
+	bool is_relop = false; // x3 and x4 can't both be Const (should fold!)
+	switch x.1 {
+	case Bitlshift:  is_shift = true;
+	case Bitlrshift: is_shift = true;
+	case Bitarshift: is_shift = true;
+	case Div:        dest_reg = true; is_div = true;
+	case DivU:       dest_reg = true; is_div = true;
+	case Mod:        dest_reg = true; is_div = true;
+	case ModU:       dest_reg = true; is_div = true;
+	case TimesU:     dest_reg = true;
+	case Times:      dest_reg = true;
+	case Eq:         is_relop = true;
+	case Neq:        is_relop = true;
+	case Gt:         is_relop = true;
+	case GtU:        is_relop = true;
+	case Lt:         is_relop = true;
+	case LtU:        is_relop = true;
+	case Gte:        is_relop = true;
+	case GteU:       is_relop = true;
+	case Lte:        is_relop = true;
+	case LteU:       is_relop = true;
+	default:         if(is_fp_relop(x.1)) dest_reg = true;;
+	}
+
+	_ new_x2 = false;
+	
+	if(is_relop) {
+
+	  dest_reg = true; // Destination must be in a register for Setcc!
+	  // constant-folding should make this never happen, 
+	  // or at least flip around args when one constant,
+	  // but for now...
+	  switch x3 {
+	  case Const(_): 
+	    cf_operand tmp = localoperand(newtemp(fn, operand_type(fn,x3)));
+	    EMIT(Copy(^(tmp, x3)));
+	    x3 = tmp;
+	    copy_old_inst = false;
+	  default: ;
+	  }
+	}
+
+	if(is_shift && is_memory_op(spilled, x4))
+	  x4 = insert_mem_load(fn, names, new_insts, x4);
+	if(is_div)
+	  switch x4 {
+	  case Global(i): x4 = insert_mem_load(fn, names, new_insts, x4);
+	  default:        ;
+	}
+
+	if(dest_reg && is_memory_op(spilled, x.2)) {
+	  copy_old_inst = false;
+	  new_x2 = true;
+	  x2 = add_temp(fn, names, x.2);
+	}
+
+	if(is_relop && is_memory_op(spilled,x3) && is_memory_op(spilled,x4)) {
+	  copy_old_inst = false;
+	  x3 = insert_mem_load(fn,names,new_insts,x3);
+	} 
+	else if(is_memory_op(spilled,x2)) {
+	  bool x3_mem = is_memory_op(spilled,x3);
+	  bool x4_mem = is_memory_op(spilled,x4);
+	  
+	  ++num_mem_ops;
+	  if(x3_mem) ++num_mem_ops;
+	  if(x4_mem) ++num_mem_ops;
+	  
+	  if (num_mem_ops == 2) {
+	    if(cf_operand_cmp(x2,x3)!=0 && cf_operand_cmp(x2,x4)!=0) {
+	      copy_old_inst = false;
+	      if(is_memory_op(spilled, x3)) {
+		x3 = insert_mem_load(fn, names, new_insts, x3);
+	      } else {
+		x4 = insert_mem_load(fn, names, new_insts, x4);
+	      } 
+	    }
+	  }
+	  else if (num_mem_ops == 3) {
+	    copy_old_inst = false;
+	    x3 = insert_mem_load(fn, names, new_insts, x3);
+	    x4 = insert_mem_load(fn, names, new_insts, x4);
+	  } 
+	} 
+	if (is_shift) {
+	  copy_old_inst = false;
+	  // EMIT(Binop(^(x.1, x2, x3, x4)));
+	}
+
+	if(!copy_old_inst) {
+	  EMIT(Binop(^(x.1,x2,x3,x4)));
+	  if(new_x2)  EMIT(Copy(^(x.2, x2)));
+	}
+
+      case TypedCopy(x):
+	if(is_memory_op(spilled, x.1)) ++num_mem_ops;
+	if(is_memory_op(spilled, x.2)) ++num_mem_ops;
+	if(num_mem_ops == 2) {
+	  copy_old_inst = false;
+	  cf_operand temp = insert_mem_load(fn, names, new_insts, x.2);
+	  EMIT(TypedCopy(^(x.1, temp, x.3)));
+	}
+      case SelectField *(offset,dest,src):
+	if(!is_fp_op(fn,dest)) { // FP
+	  // If the destination is floating point, the register allocator
+	  // should not rewrite it.
+	  if (is_memory_op(spilled, dest)) {
+	    copy_old_inst = false;
+	    cf_operand temp = add_temp(fn, names, dest);
+	    EMIT(SelectField(^(offset, temp, src)));
+	    EMIT(Copy(^(dest, temp)));
+	  } 
+	} else {
+	  // The destination is floating point then the src must go in a 
+	  // register.
+	  if(is_memory_op(spilled,src)) {
+	    copy_old_inst = false;
+	    src = insert_mem_load(fn,names,new_insts,src);
+	    EMIT(SelectField(^(offset,dest,src)));
+	  }
+	}
+      case AssignField *(offset,dest,src): 
+	if(!is_fp_op(fn,src)) {
+	  if (is_memory_op(spilled, src)) {
+	    copy_old_inst = false;
+	    src = insert_mem_load(fn, names, new_insts, src);	    
+	  }
+	}
+	if (is_memory_op(spilled, dest)) {
+	  copy_old_inst = false;
+	  dest = insert_mem_load(fn, names, new_insts, dest);
+	}
+	if(!copy_old_inst)
+	  EMIT(AssignField(^(offset, dest, src)));
+      case ArrayCheck *(x1,x2):
+	// At most one of these can be in memory, the other must either
+	// be an immediate or a register.
+	// If both are immediates this does the wrong thing!
+	if(is_memory_op(spilled,x1)) ++num_mem_ops;
+	if(is_memory_op(spilled,x2)) ++num_mem_ops;
+	if(num_mem_ops == 2) {
+	  copy_old_inst = false;
+	  _ temp = insert_mem_load(fn,names,new_insts,x2);
+	  EMIT(ArrayCheck(^(x1,temp)));
+	}
+      case CArrayCheck *(x,i):
+	// I think the operand can be on the stack if it wishes.
+	;
+      case ArraySub *(x1,x2,x3):
+	if(is_memory_op(spilled,x2)) {
+	  copy_old_inst = false;
+	  x2 = insert_mem_load(fn, names, new_insts, x2);
+	}
+	if(is_memory_op(spilled,x3)) {
+	  copy_old_inst = false;
+	  x3 = insert_mem_load(fn, names, new_insts, x3);
+	}
+	if(!is_fp_op(fn,x1) &&  // FP
+	   is_memory_op(spilled, x1)) {
+	  copy_old_inst = false;
+	  cf_operand temp = add_temp(fn, names, x1);
+	  EMIT(ArraySub(^(temp, x2, x3)));
+	  EMIT(Copy(^(x1, temp)));
+	} else if(!copy_old_inst)
+	  EMIT(ArraySub(^(x1, x2, x3)));
+      case ArrayUpd *(x1,x2,x3):
+	if(is_memory_op(spilled,x1)) {
+	  copy_old_inst = false;
+	  x1 = insert_mem_load(fn, names, new_insts, x1);
+	}
+	if(is_memory_op(spilled,x2)) {
+	  copy_old_inst = false;
+	  x2 = insert_mem_load(fn, names, new_insts, x2);
+	}
+	if(!is_fp_op(fn,x3) &&  // FP
+	   is_memory_op(spilled,x3)) {
+	  copy_old_inst = false;
+	  x3 = insert_mem_load(fn, names, new_insts, x3);
+	}
+	// temporary b/c Movpart requires a reg
+	switch operand_type(fn, x1) {
+	case UnpackedArray *(_,t):
+	  if(sizeof_typ(t)==1) {
+	    switch x3 {
+	    case Const(x): 
+	      copy_old_inst = false;
+	      cf_operand tmp = localoperand(newtemp(fn, u_int));
+	      EMIT(Copy(^(tmp, x3)));
+	      x3 = tmp;
+	    default: ;
+	    }
+	  }
+	default: ;
+	}
+	// end of temporary indulgence
+	if(!copy_old_inst)
+	  EMIT(ArrayUpd(^(x1,x2,x3)));
+      case New(x): ;
+      case Rdtsc(x): ; // Don't think we need anything here.
+	// Cyclone +
+	// Insert new temporaries since all operands to RTCG routines must
+	// be in registers. Probably can relax this later.
+      case Start(o): ; // Just like New.
+      case Dump *(o1,o2,t):  // o1 is used, o2 defined. Both must be in regs.
+	if(is_memory_op(spilled,o1)) {
+	  copy_old_inst = false;
+	  o1 = insert_mem_load(fn, names, new_insts, o1);
+	}
+	if(is_memory_op(spilled,o2)) {
+	  _ temp = add_temp(fn,names,o2);
+	  copy_old_inst = false;
+	  EMIT(Dump(^(o1,temp,t)));
+	  EMIT(Copy(^(o2,temp)));
+	}
+	else if(!copy_old_inst) {
+	  EMIT(Dump(^(o1,o2,t)));
+	}
+      case Hole *(h,o): // o must be a register.
+	if(is_memory_op(spilled,o)) {
+	  _ temp = add_temp(fn,names,o);
+	  copy_old_inst = false;
+	  EMIT(Hole(^(h,temp)));
+	  EMIT(Copy(^(o,temp)));
+	}	
+      case Fill *(o1,o2,h,o3): // All operands must be in registers. Yuck!
+	if(is_memory_op(spilled,o1)) {
+	  copy_old_inst = false;
+	  o1 = insert_mem_load(fn,names,new_insts,o1);	  
+	}
+	if(is_memory_op(spilled,o2)) {
+	  copy_old_inst = false;
+	  o2 = insert_mem_load(fn,names,new_insts,o2);	  
+	}
+	if(is_memory_op(spilled,o3)) {
+	  copy_old_inst = false;
+	  o3 = insert_mem_load(fn,names,new_insts,o3);	  
+	}
+	if(!copy_old_inst)
+	  EMIT(Fill(^(o1,o2,h,o3)));
+      case FillJmp *(o1,o2,h,o3,b):
+	if(is_memory_op(spilled,o1)) {
+	  copy_old_inst = false;
+	  o1 = insert_mem_load(fn,names,new_insts,o1);	  
+	}
+	if(is_memory_op(spilled,o2)) {
+	  copy_old_inst = false;
+	  o2 = insert_mem_load(fn,names,new_insts,o2);	  
+	}
+	if(is_memory_op(spilled,o3)) {
+	  copy_old_inst = false;
+	  o3 = insert_mem_load(fn,names,new_insts,o3);	  
+	}
+	if(!copy_old_inst)
+	  EMIT(FillJmp(^(o1,o2,h,o3,b)));
+      case End *(o1,o2):	
+	if(is_memory_op(spilled,o2)) {
+	  copy_old_inst = false;
+	  o2 = insert_mem_load(fn,names,new_insts,o2);
+	  EMIT(End(^(o1,o2)));
+	}
+	// Cyclone -
+      }
+      if(copy_old_inst) 
+	Xarray::add(new_insts, old_inst);
+    }
+    switch blk.trans { // later we'll want tag vars in regs too
+    case Cond(x):
+      switch x.3 {
+      case Const(_): 
+	cf_operand tmp = localoperand(newtemp(fn, operand_type(fn,x.3)));
+	EMIT(Copy(^(tmp, x.3)));
+	blk.trans.Cond.3 = tmp;
+      default: 
+	if((!is_fp_primop(x.5)) &&
+	   is_memory_op(spilled, x.3) &&
+	   is_memory_op(spilled, x.4))
+	  blk.trans.Cond.3 = insert_mem_load(fn, names, new_insts, x.3);  
+      }
+    case NullBranch(x):
+      switch x.1 {
+      case Const(_): // the only possible constant is Null
+	blk.trans = ^cf_transfer.Uncond(x.3);
+      default: ;
+      }
+    case SumSwitch(x): 
+      if(is_memory_op(spilled, x.1))
+	blk.trans.SumSwitch.1 = insert_mem_load(fn, names, new_insts, x.1);
+    case ExnSwitch(x): 
+      if(is_memory_op(spilled, x.1)) 
+	blk.trans.ExnSwitch.1 = insert_mem_load(fn, names, new_insts, x.1);
+    case NullCheck(x): 
+      switch x.1 {
+      case Const(_):
+	cf_operand tmp = localoperand(newtemp(fn, operand_type(fn,x.1)));
+	EMIT(Copy(^(tmp, x.1)));
+	blk.trans.NullCheck.1 = tmp;
+      default: ; // must NOT load into memory or we'll Name it too late!!!
+      }
+    case UnionCheck(x):
+      if(is_memory_op(spilled, x.1))
+	blk.trans.UnionCheck.1 = insert_mem_load(fn, names, new_insts, x.1);
+    default: ;
+    }
+  }
+}
+  
+bool is_memory_op(BITVEC spilled, cf_operand op) {
+  switch op {
+  case Local(y): return (y < (size(spilled)*32) &&  Bitvec::get(spilled,y));
+  case Const(x): return false;
+  default:       return true;
+  }
+}
+
+cf_operand add_temp(cf_function fn, <int>xarray names,cf_operand mem_op){
+  // ASSUMED INVARIANT: names and fn.all_operands are the same size
+  switch mem_op {
+  case Local(x):  Xarray::add(names, x);
+  case Global(x): Xarray::add(names, -1); // SHOULD NOT BE USED!
+  case Const(x):  BUG("constant operand in add_temp");
+  }
+ return localoperand(newtemp(fn, operand_type(fn, mem_op)));
+}
+cf_operand insert_mem_load(cf_function fn, <int>xarray names,
+			   <cf_instruction>xarray new_insts, cf_operand mem_op){
+  // this does not write the insruction b/c multiple operands might have spilled
+  cf_operand temp = add_temp(fn, names, mem_op);
+  EMIT(Copy(^(temp, mem_op)));
+  return temp;
+}
+
+////////////////////////////// FP Spill Rewriting /////////////////////////
+// Rely on some of the same helper functions as regalloc_rewrite
+
+// Invariants here are :
+//   1. At most one memory operand per instruction (except Call, New)
+//   2. 
+static void fp_regalloc_rewrite(cf_function fn, BITVEC spilled, 
+			     <int>xarray names) {
+  // for efficiency, could avoid copying block when nothing changes
+  <cf_block> xarray blks     = fn.blocks;
+  <cf_idinfo>xarray operands = fn.all_operands;
+  int               num_blks = Xarray::length(blks);
+  for(int i=0; i < num_blks; ++i) {
+    cf_block               blk       = Xarray::get(blks,i);
+    <cf_instruction>xarray old_insts = blk.insts;
+    int                    num_insts = Xarray::length(old_insts);
+    <cf_instruction>xarray new_insts =
+       Xarray::create(num_insts, ^cf_instruction.Nop);
+    blk.insts = new_insts;
+    for(int j=0; j < num_insts; ++j) {
+      bool copy_old_inst = true;
+      int  num_mem_ops   = 0;
+      cf_instruction old_inst = Xarray::get(old_insts,j);
+      if(!is_fp_inst(fn,old_inst)) {
+	Xarray::add(new_insts,old_inst);
+	continue;
+      }
+
+      switch old_inst {
+      case Copy(x): 
+	if(is_memory_op(spilled, x.1)) ++num_mem_ops;
+	if(is_memory_op(spilled, x.2)) ++num_mem_ops;
+	if(num_mem_ops == 2) {
+	  copy_old_inst = false;
+	  cf_operand temp = insert_mem_load(fn, names, new_insts, x.2);
+	  EMIT(Copy(^(x.1, temp)));
+	}
+      case Nullop *(p,dest): // dest must be in a register.
+	if(is_memory_op(spilled,dest)) {
+	  copy_old_inst = false;
+	  _ new_dest = add_temp(fn,names,dest);
+	  EMIT(Nullop(^(p,new_dest)));
+	  EMIT(Copy(^(dest,new_dest)));
+	}
+      case Unop *(p,dest,src):
+	// For casts to/from floats the float must be on the fp stack.
+	_ dest_fp, src_fp;
+	switch p {
+	case FtoI: dest_fp = false; src_fp = true;
+	case DtoI: dest_fp = false; src_fp = true;
+	case ItoF: dest_fp = true;  src_fp = false;
+	case ItoD: dest_fp = true;  src_fp = false;
+	default:   dest_fp = true;  src_fp = true;
+	}
+
+	_ new_src=false, new_dest=false;
+	if ( src_fp && is_memory_op(spilled, src)) new_src  = true;
+	if (dest_fp && is_memory_op(spilled,dest)) new_dest = true;
+      
+	if(new_dest || new_src) {
+	  copy_old_inst = false;
+	  _ dest_old = dest;
+	  if(new_dest) dest = add_temp(fn,names,dest);
+	  if(new_src) src = insert_mem_load(fn,names,new_insts,src);
+	  EMIT(Unop(^(p,dest,src)));
+	  if(new_dest) EMIT(Copy(^(dest_old,dest)));
+	}
+	
+      case Binop*(p,d,s1,s2):
+	// only one of the sources may be in memory
+	// the destination must be in a register if FP.
+
+	if(is_fp_relop(p)) {
+	  // In this case both sources must be in FP registers.
+	  if(is_memory_op(spilled,s1)) {
+	    copy_old_inst = false;
+	    s1 = insert_mem_load(fn,names,new_insts,s1);
+	  }
+	  if(is_memory_op(spilled,s2)) {
+	    copy_old_inst = false;
+	    s2 = insert_mem_load(fn,names,new_insts,s2);
+	  }
+
+	  if(!copy_old_inst)
+	    EMIT(Binop(^(p,d,s1,s2)));
+	} 
+	else if(is_restricted_fp_binop(p)) {
+	  // These require both arguments and the destination to be in 
+	  // FP registers.  
+	  if(is_memory_op(spilled,s1)) {
+	    copy_old_inst = false;
+	    s1 = insert_mem_load(fn,names,new_insts,s1);
+	  }
+	  if(is_memory_op(spilled,s2)) {
+	    copy_old_inst = false;
+	    s2 = insert_mem_load(fn,names,new_insts,s2);
+	  }
+	  
+	  _ old_dest = d;
+	  _ new_dest = is_memory_op(spilled,d);
+	  if(new_dest) { 
+	    copy_old_inst = false;
+	    d = add_temp(fn,names,d);
+	  }	  
+	  if(!copy_old_inst) {
+	    EMIT(Binop(^(p,d,s1,s2)));
+	    if(new_dest) EMIT(Copy(^(old_dest,d)));
+	  }
+	}
+	else {
+	  _ new_dest = is_memory_op(spilled,d);
+	  
+	  if(is_memory_op(spilled,s1)) ++num_mem_ops;
+	  if(is_memory_op(spilled,s2)) ++num_mem_ops;
+	  _ new_src = (num_mem_ops == 2);
+
+	  if(new_src || new_dest) {
+	    copy_old_inst = false;
+	    _ old_dest = d;
+	    if(new_dest) d = add_temp(fn,names,d);
+	    if(new_src) s1 = insert_mem_load(fn,names,new_insts,s1);
+	    EMIT(Binop(^(p,d,s1,s2)));
+	    if(new_dest) EMIT(Copy(^(old_dest,d)));
+	  }
+	}
+      
+      case SelectField *(offset,dest,src):
+	// destination must be on the FP stack.
+	if (is_memory_op(spilled, dest)) {
+	  copy_old_inst = false;
+	  cf_operand temp = add_temp(fn, names, dest);
+	  EMIT(SelectField(^(offset, temp, src)));
+	  EMIT(Copy(^(dest, temp)));
+	} 
+      case AssignField *(offset,dest,src): 
+	if (is_memory_op(spilled, src)) {
+	  copy_old_inst = false;
+	  src = insert_mem_load(fn, names, new_insts, src);
+	  EMIT(AssignField(^(offset,dest,src)));
+	}
+      case ArraySub *(d,arr,len):
+	// This is only a FP instruction if d is floating point.
+	// d must be in a register.
+	if(is_memory_op(spilled,d)) {
+	  copy_old_inst = false;
+	  _ d_old = d;
+	  d = add_temp(fn,names,d);
+	  EMIT(ArraySub(^(d,arr,len)));
+	  EMIT(Copy(^(d_old,d)));
+	}
+      case ArrayUpd *(arr,len,src):
+	// This is only a FP operation if src is a floating point value.
+	// src must be in a register.
+	if(is_memory_op(spilled,src)) {
+	  copy_old_inst = false;
+	  src = insert_mem_load(fn, names, new_insts, src);
+	  EMIT(ArrayUpd(^(arr,len,src)));
+	}
+      default: BUG("Unexpected, non-floating point instruction.");
+      }
+      if(copy_old_inst) 
+	Xarray::add(new_insts, old_inst);
+    }
+    switch blk.trans {
+    case Cond(x):
+      // Floating point comparisons require both operands in stack slots!
+      if(is_fp_primop(x.5)) {
+	if(is_memory_op(spilled,x.3))
+	  blk.trans.Cond.3 = insert_mem_load(fn,names,new_insts,x.3);
+	if(is_memory_op(spilled,x.4))
+	  blk.trans.Cond.4 = insert_mem_load(fn,names,new_insts,x.4);
+      }
+    case Retn(xo):
+      if(xo!=null) {
+	_ x = xo.v;
+	if(is_fp_op(fn,x) &&
+	   is_memory_op(spilled,x)) {
+	  blk.trans.Retn.v = insert_mem_load(fn,names,new_insts,x);
+	}
+      }
+    default: ;
+    }
+  }
+}
+
+#undef EMIT
+
+///////////////////////////// Main Loop //////////////////////////////
+
+/* FMS: (Summary of changes)
+
+   The register allocator used to assume that it was allocating every
+   variable so it confused variable names and nodes in the graph.  I
+   have tried to tease these apart.
+
+   - spilled is a bitvector for all_operands (spills too) + the registers.
+     Just look it up in the bitvector, no more funky tests!
+     (This means we allocate spilled every time around the loop (so what!))
+   - names contains names for all the operands, even the ones we
+     aren't allocating.  Be careful when merging these after two calls
+     to the allocator.
+   - In build_env, (num_vars = # variables, num_nodes = # vars to allocate)
+   - The returned coloring (placement) is for variables but some will be 
+     uncolored (the ones we're not allocating this time around.)
+
+*/
+
+static regalloc_retn reg_alloc(regalloc_env renv) {
+
+  _           fn            = renv.fn;  
+  int         num_blks      = Xarray::length(fn.blocks);
+  int         orig_vars     = Xarray::length(fn.all_operands);
+  BITVEC      spilled       = Bitvec::new_empty(orig_vars);
+  <int>xarray names         = Xarray::create(orig_vars,0);
+  for(int i=0; i < orig_vars; ++i)
+    Xarray::add(names,i);
+
+  // satisfy operand requirements given current spill information.
+  // note this is done before first allocation since "upstream" we allow
+  // things like two global operands, global array access, etc.
+  renv.rewrite(fn, spilled, names);
+
+  int         num_vars = orig_vars; // num before spills!;
+  int         num_ops  = Xarray::length(fn.all_operands);
+  BITVEC      spilled  = Bitvec::new_empty(num_ops);
+  <int>xarray names    = Xarray::create(num_ops,0);
+  // notice this eliminates any names of globals in bad places.
+  for(int i=0; i < num_ops; ++i)
+    Xarray::add(names,i);
+
+  _ setup = reg_alloc_setup(renv);
+
+  if(setup == null) {
+    if(renv.all_live == null)
+      renv.all_live = ^Opt(compute_all_liveness(renv.fn));
+    return ^regalloc_retn({:int},{:<int>list},{:int});
+  }
+
+  _ local_to_node = setup.v.1;
+  _ node_to_local = setup.v.2;
+  
+  // we keep the first interference graph around so we can pack spill
+  // slots (with a simple greedy heuristic)
+  // all we need is the adjacency list, so that's all we keep
+  <int>list orig_graph_list[] = {:<int>list};
+  bool      has_spilled       = false;
+  while(true) {
+    // compute the analyses we need (changes due to new spills)
+    _ all_live[][] = compute_all_liveness(fn);
+       
+    
+    // do a simple type-size optimization (wasteful to repeat??)
+    // FMS: Why not eliminate_dead_refine just before returning?
+    eliminate_dead_refine(fn,all_live);
+    // do the coloring a la Appel (without spill cost estimation)
+
+    build_env env = ^build_env { fn             = fn,
+				 all_live       = all_live, 
+			         local_to_node  = local_to_node,
+				 node_to_local  = node_to_local,
+				 graph          = {:int[]}, // dummy value!
+				 coalesces      = {:int[]}, // dummy value!
+                                 num_vars       = 0, // dummy value! 
+				 num_nodes      = 0, // dummy value! 
+				 spilled        = spilled, 
+				 num_orig_nodes = 0};  // dummy value!
+    init_graph(renv.num_regs,env); // Replaces dummy values above.
+
+    renv.build(env);
+
+    simplify_env  senv         = build_env2simplify_env(renv,env);
+    adj_list_node graph_list[] = senv.nodes;
+
+    if(!has_spilled) { // Only executed once!
+      has_spilled = true;
+      orig_graph_list = node_array_to_var_array(env,graph_list,get_adj,null);
+    }
+
+    env.coalesces = {:int[]}; // space savings?
+    simplify(renv.fn,senv);
+    <int>list new_spills = assign_regs(senv);
+
+    // DEBUGGING
+#ifdef DEBUG
+    Popilprint::prn_fun(fn);
+    print_liveness(ilf, all_live);
+    print_interference_graph(ilf, graph_list);
+    print_coloring(ilf, renv.num_regs, graph_list);
+#endif
+
+    if(new_spills == null) {  // we're done !!! 
+      _ placement = node_array_to_var_array(env,graph_list,get_color,-2);
+      renv.all_live = ^Opt(all_live); // Expect this to be set!
+      
+      return ^regalloc_retn(placement,orig_graph_list,Xarray::to_array(names));
+    }
+
+    // set spills so next rewrite takes them into account
+    update_spilled(env,spilled,new_spills);
+
+    renv.rewrite(fn, spilled, names);
+  }
+  BUG("register allocation loop should return");
+}
+
+// Called just before rewriting, and building the graph.
+static void update_spilled(build_env env, 
+			    BITVEC spilled, 
+			    <int>list new_spills) {
+  _ node_to_local = env.node_to_local;
+  _ orig_nodes = size(env.node_to_local);
+  _ orig_locals = size(env.local_to_node);
+  for(; new_spills!=null; new_spills = new_spills.tl) {
+    _ n = new_spills.hd; // The node that was spilled.
+    _ l;
+    if(n<orig_nodes) l = node_to_local[n];
+    else BUG("spilled a spill variable.");
+    if(l<0) BUG("spilled a variable we are not currently allocating.");
+    Bitvec::set(spilled,l);
+  }
+}
+
+static int get_color(build_env env, adj_list_node f) {
+  return f.color;
+}
+
+static <int>list get_adj(build_env env, adj_list_node f) {
+  return List::map_c(node_to_local_or_reg,env,f.adj);
+}
+
+// Convert an array indexed by nodes, into an array indexed by vars.
+ static <a>array node_array_to_var_array<a,b>(build_env env, 
+					    <b>array x, 
+					    a f(build_env,b), 
+					    a dft) {
+  _ num_vars = env.num_vars;
+  _ num_nodes = size(x);
+  _ num_orig_nodes = env.num_orig_nodes;
+  _ num_orig_vars = size(env.local_to_node);
+  _ result = new_array(num_vars,dft);
+  for(int i = 0; i < num_nodes; i++) {
+    _ v;
+    if(i<num_orig_nodes) v = env.node_to_local[i];
+    else v = (i - num_orig_nodes) + num_orig_vars;
+    result[v] = f(env,x[i]);
+  }
+  return result;
+}
+
+static <*(int [], int [])>Opt reg_alloc_setup(regalloc_env renv) {
+  // Construct the mapping from locals to nodes and vice-versa.
+
+  _ fn = renv.fn;
+  _ to_alloc = renv.to_alloc;
+
+  _ all_operands = fn.all_operands;
+  _ num_ops = Xarray::length(all_operands);
+  _ num_vars = 0;
+  _ local_to_node = new_array(num_ops,-1);
+  for(_ i=0; i<num_ops; i++) {
+    if(to_alloc(fn,i)) {
+      local_to_node[i] = num_vars;
+      num_vars++;
+    };
+  }
+  
+  if(num_vars == 0) return null;
+
+  _ node_to_local = new_array(num_vars,-1);
+  for(_ j=0;j<num_ops;j++) {
+    _ i = local_to_node[j];
+    if(i>=0) node_to_local[i] = j;
+  }
+
+  return ^Opt(^(local_to_node, node_to_local));
+}
+
+//////////////////////// Entry helper functions ////////////////////////////////
+
+static bool is_fp_local(cf_function f, int i) {
+  switch Xarray::get(f.all_operands,i).typ {
+  case Float: return true;
+  case Double: return true;
+  default: return false;
+  }
+}
+
+static bool is_not_fp_local(cf_function f, int i) {
+  switch Xarray::get(f.all_operands,i).typ {
+  case Float: return false;
+  case Double: return false;
+  default: return true;
+  }
+}
+///////////////////////////// Entry Point //////////////////////////////
+reg_assignment register_allocate(cf_function fn) {
+  // when we do other transformation before this, we may have some information
+  // which we can avoid recomputing here.  But for now, allocation is the
+  // driving beast behind this compiler.
+
+  // note we have to return liveness so the translator to TAL knows 
+  // how to produce labeltypes.
+
+
+  _ renv1 = ^regalloc_env(fn,
+			 NUM_REGS,
+			 is_not_fp_local,
+			 null,
+			 build_graph, 
+			 regalloc_rewrite);
+
+  _ renv2 = ^regalloc_env(fn,
+			  NUM_FP_REGS,
+			  is_fp_local,
+			  null,
+			  fp_build_graph,
+			  fp_regalloc_rewrite);
+  // Call the reg_alloc.
+  _ result1 = reg_alloc(renv1);
+  
+  renv2.all_live = renv1.all_live;
+  _ result2 = reg_alloc(renv2);
+
+  // Now combine the two names.
+  // The second regalloc should have a longer array, but will erroneously assign
+  // names to the spills of the first allocation.
+  _ names1 = result1.names;
+  _ names2 = result2.names;
+  _ names;
+  if(size(names2)!=0) {
+    _ num_names = size(names1);
+    for(_ i = 0; i < num_names; i++) {
+      _ n1 = names1[i];
+      _ n2 = names2[i];
+      if(n2==i && n1 != i) names2[i] = names1[i];
+    }
+    names = names2;
+  } else names = names1;
+
+  // Compute the placements.
+  // The results will place all variables 
+  _ sz1 = size(result1.placement);
+  _ sz2 = size(result2.placement);
+  _ num_vars = (sz1 > sz2) ? sz1 : sz2;
+
+  /*
+  printf("   placement = "); // DEBUG
+  print_placement(tal_stdout,result1.placement); // DEBUG
+  printf("fp_placement = "); // DEBUG
+  print_placement(tal_stdout,result2.placement); //DEUBG
+  */
+
+  _ tal_places = new_array(num_vars,eax_place);
+  _ pl = graph2place(fn,result1.placement,result2.placement,
+		     result1.graph_list,result2.graph_list,tal_places);
+  _ num_slots = pl.1;
+  _ num_double_slots = pl.2;
+  
+  return ^reg_assignment(tal_places,
+			 renv2.all_live.v, // set after register allocation.
+			 num_slots,
+			 num_double_slots,
+			 names);
+}
+
+//////////////////// Debugging (old) //////////////////////
+void print_interference_graph(FILE f, adj_list_node g[]) {
+  // this could be a lot more user-friendly, but I'm the only user. :-)
+  fprintf(f, "\nInterference graph\n");
+  for(int i=0; i < size(g); ++i) {
+    fprintf(f, "\n%d:", i);
+    for(<int>list l = g[i].adj; l!=null; l=l.tl)
+      fprintf(f, " %d ", l.hd);
+  }
+}
+void print_coloring(FILE f, int num_regs, adj_list_node g[]) {
+  fprintf(f, "\nColoring\n");
+  <int>list spilled = null;
+  <int>list phys[] = new_array(num_regs,spilled);
+  for(int i=0; i < size(g); ++i) {
+    int color = g[i].color;
+    if (color == -1)
+      spilled = ^list(i,spilled);
+    else
+      phys[color] = ^list(i,phys[color]);
+  }
+  string reg_names[] = {"EAX","ECX","EDX","EBX","ESI","EDI"};
+  for(int i=0; i < NUM_REGS; ++i) {
+    fprintf(f, "\n%s: ", reg_names[i]);
+    for(<int>list symb = phys[i]; symb != null; symb = symb.tl)
+      fprintf(f, " %d ", symb.hd);
+  }
+  fprintf(f, "\nspilled: ");
+  for(<int>list symb = spilled; symb != null; symb = symb.tl)
+    fprintf(f, " %d ", symb.hd);
+}
+
+void print_placement(FILE f, int p[]) {
+  for(_ i = 0; i < size(p) ; i++) {
+    fprintf(f,"%d ",p[i]);
+  }
+  fprintf(f,"\n");
+}

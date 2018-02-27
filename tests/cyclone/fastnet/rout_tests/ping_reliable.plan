@@ -1,0 +1,13 @@
+fun ret (source) =
+  (OnRemote (|print|("Success"), source, getRB (), defaultRoute))
+
+svc generateKey : void -> key
+svc sendAck : ('a chunk,key,int) -> unit chunk
+
+fun ping(source, dest) =
+  let val c = |ret|(source)
+      val seq = generateKey()
+      val d = sendAck(c,seq,10) in
+    RetransOnRemote([d],seq,3,dest,getRB()/3,defaultRoute)
+  end
+

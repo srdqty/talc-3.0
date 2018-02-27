@@ -1,0 +1,57 @@
+This directory contains examples of how to use sockets.  Examples are
+provided for both the C programming language as well as Cyclone.  Socket
+families include UNIX and INET, and socket types include STREAM and DGRAM.
+Combinations of these families and types are sufficient to implement TCP
+(INET, STREAM), UDP (INET, DGRAM), as well as local UNIX sockets (STREAM or
+DGRAM).
+
+The two C programs, s.c and c.c, represent a C server and client
+(respectively).  To test out each of the four combinations, run the server in
+one shell and the client in another.  Each program takes an integer argument,
+which determines the socket family/type; be sure to provide the same integer
+argument (from 1 to 4) to both programs.  e.g. 
+
+[shell1] % ./s 1
+
+[shell2] % ./c 1
+
+The two Cyclone programs, server.pop and client.pop, similarly contain a
+Cyclone server and client.  In addition to demonstrating the following socket
+functions...
+
+  tal_socket
+  tal_bind
+  tal_listen
+  tal_accept
+  tal_connect
+  tal_close
+
+  tal_recv
+  tal_send
+  tal_sendto
+  tal_recvfrom
+
+...the following (related functions) are also demonstrated by these two
+programs:
+
+  tal_select
+  tal_gethostname
+  tal_gethostbyname
+  tal_tmpnam
+  tal_unlink
+  tal_signal
+
+Executing these programs is similar to the C functions above.  Invoke the
+server and client in different shells, providing the same integer argument to
+each.  In this case, however, the stream protocols allow the server to accept
+multpile client streams.  Therefore, the client program can be executed
+multiple times for the same server program.  The server program is terminated
+with Ctrl-C.  e.g.
+
+  [shell1] % ./server.exe 2
+
+  [shell2] % ./client.exe 2
+  [shell2] % ./client.exe 2
+  [shell2] % ./client.exe 2
+
+  [shell1] Ctrl-C

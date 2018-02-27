@@ -1,0 +1,56 @@
+/* This is the maintenance application that is the intermediary between
+   the user and the updateable application.  It is started as a forked
+   process from the main application. */
+
+#include "core.h"
+#include "unixlib.h"
+#include "c_string.h"
+
+#define MAX_BUF_SZ 1000
+
+void pop_main() 
+{
+  string args[];
+  string buf;
+  int fd;
+
+  args = std_args();
+  if (size(args) != 2) {
+    fprintf(tal_stderr,"usage: %s <comm_fd_num>\n", args[0]);
+    exit(1);
+  }
+
+  fd = Core::int_of_string(args[1]);
+  if (fd == STDIN) {
+    fprintf(tal_stderr,"cannot specify communication socket as stdin\n");
+    exit(1);
+  }
+
+  /* Main loop: read from stdin and relay commands to the application */
+  buf = Core::new_string(MAX_BUF_SZ);
+  while (true) {
+    int numChars = Core::file_gets(buf,0,tal_stdin);
+    if (numChars != 0) {
+      /* send the command on to the application */
+      int numCharsWritten = 0;
+      while (numCharsWritten != numChars) {
+	try {
+	  numCharsWritten += unix_write(fd, buf, 0, numChars);
+	} handle e {
+	  switch e {
+	  case Unix_error *(code, syscall):
+	    if (code == EINTR)
+	      continue;
+	    else {
+	      fprintf(tal_stderr,"writing to app: %s:%s\n",
+		      syscall, unix_error_string(code));
+	      exit(1);
+	    }
+	  }
+	}
+      } 
+    }
+  }
+}
+      
+  

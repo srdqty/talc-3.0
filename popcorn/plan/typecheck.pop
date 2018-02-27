@@ -1,0 +1,618 @@
+extern ?struct deflist {
+  def           def;
+  deflist       next;
+}
+
+extern void print_deflist(deflist);
+
+extern union def {
+  fundef Fundef;
+  string Exndef;
+  valdef Valdef;
+}
+
+extern void print_def(def);
+
+extern struct fundef {
+  string    var;
+  paramlist params;
+  tipe      result_type;
+  exp       body;
+}
+
+extern void print_fundef(fundef);
+
+extern ?struct paramlist {
+  string    var;
+  tipe      tipe;
+  paramlist next;
+}
+
+extern void print_paramlist(paramlist);
+
+extern struct valdef {
+  string var;
+  tipe   tipe;
+  exp    exp;
+}
+
+extern void print_valdef(valdef);
+
+extern union tipe {
+  tipelist Tuple;
+  tipe     List;
+  void     Int;
+  void     Char;
+  void     String;
+  void     Bool;
+  void     Host;
+  void     Port;
+  void     Key;
+  void     Blob;
+  void     Exn;
+  void     Dev;
+  void     Chunk;
+  tyvar    Var;
+}
+
+extern struct tyvar {
+  int     id;
+  tipeopt topt;
+}
+
+extern ?struct tipeopt {
+  tipe t;
+}
+
+extern void print_tipe(tipe);
+extern tipe new_type_var();
+
+extern ?struct tipelist {
+  tipe     t;
+  tipelist next;
+}
+
+extern void print_tipelist(tipelist);
+
+extern union unop {
+  void NEG;
+  void NOT;
+  void HD;
+  void TL;
+  void FST;
+  void SND;
+  int  PROJ;
+  void NOTI;
+  void EXPLODE;
+  void IMPLODE;
+  void ORD;
+  void CHR;
+}
+
+extern void print_unop(unop);
+
+extern union binop {
+  void DIV;
+  void MOD;
+  void TIMES;
+  void PLUS;
+  void MINUS;
+  void AND;
+  void OR;
+  void LESS;
+  void LESSEQ;
+  void GREATER;
+  void GREATEREQ;
+  void EQ;
+  void NOTEQ;
+  void CONS;
+  void CONCAT;
+  void LSHIFT;
+  void RSHIFT;
+  void XORI;
+  void ANDI;
+  void ORI;
+}
+
+extern string binop_to_string(binop);
+
+extern union exp {
+  string                     Var;
+  bool                       Bool;
+  void                       Null;
+  int                        Int;
+  char                       Char;
+  string                     String;
+  explist                    Tuple;
+  *(string,explist)          App;
+  *(exp,exp,exp)             If;
+  string                     Raise;
+  *(exp,string,exp)          Try;
+  *(deflist,exp)             Let;
+  *(unop,exp)                Unop;
+  *(string,explist)          Barapp;
+  *(binop,exp,exp)           Binop;
+  *(exp,exp,exp,exp)         Onremote;
+  *(exp,exp,exp)             Onneighbor;
+  *(exp,exp,exp,exp,exp,exp) Retransonremote;
+  *(exp,exp,exp)             Foldr;
+  *(exp,exp,exp)             Foldl;
+}
+
+extern void print_exp(exp);
+
+extern ?struct explist {
+  exp e;
+  explist next;
+}
+
+extern void print_explist(explist);
+
+static ?struct var_env {
+  string  x;
+  tipe    t;
+  var_env next;
+}
+
+static ?struct fn_env {
+  string   x;
+  tipe     result_tipe;
+  tipelist arg_tipes;
+  fn_env   next;
+}
+
+extern bool eqstring(string,string);
+
+private bool had_error = false;
+
+extern void print_string(string);
+extern void print_int(int);
+extern void print_char(char);
+
+static void error(string s) {
+  had_error = true;
+  print_string(s);
+}
+
+static var_env add_var(var_env venv,string var,tipe t) {
+  return(new var_env(var,t,venv));
+}
+
+static tipe lookup_var(var_env v,string var) {
+  while (v != null) {
+    if (eqstring(v.x,var)) return(v.t);
+    v = v.next;
+  }
+  print_string(var); print_string(" ");
+  error("unbound variable");
+  return(new tipe.Int);
+}
+
+static fn_env lookup_fn(fn_env f,string fn) {
+  while (f != null) {
+    if (eqstring(f.x,fn)) return(f);
+    f = f.next;
+  }
+  error("unbound function");
+  return(new fn_env("<bogus>",new tipe.Int,null,null));
+}
+
+static tipeopt compressopt(tipeopt topt) {
+  if (topt != null)
+    compress(topt.t);
+  return(topt);
+}
+
+static tipe compress(tipe t) {
+  switch (t) {
+  case Var(tyvar):
+    tyvar.topt = compressopt(tyvar.topt);
+    if (tyvar.topt == null) 
+      return(t);
+    else return(tyvar.topt.t);
+  default:
+    return(t);
+  }
+}
+
+static bool occurs(tyvar tv,tipe t) {
+  switch (t) {
+  case Tuple(ts):
+    while (ts != null) {
+      if (occurs(tv,ts.t)) return(true); 
+      ts = ts.next;
+    }
+    return(false);
+  case List(t2): return(occurs(tv,t2));
+  case Var(tyvar):
+    if (tyvar == tv) return(true);
+    return(false);
+  default: return(false);
+  }
+}
+
+static bool unify_var(tyvar tv,tipe t) {
+  if (occurs(tv,t)) {
+    error("occurs check"); return(false);
+  }
+  tv.topt = new tipeopt(t);
+  return(true);
+}
+
+static bool unify(tipe t1,tipe t2) {
+  t1 = compress(t1);
+  t2 = compress(t2);
+  if (t1 == t2) return true;
+
+  switch (t1) {
+  case Tuple(ts1):
+    switch(t2) {
+    case Tuple(ts2): return(unify_tipes(ts1,ts2));
+    case Var(tyvar): return(unify_var(tyvar,t1));
+    default: return(false);
+    }
+  case List(tl1):
+    switch(t2) {
+    case List(tl2): return(unify(tl1,tl2));
+    case Var(tyvar): return(unify_var(tyvar,tl1));
+    default: return(false);
+    }
+  case Var(tyvar): return(unify_var(tyvar,t2));
+  default: 
+    switch(t2) {
+    case Var(tyvar): return(unify_var(tyvar,t1));
+    default: return(false);
+    }
+  }
+}
+
+static bool unify_tipes(tipelist t1,tipelist t2) {
+  while (t1 != null) {
+    if (t2 != null) {
+      if (!unify(t1.t,t2.t)) return(false);
+      t1 = t1.next;
+      t2 = t2.next;
+    }
+  }
+  return(t2 == null);
+}
+		 
+static tipe tc_exp(var_env venv,fn_env fenv,exp e) {
+  switch (e) {
+  case Var(x): return(lookup_var(venv,x));
+  case Bool(b): return(new tipe.Bool);
+  case Null: return(new tipe.List(new_type_var()));
+  case Int(i): return(new tipe.Int);
+  case Char(c): return(new tipe.Char);
+  case String(s): return(new tipe.String);
+  case Tuple(es): return(new tipe.Tuple(tc_explist(venv,fenv,es)));
+  case App(p):
+    fn_env f = lookup_fn(fenv,p.1);
+    tipelist ts = tc_explist(venv,fenv,p.2);
+    tipelist ts2 = f.arg_tipes;
+    while (ts != null) {
+      if (ts2 == null) {
+	print_string(p.1);
+	error(" argument mismatch");
+	return(new_type_var());
+      }
+      if (!unify(ts.t,ts2.t)) {
+	print_string(p.1);
+	error(" argument type mismatch: ");
+	return(new_type_var());
+      }
+      ts = ts.next;
+      ts2 = ts2.next;
+    }
+    if (ts2 == null)
+      return(f.result_tipe);
+    else {
+      error(" argument mismatch");
+      return(new_type_var());
+    }
+  case If(p):
+    tipe t = tc_exp(venv,fenv,p.1);
+    if (unify(t,new tipe.Bool)) {
+      tipe t1 = tc_exp(venv,fenv,p.2);
+      tipe t2 = tc_exp(venv,fenv,p.3);
+      if (unify(t1,t2)) {
+	error("if clauses type mismatch: ");
+	print_tipe(t1); print_string(" <> "); print_tipe(t2);
+	return(new_type_var());
+      }
+      return(t1);
+    } else {
+      error("if expects bool <> ");
+      print_tipe(t);
+      return(new_type_var());
+    }
+  case Raise(x):
+    tipe t = lookup_var(venv,x);
+    if (unify(t,new tipe.Exn)) 
+      return(new_type_var());
+    else {
+      error("raise expects variable of type exn <> ");
+      print_tipe(t);
+      return(new_type_var());
+    }
+  case Try(p):
+    tipe t1 = tc_exp(venv,fenv,p.1);
+    tipe t2 = lookup_var(venv,p.2);
+    tipe t3 = tc_exp(venv,fenv,p.3);
+    if (unify(t2,new tipe.Exn))
+      if (unify(t1,t3)) 
+	return(t1);
+      else {
+	error("clauses of try don't match: ");
+	print_tipe(t1); print_string("<>"); print_tipe(t3);
+	return(new_type_var());
+      }
+    else {
+      error("variable ");
+      print_string(p.2);
+      print_string(" is not an exception: ");
+      print_tipe(t2);
+      return(new_type_var());
+    }
+  case Let(p): 
+    *(var_env,fn_env) env = tc_deflist(venv,fenv,p.1);
+    return(tc_exp(env.1,env.2,p.2));
+  case Unop(p):
+    switch (p.1) {
+    case PROJ(i):
+      if (i <= 0) {
+	error("projection index is weird");
+	return(new_type_var());
+      }
+      tipe t = tc_exp(venv,fenv,p.2);
+      switch (compress(t)) {
+      case Tuple(ts): 
+	for (i--; i != 0; i--) {
+	  if (ts == null) {
+	    error("projection out of range: ");
+	    print_tipe(t);
+	    return(new_type_var());
+	  }
+	  ts = ts.next;
+	}
+	if (ts == null) {
+	  error("projection out of range: ");
+	  print_tipe(t);
+	  return(new_type_var());
+	}
+	return(ts.t);
+      default:
+	error("cannot resolver size of tuple");
+	return(new_type_var());
+      }
+    default:
+      *(tipe,tipe) tp = unop_tipe(p.1);
+      tipe t = tc_exp(venv,fenv,p.2);
+      if (unify(t,tp.2)) 
+	return(tp.1);
+      else {
+	error("mismatch for operator ");
+	print_unop(p.1);
+	print_string(": ");
+	print_tipe(tp.2);
+	print_string("<>");
+	print_tipe(t);
+	return(new_type_var());
+      }
+    }
+  case Barapp(p): error("|..| unimplemented"); return(new_type_var());
+  case Binop(p):
+    *(tipe,tipe,tipe) tp = binop_tipe(p.1);
+    tipe t1 = tc_exp(venv,fenv,p.2);
+    tipe t2 = tc_exp(venv,fenv,p.3);
+    if (unify(t1,tp.2))
+      if (unify(t2,tp.3))
+	return(tp.1);
+      else {
+	error("second arg to ");
+	print_string(binop_to_string(p.1));
+	print_string(":"); print_tipe(tp.3); print_string("<>");
+	print_tipe(t2);
+      }
+    else {
+      error("first arg to ");
+      print_string(binop_to_string(p.1));
+      print_string(":"); print_tipe(tp.2); print_string("<>");
+      print_tipe(t1);
+    }
+    return(new_type_var());
+  case Onremote(p): 
+    error("OnRemote unsupported");
+    return(new_type_var());
+  case Onneighbor(p): /* 3 args */
+    error("OnNeighbor unsupported");
+    return(new_type_var());
+  case Retransonremote(p): /* 6 args */
+    error("RetransOnRemote unsupported");
+    return(new_type_var());
+  case Foldr(p): 
+    tipe alpha = new_type_var();
+    tipe beta = new_type_var();
+    switch (p.1) {
+    case Var(x):
+      fn_env f = lookup_fn(fenv,x);
+      tipelist f_arg_tipes = f.arg_tipes;
+      if (unify_tipes(f_arg_tipes,
+		      new tipelist(alpha,new tipelist(beta,null)))
+	  && (unify(alpha,f.result_tipe))
+	  && (unify(alpha,tc_exp(venv,fenv,p.2))) 
+	  && (unify(new tipe.List(beta),tc_exp(venv,fenv,p.3))))
+	return(compress(alpha));
+      else {
+	error("foldr error");
+	return(new_type_var());
+      }
+    default:
+      error("first argument to foldr must be function");
+      return(new_type_var());
+    }
+  case Foldl(p): /* 3 args */
+    tipe alpha = new_type_var();
+    tipe beta = new_type_var();
+    switch (p.1) {
+    case Var(x):
+      fn_env f = lookup_fn(fenv,x);
+      tipelist f_arg_tipes = f.arg_tipes;
+      if (unify_tipes(f_arg_tipes,
+		      new tipelist(alpha,new tipelist(beta,null)))
+	  && (unify(beta,f.result_tipe))
+	  && (unify(new tipe.List(alpha),tc_exp(venv,fenv,p.2))) 
+	  && (unify(beta,tc_exp(venv,fenv,p.3))))
+	return(compress(beta));
+      else {
+	error("foldr error");
+	return(new_type_var());
+      }
+    default:
+      error("first argument to foldr must be function");
+      return(new_type_var());
+    }
+  }
+}
+
+static tipelist tc_explist(var_env venv,fn_env fenv,explist es) {
+  tipelist ts,last_ts,temp;
+
+  while (es != null) {
+    temp = new tipelist(tc_exp(venv,fenv,es.e),null);
+    if (last_ts == null) ts = temp;
+    else last_ts.next = temp;
+    last_ts = temp;
+    es = es.next;
+  }
+  return(ts);
+}
+
+static *(var_env,fn_env) tc_deflist(var_env venv,fn_env fenv,deflist d) {
+  while (d != null) {
+    switch (d.def) {
+    case Fundef(fd):
+      var_env venv2 = venv;
+      fn_env fenv2 = fenv;
+      paramlist ps = fd.params;
+      tipelist arg_tipes,last_arg_tipe,temp;
+      
+      while(ps != null) {
+	venv2 = add_var(venv2,ps.var,ps.tipe);
+	temp = new tipelist(ps.tipe,null);
+	if (last_arg_tipe == null) arg_tipes = temp;
+	last_arg_tipe = temp;
+	ps = ps.next;
+      }
+      if (!unify(tc_exp(venv2,fenv2,fd.body),fd.result_type)) {
+	error("body and result type mismatch for function ");
+	print_string(fd.var);
+      }
+      fenv = new fn_env(fd.var,fd.result_type,arg_tipes,fenv);
+    case Exndef(x):
+      add_var(venv,x,new tipe.Exn);
+    case Valdef(vd):
+      // print_string("unifying ");
+      // print_tipe(vd.tipe);
+      // print_string(" and ");
+      tipe t = tc_exp(venv,fenv,vd.exp);
+      // print_tipe(t);
+      if (!unify(vd.tipe,t)) {
+	error("expression and declared type mismatch for variable ");
+	print_string(vd.var);
+      }
+      venv = add_var(venv,vd.var,vd.tipe);
+    }
+    d = d.next;
+  }
+  return(new(venv,fenv));
+}
+
+private *(tipe,tipe) int_bool = new(new tipe.Int,new tipe.Bool);
+private *(tipe,tipe) bool_bool = new(new tipe.Bool,new tipe.Bool);
+private *(tipe,tipe) int_int = new(new tipe.Int,new tipe.Int);
+private *(tipe,tipe) listchar_string = new(new tipe.List(new tipe.Char),
+					   new tipe.String);
+private *(tipe,tipe) string_listchar = new(new tipe.String,
+					   new tipe.List(new tipe.Char));
+private *(tipe,tipe) int_char = new(new tipe.Int,new tipe.Char);
+private *(tipe,tipe) char_int = new(new tipe.Char,new tipe.Int);
+
+static *(tipe,tipe) unop_tipe(unop u) {
+  switch(u) {
+  case NEG: return(int_bool);
+  case NOT: return(bool_bool);
+  case HD: 
+    tipe alpha = new_type_var();
+    return(new(alpha,new tipe.List(alpha)));
+  case TL:
+    tipe alpha = new_type_var();
+    tipe list_alpha = new tipe.List(alpha);
+    return(new(list_alpha,list_alpha));
+  case FST:
+    tipe alpha = new_type_var();
+    return(new(alpha,new tipe.Tuple
+	       (new tipelist(alpha,
+			     new tipelist(new_type_var(),null)))));
+  case SND:
+    tipe alpha = new_type_var();
+    return(new(alpha,new tipe.Tuple
+	       (new tipelist(new_type_var(),
+			     new tipelist(alpha,null)))));
+  case PROJ(i): error("internal error with proj"); return(int_int);
+  case NOTI: return(int_int);
+  case EXPLODE: return(listchar_string);
+  case IMPLODE: return(string_listchar);
+  case ORD: return(int_char);
+  case CHR: return(char_int);
+  }
+}
+
+private *(tipe,tipe,tipe) int_int_int = new(new tipe.Int,new tipe.Int,new tipe.Int);
+private *(tipe,tipe,tipe) bool_bool_bool = 
+new(new tipe.Bool,new tipe.Bool,new tipe.Bool);
+private *(tipe,tipe,tipe) bool_int_int = 
+new(new tipe.Bool,new tipe.Int,new tipe.Int);
+private *(tipe,tipe,tipe) string_string_string =
+new(new tipe.String,new tipe.String,new tipe.String);
+
+static *(tipe,tipe,tipe) binop_tipe(binop b) {
+  switch (b) {
+  case DIV: return(int_int_int);
+  case MOD: return(int_int_int);
+  case TIMES: return(int_int_int);
+  case PLUS: return(int_int_int);
+  case MINUS: return(int_int_int);
+  case AND: return(bool_bool_bool);
+  case OR: return(bool_bool_bool);
+  case LESS: return(bool_int_int);
+  case LESSEQ: return(bool_int_int);
+  case GREATER: return(bool_int_int);
+  case GREATEREQ: return(bool_int_int);
+  case EQ: 
+    tipe alpha = new_type_var();
+    return(new(new tipe.Bool,alpha,alpha));
+  case NOTEQ: 
+    tipe alpha = new_type_var();
+    return(new(new tipe.Bool,alpha,alpha));
+  case CONS:
+    tipe alpha = new_type_var();
+    tipe list_alpha = new tipe.List(alpha);
+    return(new(list_alpha,alpha,list_alpha));
+  case CONCAT: return(string_string_string);
+  case LSHIFT: return(int_int_int);
+  case RSHIFT: return(int_int_int);
+  case XORI: return(int_int_int);
+  case ANDI: return(int_int_int);
+  case ORI: return(int_int_int);
+  }
+}
+  
+bool typecheck_program(deflist d) {
+  tc_deflist(null,null,d);
+  if (had_error) {
+    print_string("\nErrors in typechecking\n");
+    return(false);
+  }
+  return(true);
+}

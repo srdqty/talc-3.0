@@ -1,0 +1,364 @@
+ // This has gotten out of hand -- you are looking at:
+ // talc/apps/popcorn/popcorn/popcorn.pop
+
+#include "arg.h"
+#include "core.h"
+#include "list.h"
+#include "string.h"
+#include "filename.h"
+#include "sys.h"
+#include "id.h" 
+
+#include "talout.h"
+#include "gcdfec.h"
+#include "gcd.h"
+
+#include "popsyntax.h"
+#include "popparse.h"
+#include "popdep.h"
+#include "poptype.h"
+#include "poptranslate.h"
+#include "popil.h"
+#include "popilprint.h"
+#include "popilanalyze.h"
+#include "poptalenv.h"
+#include "popiltal.h"
+#include "talpp.h"
+
+#include "popinline.h"
+#include "popdead.h"
+#include "popcfg.h"
+#include "popilcheck.h"
+#include "poptailcall.h"
+
+open Core;
+#define list List::list
+
+#define PRN_VERBOSE(X) if(verbose.v) { printf(X); }
+#define PRN_VERBOSE1(X,Y) if(verbose.v) { printf(X,Y); }
+
+extern void Poplex::poplex_init();
+
+int pop_main() { return Popcorn::popcorn_main(); }
+
+prefix Popcorn;
+open   Popcorn;
+
+Arg::bool_ref preprocess_only = ^Arg::bool_ref(false);
+Arg::bool_ref do_depend       = ^Arg::bool_ref(false);
+Arg::bool_ref no_inline       = ^Arg::bool_ref(false);
+Arg::bool_ref no_verbose_exn  = ^Arg::bool_ref(false);
+Arg::bool_ref verbose         = ^Arg::bool_ref(false);
+Arg::bool_ref profile         = ^Arg::bool_ref(false);
+Arg::bool_ref edge_stats      = ^Arg::bool_ref(false);
+Arg::bool_ref no_cfg_analysis = ^Arg::bool_ref(false);
+Arg::bool_ref no_webs         = ^Arg::bool_ref(false);
+Arg::bool_ref no_cp           = ^Arg::bool_ref(false);
+Arg::bool_ref no_dead_code    = ^Arg::bool_ref(false);
+Arg::bool_ref no_tailcall     = ^Arg::bool_ref(false);
+Arg::bool_ref unsafe_arrays   = ^Arg::bool_ref(false);
+
+<string>list defines = null;
+void add_define(string p) {
+  if (!List::mem(strcmp,defines,p))
+    defines = ^list(p,defines);
+}
+
+int popcorn_main () {
+  // initialize lexer and the predefined values
+  Poplex::poplex_init();
+  
+  // set popcorn library location
+  string poplib;
+  try
+    poplib = get_env("POPCORNLIB");
+  handle y switch y {
+  case Not_found: 
+    try 
+      poplib = Filename::concat(get_env("TALCLIB"), 
+	       Filename::concat("..",
+	       Filename::concat("popcorn", "lib")));
+    handle y switch y {
+    case Not_found:
+      poplib = Filename::current_dir_name;
+    }
+  }
+  Talout::add_include(poplib);
+  
+  // establish file types and command line options -- add more options!!!
+  <*(string, bool f(string,string,string))>list file_types =
+     ^list(^(".pop",compile_pop_file), Gcd::std_file_types());
+  
+  <*(string,Arg::spec,string)>list options = 
+    ^list(^("-no-inline",^Arg::spec.Set(no_inline), "do not inline"),
+    ^list(^("-E", ^Arg::spec.Set(preprocess_only), "only run preprocessor"),
+    ^list(^("-D", ^Arg::spec.String(add_define),"add preprocessor #define"),
+    ^list(^("-M", ^Arg::spec.Set(do_depend),       "generate dependencies"),
+    ^list(^("-no-verbose-exn", ^Arg::spec.Set(no_verbose_exn), "exceptions do not carry location information"),
+    ^list(^("-V", ^Arg::spec.Set(verbose), "verbose compilation"),
+    ^list(^("-P", ^Arg::spec.Set(profile), "instrument code for profiling"),
+    ^list(^("-edge-stats",^Arg::spec.Set(edge_stats),"output edge statistics"),
+    ^list(^("-no-cfg-analysis",^Arg::spec.Set(no_cfg_analysis),
+	    "turn off the edge removal analysis"),
+    ^list(^("-no-webs", ^Arg::spec.Set(no_webs), "use webs for better regalloc"),
+    ^list(^("-no-cp", ^Arg::spec.Set(no_cp), "copy propagation"),
+    ^list(^("-no-dead-code", ^Arg::spec.Set(no_dead_code), "disable dead code"),
+    ^list(^("-no-tailcall",^Arg::spec.Set(no_tailcall),"disable tailcall optimization"),
+    ^list(^("-unsafe-arrays",^Arg::spec.Set(unsafe_arrays),"disable array bounds checking"),
+    Gcd::std_options())))))))))))))); 
+
+  Gcd::set_tooldesc("popcorn: A safe, kinda C-like compiler");
+  
+  // call the generic driver appropriately
+  return Gcd::driver("popcorn", options, file_types, middle, do_link);
+}
+
+// compile_pop_file helper.
+void do_analysis(Id::id f,Popil::cf_function fn) {
+
+  // Insert tailcalls into the function.
+  if(!no_tailcall.v) Poptailcall::tailcall_fun(fn);
+
+  //Popilcheck::check_fun(Popilanalyze::ilf,fn);
+  //printf("Analyzing %s...",fn.name);
+  //print_string("elim null_checks...");
+  Popilanalyze::eliminate_nullchecks(fn);
+
+
+  //Popilcheck::check_fun(Popilanalyze::ilf,fn);
+
+  //Clean up the code -- eliminate unreachable blocks
+  //This is necessary for RTCG since dumps associated with
+  // unreachable blocks (templates) must be cleaned up
+  // Do before smash_blocks.
+  // Smash_blocks does not correctly clean up dead blocks.
+  Popdead::do_it(fn);
+  //Popilcheck::check_fun(Popilanalyze::ilf,fn);
+
+  //print_string("smash_blocks...");
+  Popilanalyze::smash_blocks(fn);
+  //print_string("done.\n");
+  //fflush(tal_stdout);
+
+
+  if(!no_webs.v) Popilanalyze::webify(fn);
+   
+  //Popilanalyze::copy_propagate(fn);
+  if(!no_dead_code.v) Popilanalyze::dead_code(fn);
+
+  
+  //Popilcheck::check_fun(Popilanalyze::ilf,fn);
+}
+
+// currently what was Gcdfe::fe is inlined here
+bool compile_pop_file(string filename, string basename, string modname) {
+
+  // The -M option does something totally different:
+  if (do_depend.v) {
+    Gcd::set_elab_only();
+    printf("%s\n", Popdep::generate_depend(filename, 
+					   Core::strconcat(basename,".to"),
+					   Talout::includes));
+    return true;
+  }
+
+  PRN_VERBOSE1("Compiling file: %s\n", basename);
+
+  // establish filenames
+  string ilfile      = strconcat(basename, ".pil");
+  string talfile     = strconcat(basename, ".tal");
+  string preprocfile = strconcat(modname,  ".i");
+
+   // Run the preprocessor
+#ifdef SYS_UNIX
+  string inc_string = "";
+  if (List::length(Talout::includes) != 0) {
+    inc_string = 
+      strconcat(" -I ", String::str_sepstr(Talout::includes, " -I "));
+  }
+  string def_string = "";
+  if (List::length(defines) != 0) {
+    def_string = 
+      strconcat(" -D", String::str_sepstr(defines, " -D"));
+  }
+  string cmd = 
+    String::strconcat_l(^list("gcc -x c -E ",
+	     	        ^list(inc_string, 
+			^list(" ", 
+			^list(def_string, 
+			^list(" ", 
+			^list(filename, 
+			^list(" > ", 
+			^list(preprocfile, null)))))))));
+#else
+  string inc_string = "";
+  if (List::length(Talout::includes) != 0) {
+    inc_string = 
+      strconcat(" /I", String::str_sepstr(Talout::includes, " /I"));
+  }
+  string def_string = "";
+  if (List::length(defines) != 0) {
+    def_string = 
+      strconcat(" /D", String::str_sepstr(defines, " /D"));
+  }
+  string cmd = 
+    String::strconcat_l(^list("cl /nologo ",
+			^list(inc_string, 
+			^list(" ", 
+			^list(def_string, 
+			^list(" /P /TC ", 
+			^list(filename, null))))))); 
+#endif
+  system(string_to_Cstring(cmd));
+  
+  if (preprocess_only.v)
+    return true;
+
+  // reset front-end -- necessary for good error messages!
+  Gcdfec::reset_fe(preprocfile); 
+
+  // Actually process the file 
+  FILE                              f;  // file open result
+  <Popsyntax::top_decl>list         l;  // parse result (then append stuff)
+  <*(Poptypeenv::global_env, 
+     <Popsyntax::top_decl>list)>Opt tc; // type-checker result
+  // open the file
+  try 
+    f = file_open(preprocfile, "r");
+  handle y {
+    printf("FILE OPEN FAILED!");
+    return false;
+  }
+  // parse
+  try 
+    l = Popparse::parse_program(f);
+  handle y {
+    return compile_file_failure("PARSING FAILED!", f, preprocfile);
+  }
+  PRN_VERBOSE("Parsing Completed.\n");
+  // add in the pre-defined values (i.e. exceptions and memType)
+  l = ^list(Popsyntax::make_predefined_exn(Popsyntax::null_exception_name),
+      ^list(Popsyntax::make_predefined_exn(Popsyntax::union_exception_name),
+      ^list(Popsyntax::make_predefined_exn(Popsyntax::array_exception_name),
+      ^list(Popsyntax::make_memType(),
+	    l))));
+
+  // type-check
+  // try 
+    tc = ^Opt(Poptype::type_check(l));
+    // handle y 
+    // return compile_file_failure("TYPE-CHECKING FAILED!", f, preprocfile);
+  if(Gcdfec::error_p())
+    return compile_file_failure("TYPE-CHECKING FAILED!", f, preprocfile);
+  PRN_VERBOSE("Type-checking completed.\n");
+
+  // close the files (we no longer expect failure)
+  file_close(f);
+  file_delete(preprocfile);
+
+  // translate
+  FILE ilf = file_open(ilfile,"w");
+
+  try {
+
+    Popil::cf_file il = Poptranslate::trans_file(tc.v.1, tc.v.2);
+    // BTW, this GC hack would get removed by dead code elimination
+    f  = null;
+    l  = null;
+    tc = null;
+    
+    Popilprint::set_output(ilf);
+    Popilanalyze::ilf = ilf;
+    PRN_VERBOSE("Doing analysis and generating TAL.\n");
+    Popilprint::prn_file(il);
+    
+    // Compute a more precise CFG, before performing any other per-function,
+    // analysis.
+    // CFG from translation should be correct but not necessarily precise.
+    if(!no_cfg_analysis.v) Popcfg::cfg_file(il);
+
+    if(!no_inline.v) {
+      PRN_VERBOSE("Inlining\n");
+      Popinline::doit(il);
+    }
+
+    Dict::iter(do_analysis,il.rtcg_funs);
+    Dict::iter(do_analysis,il.funs);
+
+    if(!Popilprint::suppress_output) fprintf(ilf, "\n\n Analysis Results:\n");
+    Popilprint::prn_file(il);
+
+    if(edge_stats.v) {
+      fprintf(ilf, "\n\nEdge statistics:\n");
+      Dict::iter(prn_edge_stats,il.rtcg_funs);
+      Dict::iter(prn_edge_stats,il.funs);
+    }
+
+    Popiltal::trans_file(basename,modname,il);
+    PRN_VERBOSE("TAL generated\n");
+    file_close(ilf);
+  }
+  handle y { 
+    file_close(ilf);
+    raise(y); // XXX - Temporary to get stack trace.
+    switch y {
+      case Impossible(s): printf("\nBACKEND FAILURE!!! %s\n",s);
+      case Failure(s): printf("\nBACKEND FAILURE!! %s\n",s);
+    }
+    return false;
+  }
+  string objformat = " --coff ";
+  switch Talout::objformat {
+  case ELF: objformat = " --elf ";
+  default:  ;
+  }
+
+  fflush(tal_stdout);
+
+  _ talc_str;
+  if(unsafe_arrays.v) talc_str = "talc.exe -c --no-verify ";
+  else talc_str = "talc.exe -c ";
+
+  if(!verbose.v) {
+    talc_str = strconcat(talc_str, "--quiet-verify ");
+  }
+  if(Gcd::assemble_p())
+    if(system(string_to_Cstring(String::strconcat_l(
+     ^list(talc_str,
+     ^list(objformat,
+	   ^list(talfile,null)))))) != 0) {
+      printf("TAL Verification failed.\n");
+      return false;
+    }
+  return true;
+}
+
+static void prn_edge_stats(Id::id i,Popil::cf_function f) {
+  Popilprint::prn_edge_stats(f);
+}
+
+static bool compile_file_failure(string s, FILE to_close, 
+				 string file_to_delete) {
+  printf("%s\n", s);
+  Core::file_close(to_close);
+  Core::file_delete(file_to_delete);
+  return false;
+}
+
+open Gcd {
+open Talout {
+  bool middle() {
+    add_object_file(Core::strconcat("stdlibnew",     object_file_suffix));
+    add_object_file(Core::strconcat("pop_runtimenew",object_file_suffix));
+    add_object_file(Core::strconcat("preludenew",    object_file_suffix));
+    add_object_file(Core::strconcat("cyclonelib",    object_file_suffix));
+    return true;
+  }
+}
+}
+
+bool do_link(<string>list objs, <string>list libs, string exe) {
+  return Talout::link(objs,exe);
+}
+
+

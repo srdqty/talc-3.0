@@ -1,0 +1,232 @@
+
+#include "core.h"
+#include "spec.h"
+
+open Core;
+
+prefix Interp;
+open Interp;
+
+union action {
+  void PrintRegs;
+  int  PrintGp;
+  int  PrintFp;
+  void  PrintPc;
+  *(ptr,int) DumpMem;
+  *(ptr,int) DumpStrMem;
+  *(ptr,int) Disassemble; // Disassemble n instruction starting at ptr.
+  int DisassemblePc;
+  int  RunN;
+  int  RunVerboseN;
+  void Run;
+  void Exit;
+  void Nop;
+  string Error;
+  string SetOutputFile;
+}
+
+exception ParseFailure(string);
+
+char next_char;
+
+// Returns are not whitespace.
+bool is_ws(char w) {
+  return (w==' ' || w == '\t' || w == '\r');
+}
+
+bool is_hexdigit(char d) {
+  return ((d>='0' && d<='9') || (d>='a' && d<='f') || (d>='A' && d<='F'));
+}
+
+int int_of_hexdigit(char d) {
+  if(d >= '0' && d <= '9') return ord(d - '0');
+  if(d >= 'a' && d <= 'f') return ord(d - 'a') + 10;
+  if(d >= 'A' && d <= 'F') return ord(d - 'A') + 10;
+  raise ParseFailure("Invalid hexdigit.");
+}
+
+int int_of_hexstring(string s) {
+  int num_digits = 0;
+  int i;
+  for(i=0; i<size(s); i++) {
+    if(s[i] == 0) break;
+  }
+  num_digits = i;
+
+  _ result = 0;
+  for(i=0; i < size(s); i++) {
+    if(s[i] == 0) break;
+    result |= (int_of_hexdigit(s[i]) << 4*(num_digits - i - 1));
+  }
+
+  return result;
+}
+
+char peek() { return next_char; }
+
+char read_char (FILE f) { char c = next_char; next_char = fgetc(f); return c; }
+
+void eat_ws(FILE f) {
+  while(is_ws(peek()))
+    read_char(f);
+}
+
+<int>Opt read_int(FILE f) {
+  string s = "00000000000000";
+
+  _ c = peek();
+  if(c=='-' || c=='+' || (c>='0' && c<='9')) {
+    s[0] = read_char(f);
+    int i = 0;
+    for(i = 1; i < size(s); i++) {
+      _ c = peek();
+      if(c<'0' || c>'9') break;
+      s[i] = read_char(f);
+    }
+    
+    if(i>=(size(s) - 1)) 
+      raise ParseFailure("Integer too long.");
+    
+    s[i] = 0;
+
+    _ s2 = new_string(i);
+    strncpy(s2,0,s,0,size(s2));
+
+    return ^Opt(int_of_string(s2));
+  }
+
+  return null;
+}
+
+
+ptr read_address(FILE f) {
+  _ c = peek();
+  switch c {
+  case '0':
+    read_char(f);
+    c = peek();
+    switch c {
+    case 'x':
+      read_char(f);
+      _ s = "xxxxXXXXxxxx";
+      int i;
+      for(i = 0; i < size(s)-1; i++) {
+	if(!is_hexdigit(peek())) break;
+	s[i] = read_char(f);
+      }
+      s[i] = 0;
+      return int_of_hexstring(s);
+    default: raise ParseFailure("Addresses should begin with 0x.");
+    }
+  default: raise ParseFailure("Addresses should begin with 0x.");
+  }
+}
+
+int read_reg(FILE f) {
+  _ reg = read_int(f);
+
+  if(reg == null) raise ParseFailure("Expected a register number.");
+  if(reg.v >= NUM_BASE_REGS) raise ParseFailure("Invalid register number.");
+  return reg.v;
+}
+
+string read_filename(FILE f) {
+  string fname = new_string(80);
+  for(_ i = 0; i < size(fname); i++) {
+    _ c = peek();
+    if(is_ws(c) || c == '\n' || c == EOF) {
+      _ result = new_string(i);
+      strncpy(result,0,fname,0,i);
+      return result;
+    }
+    fname[i] = read_char(f);
+  }
+  raise ParseFailure("Filename too long.");
+}
+
+action get_command(FILE f) {
+  next_char = fgetc(f);
+  _ action = ^.Nop;
+  try {
+    eat_ws(f);
+    _ c = read_char(f);
+    switch c {
+    case 'r':
+      eat_ws(f);
+      switch peek() {
+      case 'f': 
+	read_char(f);
+	action = ^.PrintFp(read_reg(f));
+      case 'r': 
+	read_char(f);
+	action = ^.PrintGp(read_reg(f));
+      case 'p': 
+	read_char(f);
+	action = ^.PrintPc;
+      default:  
+	action = ^.PrintRegs;
+      }
+    case 'd':
+      eat_ws(f);
+      switch peek() {
+      case 'p':
+	read_char(f);
+	switch read_char(f) {
+	case 'c':
+	  eat_ws(f);
+	  _ insts = read_int(f);
+	  _ num_insts = (insts == null) ? 1 : insts.v;
+	  action = ^.DisassemblePc(num_insts);
+	default: raise ParseFailure("Unrecognized disassembly command.");
+	}
+      default: 
+	_ address = read_address(f);
+	eat_ws(f);
+	_ insts = read_int(f);
+	_ num_insts = (insts == null) ? 1 : insts.v;
+
+	action = ^.Disassemble(^(address,num_insts));
+      }
+    case 'f':
+      eat_ws(f);
+      _ fname = read_filename(f);
+      action = ^.SetOutputFile(fname);
+
+    case 'm':
+      eat_ws(f);
+      _ address = read_address(f);
+      eat_ws(f);
+      _ sz = read_int(f);
+      if(sz==null) raise ParseFailure("Memory requires size.");
+      action = ^.DumpMem(^(address,sz.v));
+    case 'x': // Execute
+      eat_ws(f);
+      _ steps = read_int(f);
+      if(steps==null) { action = ^.Run; }
+      else { action = ^.RunN(steps.v); }
+    case 'v': // Execute verbose
+      eat_ws(f);
+      _ steps = read_int(f);
+      if(steps==null) action = ^.Run;
+      else action = ^.RunVerboseN(steps.v);
+    case 'q': action =  ^.Exit;
+    default: raise ParseFailure("Unrecognized action.");
+    }
+    while((peek() != '\n') && (peek() != EOF)) {
+      read_char(f);
+    }
+    return action;
+  } handle y {
+    // Must eat to the end of the line.
+    while((peek() != '\n') && (peek() != EOF)) {
+      read_char(f);
+    }
+    switch y {
+    case ParseFailure(s): return ^.Error(strconcat("ParseFailure: ",s));
+    default: raise(y);
+    }
+  }
+
+  
+}
+

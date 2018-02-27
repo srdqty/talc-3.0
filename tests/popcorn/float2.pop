@@ -1,0 +1,89 @@
+// float.pop
+// Check that some more floating point operations are working correctly.
+
+#pragma PIL
+
+#include "core.h"
+open Core;
+
+#include "math.h"
+open Math;
+
+/*
+extern void fprint_double(FILE,double);
+extern void fprint_float(FILE,float);
+*/
+
+void print_double(double d) {
+  fprint_double(tal_stdout,d);
+}
+
+void print_float(float f) {
+  fprint_float(tal_stdout,f);
+}
+
+void pop_main() {
+
+  double x;
+
+  x = -1.0;
+  printf("-1.0 = %g\n",x);
+
+  printf("pi = %g\n",pi);
+
+  x = cos(pi);
+  printf("cos(pi) = %g\n",x);
+
+  x = sin(pi/2);
+  printf("sin(pi/2) = %g\n",x);
+
+  x = tan(pi/4);
+  printf("tan(pi/4) = %f\n",x);
+
+  x = sqrt(4);
+  printf("sqrt(4) = %g\n",x);
+
+  x = fyl2x(1, 2);
+  printf("log (1 * log_2 2) = %g\n",x);
+
+  x = fyl2xp1(1, 3);
+  printf("log epsilon (1 * log_2 4) = %g\n",x);
+
+  x = f2xm1(0.5f);
+  printf("2^0.5 - 1 = %g\n",x);
+
+  x = atan(1.0f,2.0f);
+  printf("atan(1.0/2.0) = %g\n",x);
+
+  neg_inf = -1.0/0.0;
+  x = neg_inf;
+  printf("neg_inf = %g\n",x);
+  printf("neg_inf * 2.0 = %g\n",x * 2.0);
+
+  if(neg_inf >= 0) printf("ERROR: neg_inf bigger than zero.");
+
+  pos_inf = 1.0/0.0;
+  x = pos_inf;
+  printf("pos_inf = %g\n",x);
+  printf("pos_inf * 2.0 = %g\n",x * 2.0);
+
+  if(pos_inf <= 0.0) printf("ERROR: pos_inf smaller than zero.");
+  if(pos_inf <= 1.0) printf("ERROR: pos_inf smaller than zero.");
+
+  x = -1.0;
+  _ y = 0.5;
+
+  printf(" x/y = %g\n",x/y);
+
+  _ z = arc_cos(0.5);
+  printf(" arc_cos(0.5) = %g",z);
+  printf(" arc_cos(0.5)/pi = %g\n",z/pi);
+
+  _ x = power(3.14,0.0);
+  printf(" power(3.14,0.0) = %g ",x);
+  x = power(3.14,1.0);
+  printf(" power(3.14,1.0) = %g",x);
+  x = power(3.0,2.0);
+  printf(" power(3.0,2.0) = %g\n",x);
+
+}

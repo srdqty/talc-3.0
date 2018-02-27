@@ -1,0 +1,37 @@
+- add a compilation option for "notice updates w/ fn_ptrs."  In this case,
+  we have to compile the signal handling stuff different so that the
+  signal_behavior type properly handles the function pointer.  Ideally, we
+  could have an automatic generator from (Popcorn) .h file to .tali file,
+  and then we could run our dynamic updating transformer on the .h file
+  before automatically generating the .tali file.
+- add an InvalidArg packet to the unix_prelude and raise InvalidArg
+  when things are out of bounds, etc.
+- look through unixlib and remove unnecessary allocation.  Candidates:
+  - waitpid allocates process status and pair for return value.  Could
+    have the status passed by reference and return the pid.
+  - allocation of timing struct in gmtime.  Consider caching the allocated
+    memory as a static (I think this is what the real gmtime does).
+  - return value in readlink
+- Some defensize checking is missing---check everything, but in particular:
+  - read (check ofs and len are valid)
+  - recv/recvfrom
+- Can't really use the Unix_packet trick since more than one exception
+  may be active at the same time, and the message and argument may
+  differ.  We should be able to just memcpy the Unix_packet buffer
+  to a fresh one and then go as before.
+
+- Fix set/getsockopt to allow SO_LINGER.  Make union of possible result
+  types, for integer, linger, etc.
+
+- Complain about
+  - exception semantics using EBP as the handler pointer.  This
+    makes it difficult to call exceptions from C, since C uses 
+    EBP as the frame pointer.
+  - the use of ? in identifier names.  This prohibits the definition
+    of such names in C or assembly files.
+  - non-null terminated strings.  This is a hassle when we want to
+    allocate a string and then reuse it, especially when the next
+    use is not the same length.
+  - no stack allocation.  Hurts for temporary strings used for printing
+    within a single function.
+

@@ -1,0 +1,13 @@
+(* tests the 'cons' operator *)
+(* test1: void -> int list *)
+(* output = [1;2;3] *)
+fun test1() : unit =
+  1::2::3::[]
+
+(* test1: void -> (char list) list *)
+(* output = [['a';'b';'c'];[]] *)
+fun test2() : unit =
+  ('a'::'b'::'c'::[])::[]::[]
+
+fun main() : unit = 
+  (test1(), test2())

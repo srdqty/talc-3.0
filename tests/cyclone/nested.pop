@@ -1,0 +1,40 @@
+/* Test file for Cyclone templates */
+
+#include "core.h"
+open Core;
+
+
+void pop_main()
+{
+  int i = 7;
+
+  int f(int) = 
+   codegen(int my_print(int x) {
+             int y;
+             int g(int, int) =
+               codegen(int your_print(int y, int z) {
+                 print_string("Entering your_print\n");
+
+                 z = y + z;
+                 print_int(y);
+                 print_string("\n Exiting your_print\n");
+                 return z;
+               });
+
+             print_string("Entering my_print\n");
+             y = 4;
+	     y = x + y;
+             y = g(x, y);
+             print_int(y);
+	     print_string("\n Exiting my_print\n");
+             return y;
+           });
+
+  print_string("\nCyclone nested body\n");
+
+  i = f(9);
+  print_int(i);
+
+  print_string("\nCyclone nested complete\n");
+}
+

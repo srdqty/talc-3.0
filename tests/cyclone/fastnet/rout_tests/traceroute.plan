@@ -1,0 +1,17 @@
+(* traceroute reports the route taken to a destination. Note that we have
+   one outgoing packet, and one return packet for each hop. This presumes 
+   that the length of the route back to the source is the same as the length
+   of the path taken to get to the current hop. *)
+fun ack(count,where) =
+  (print (where); print (" : "); print (count); print("\n"))
+
+fun traceroute (source, destination, count) =
+ (OnRemote(|ack|(count,thisHostOf(getSrcDev())), 
+           source, count, defaultRoute);
+  if (thisHostIs (destination)) then ()
+  else
+    let val nextdev = defaultRoute(destination) in
+      OnNeighbor (|traceroute| (source, destination, count+1), 
+                  fst nextdev, getRB (), snd nextdev)
+    end)
+

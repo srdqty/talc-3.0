@@ -1,0 +1,14 @@
+#include "string.h"
+open String;
+open List;
+
+/* reads the contents of a file (non-binary) file into a string */
+string file2string (string filename) {
+  FILE file_des = Core::file_open (filename, "r");
+  int filelen = Core::file_length(filename);
+  string filebuf = Core::new_string(filelen);
+  
+  f_string_read(file_des, filebuf, 0, filelen);
+  Core::file_close (file_des);
+  return filebuf;
+}

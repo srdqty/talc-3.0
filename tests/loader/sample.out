@@ -1,0 +1,44 @@
+-----
+Test: simple_call
+-----
+-------------
+in simp.o:init()
+-------------
+func is 6
+before foo(), b is 3
+after foo(), b is 7
+func is 7
+Can't find symbol : c
+-----
+Test: gen_call
+-----
+func is 6
+b.j is:4
+b.j is:13
+func is 6
+-----
+Test: gen_add_call
+-----
+entering gen_add1:print_b
+func called with 0
+func called with 0
+leaving gen_add1:print_b
+window = (1,2)
+aFart.a = 2
+entering gen_add2:alter_b()
+entering gen_add1:print_b
+func called with 1
+func called with 2
+leaving gen_add1:print_b
+leaving gen_add2:alter_b()
+entering gen_add2:combine()
+Successfully failed and caught exception.
+And now succeeded.
+leaving gen_add2:combine()
+bar(1) = in foo
+1
+entering mutual_call
+in even.pop:init()
+in odd.pop:init()
+odd(1) = true
+even(1) = false

@@ -1,0 +1,23 @@
+/* copyright (c) 1998, Greg Morrisett
+ * calc.pop:  the calculator example Popcorn program
+ *
+ * imports:
+ *   type exp (abstract)    -- from parse.pop
+ *   get_exp()              -- from parse.pop
+ *   eval_exp()             -- from eval.pop
+ *   print_int()            -- from stdlib.c
+ *   
+ * exports:
+ *   main
+ */
+extern exp;
+extern int eval(exp);
+extern exp get_exp();
+extern void print_char(char);
+extern void print_int(int);
+extern void print_newline();
+
+void main() {
+  print_int(eval(get_exp()));
+  print_newline();
+}

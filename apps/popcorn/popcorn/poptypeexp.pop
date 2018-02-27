@@ -1,0 +1,1312 @@
+#include "core.h"
+#include "list.h"
+#include "dict.h"
+#include "popsyntax.h"
+#include "poperr.h"
+#include "poptypeenv.h"
+#include "popunify.h"
+#include "poptype.h"
+#define location Gcdfec::seg
+open Core;
+open Popsyntax;
+open List;
+open Poptypeenv;
+open Popunify;
+open Poptypestmt;
+open Poptype;
+
+prefix Poptypeexp;
+open Poptypeexp;
+
+// The old compiler doesn't put enough label types in, so this forces one
+// Feel free to re-define this to nothing with the new compiler, or
+// suffer slow compile times with the old compiler
+// Perhaps a more robust option is to break things into more functions
+// and rely on the new compiler's inlining to re-discover this.
+int x;
+#define FORCE_LABEL switch x { case 0: ; default: ; }
+
+///////////////////////////////////////////////////////////////////////////
+// 2. Constant expression checks
+///////////////////////////////////////////////////////////////////////////
+// check that an expression used for initialization of globals is
+// "constant" (i.e. can be computed at compile time)
+void check_constexp(exp e) {
+  switch e.raw_exp {
+  case Const(_): return;
+  case ConstArray*(es,_): List::iter(check_constexp,es);
+  case ConstCArray(es): List::iter(check_constexp,es);
+  case NewStruct*(_,_,es): 
+    List::iter(check_constexp,List::map(snd@< <field_name>Opt,exp>,es));
+  case NewUnion*(_,_,_,eopt): if (eopt != null) check_constexp(eopt.v);
+  case NewTuple(es): List::iter(check_constexp,es);
+  case NewAbstype*(_,_,_,e): check_constexp(e);
+  case NewExn*(_,eopt): if (eopt!=null) check_constexp(eopt.v);
+  case Cast*(_,e): check_constexp(e);
+  default: 
+    terr(e.loc,"Global variable initializer must be a constant expression");
+  }
+}
+
+///////////////////////////////////////////////////////////////////////////
+// 4. Type check expressions
+///////////////////////////////////////////////////////////////////////////
+// just calls tcRawExp and then plugs in the type on the expression.
+// Note that we must pass the whole exp to tcRawExp because 
+// we often update the expression (name resolution, vars assigned, ...)
+f_exp_synth tcExp(global_env g,c_env env,exp exp) {
+  _ loc = exp.loc;
+  _ e   = exp.raw_exp;
+  _ synth;
+  
+  switch e {
+  case Const(c):               synth = tcConst(g,env,loc,c);
+  case ConstArray*(es,topt):   synth = tcConstArray(g,env,loc,es,topt);
+  case ConstCArray(es):        synth = tcConstCArray(g,env,loc,es);
+  case Var(x):                 synth = tcVar(g,env,loc,exp,x);
+    rewrite_specials(exp);
+  case Primop(pr):             synth = tcPrimop(g,env,loc,pr);
+  case Conditional*(e1,e2,e3): synth = tcConditional(g,env,loc,e1,e2,e3);
+  case AssignOp*(e1,po,e2):    synth = tcAssignOp(g,env,loc,exp,e1,po,e2);
+  case FunCall(pat):           synth = tcFunCall(g,env,loc,pat);
+    rewrite_specials(exp);
+  case TypInst*(e,ts):         synth = tcTypInst(g,env,loc,e,ts);
+  case NewStruct(p):           synth = tcNewStruct(g,env,loc,exp,p);
+  case StructMember(pat):      synth = tcStructMember(g,env,loc,exp,pat);
+  case UnionMember*(e,fn):     synth = tcUnionMember(g,env,loc,e,fn);
+  case NewUnion(p):            synth = tcNewUnion(g,env,loc,p);
+  case NewTuple(es):           synth = tcNewTuple(g,env,loc,es);
+  case TupleMember*(e,i):      synth = tcTupleMember(g,env,loc,e,i);
+  case Subscript*(e1,e2):      synth = tcSubscript(g,env,loc,e1,e2);
+  case CSubscript*(e1,e2):     synth = tcCSubscript(g,env,loc,e1,e2);
+  case NewExn(p):              synth = tcNewExn(g,env,loc,p);
+  case Raise(e):               synth = tcRaise(g,env,loc,e);
+  case SeqExp(es):             synth = tcSeqExp(g,env,loc,es);
+  case Nop:                    synth = base(env,^typ.VoidType);
+  case Cast*(t,e):             synth = tcCast(g,env,loc,t,e);
+       rewrite_cast(exp); // Enforce invariants needed by poptranslate.pop
+  case NewAbstype(p):          synth = tcNewAbstype(g,env,loc,p);
+  case Codegen(fd):            synth = tcCodegen(g,env,loc,fd);
+  case Fill(e):                synth = tcFill(g,env,loc,e);
+  case Fun(fd):                synth = tcFun(g,env,loc,exp,fd);
+  } 
+
+  // outer context may expect Un_Boolean
+  // unfication wrong b/c may be unconstrained
+  if(^typ.BooleanType == compress(synth.typ))
+    switch synth.unassigned {
+    case Always(vs): synth.unassigned = ^f_exp_unassigned.Boolean(^(vs,vs));
+    default:         ;
+  }
+
+  exp.typ         = ^Opt(synth.typ);
+  exp.assigned_to = synth.assigned_to;
+  return synth;
+}
+
+// some utilities for the dispatchees:
+
+static *(bool,f_exp_unassigned,<var>list) tcExpList(global_env g, c_env env, 
+						    <exp>list es) {
+  // type-check a list of expressions, returning whether the list definitely
+  // raise, what could be undefined after the list is executed,
+  // and what could be assigned to while the list is executed.
+  // order matters
+  // note the caller must check that the elements' types are acceptable
+  _ does_raise  = false;
+  _ un_after    = unassigned(env);
+  <var>list assigned_to = null;
+  _ synth;
+  while(es != null) {
+    synth       = tcExp(g,env,es.hd);
+    does_raise  = does_raise || synth.does_raise;
+    assigned_to = List::append(synth.assigned_to, assigned_to);
+    un_after    = does_raise ? mt_varset_g.v : un_after_exp(synth);
+    env = set_unassigned(env, un_after);
+    es  = es.tl;
+  }
+  return ^(does_raise, ^f_exp_unassigned.Always(un_after), assigned_to);
+}
+
+static f_exp_synth base(c_env env, typ t) {
+  // common case: doesn't jump and doesn't assign anything
+  return ^f_exp_synth(t, 
+		      false, 
+		      ^f_exp_unassigned.Always(unassigned(env)), 
+		      null);
+}
+
+static f_exp_synth list_result_to_synth(*(bool,f_exp_unassigned,<var>list) trip,
+					typ t) {
+  return ^f_exp_synth(t, trip.1, trip.2, trip.3);
+}
+
+static f_exp_synth tcConst(global_env g,c_env env,location loc,cnst c) {
+  switch c {
+  case Int(_):    return base(env,^typ.IntType(^(true,^size_of.B4)));
+  case String(_): return base(env,^typ.StringType);
+  case Char(_):   return base(env,^typ.CharType);
+  case Null:      return base(env,new_evar(^var_class.Option));
+  case Float(_):  return base(env,^typ.FloatType);
+  case Double(_): return base(env,^typ.DoubleType);
+  case Bool(b):   
+    return ^f_exp_synth{
+      typ        = ^typ.BooleanType,
+      does_raise = false,
+      unassigned = b ? 
+        ^f_exp_unassigned.Boolean(^(unassigned(env),mt_varset_g.v))
+      : ^f_exp_unassigned.Boolean(^(mt_varset_g.v,unassigned(env))),
+      assigned_to = null};
+  }
+}
+
+static f_exp_synth tcConstArray(global_env g,c_env env,location loc,
+			<exp>list es, <typ>Opt topt) {
+  if ((es == null) && (topt == null))
+    return exp_err(loc,"empty constant array requires type");
+  else if (es == null) {
+    check_valid_type(loc,g,tyvars(env),topt.v);
+    return base(env,^typ.ArrayType(^(topt.v,null)));
+  } else {
+    _ es_result = tcExpList(g,env,es);
+    _ t         = es.hd.typ.v;
+    for(es = es.tl; es != null; es = es.tl)
+      if(!unify_coerce1(g,es.hd,t))
+	terr(es.hd.loc, "type mismatch in array constant");
+    return list_result_to_synth(es_result,^typ.ArrayType(^(t,null)));
+  }
+}
+
+static f_exp_synth tcConstCArray(global_env g, c_env env, location loc,
+				 <exp>list es) {
+  if(es==null) 
+    return exp_err(loc,"empty constant-sized array.");
+
+  _ es_result = tcExpList(g,env,es);
+  _ t = es.hd.typ.v;
+  _ sz = 1;
+  for(es=es.tl;es != null; es=es.tl) {
+    sz++;
+    if(!unify_coerce1(g,es.hd,t))
+      terr(es.hd.loc, "type mismatch in array constant");
+  }
+
+  return list_result_to_synth(es_result,^typ.CArrayType(^(t,sz,false)));
+}
+
+static f_exp_synth tcVar(global_env g,c_env env,location loc,
+			 exp exp,var x) {
+  try {
+    _ t = lookup(env,x);
+    if(Set::member(unassigned(env),x))
+      terr3(loc,"Variable ", x, " not definitely assigned\n");
+    return base(env,t);
+  } handle excep switch excep {
+  case Not_found:
+    _ entry_opt = Dict::lookup_opt(g.globals,x);
+    if (entry_opt != null) {
+      entry_opt.v.2 = true;
+      mention_types(g,entry_opt.v.1);
+      return base(env,entry_opt.v.1);
+    } else {
+      // try completing the name
+      _ vopt = Dict::lookup_opt(g.open_vals,x);
+      if (vopt == null) 
+	return exp_err2(loc,"unbound variable ",x);
+      else {
+	exp.raw_exp = ^raw_exp.Var(vopt.v);
+	_ entry = Dict::lookup(g.globals,vopt.v);
+	entry.2 = true;
+	mention_types(g,entry.1);
+	return base(env,entry.1);
+      }
+    }
+  }
+}
+
+static f_exp_synth tcPrimop(global_env g,c_env env,location loc,
+			    *(primop,<exp>list) pat) {
+  // Unlike Java, the only binops on bools are == and !=
+  // (The parser expands && and || into Conditionals and there's no 
+  // ^ or | or & on booleans)
+  // For == and != on booleans we do nothing special yet, unlike Java
+  // so for example, true == true will behave differently.
+
+  _ p  = pat.1;
+  _ es = pat.2;
+  _ es_result = tcExpList(g,env,es);
+  _ typ;
+  switch List::length(es) {
+  case 0: return exp_err(loc,"primitive operator applied to no arguments");
+  case 1:
+    typ = tcUnPrimop(g,env,loc,p,es.hd);
+  case 2:
+    _ pt = tcBinPrimop(g,env,loc,p,es.hd,es.tl.hd);
+    pat.1 = pt.1;
+    typ   = pt.2;
+  default: 
+    return exp_err(loc,"primitive operator applied to too many arguments!");
+  }
+  return list_result_to_synth(es_result,typ);
+}
+
+static f_exp_synth tcConditional(global_env g,c_env env,location loc,
+				 exp e1, exp e2, exp e3) {
+  _ synth1 = tcExp(g,env,e1);
+  _ t1     = synth1.typ;
+  if (!unify(g,t1,^typ.BooleanType))
+    return exp_err3(loc,"conditional argument has type ",
+		    typ2string(t1)," instead of bool");
+  _ un_pr  = un_after_bool(synth1);
+  _ synth2 = tcExp(g, set_unassigned(env,un_pr.1), e2);
+  _ synth3 = tcExp(g, set_unassigned(env,un_pr.2), e3);
+  _ t2     = synth2.typ;
+  _ t3     = synth3.typ;
+  _ t;
+  if (unify_coerce2(g,e2,e3)) 
+    t = e2.typ.v;
+  else
+    return exp_err4(loc,"clauses of conditional do not match type: ",
+		    typ2string(t2)," != ",typ2string(t3));
+  _ un_merge;
+  if(unify(g,^typ.BooleanType,t)) {
+    _ un_pr2 = un_after_bool(synth2);
+    _ un_pr3 = un_after_bool(synth3);
+    un_merge = ^f_exp_unassigned.Boolean(^(Set::union_two(un_pr2.1, un_pr3.1),
+					   Set::union_two(un_pr2.2, un_pr3.2)));
+  } else
+    un_merge = ^f_exp_unassigned.Always(Set::union_two(un_after_exp(synth2),
+						       un_after_exp(synth3)));
+  return 
+    ^f_exp_synth(t,
+		 synth1.does_raise || (synth2.does_raise && synth3.does_raise),
+		 un_merge,
+		 List::append(synth1.assigned_to,
+		 List::append(synth2.assigned_to, synth3.assigned_to)));
+}
+
+static f_exp_synth tcAssignOp(global_env g,c_env env,location loc,
+                      exp exp, exp e1, <primop>Opt po, exp e2) {
+  // Note that as in Primop, we vioalte Java by not considering various
+  // boolean operators to have meaning.
+  // must check lhs before rhs, but if lhs is a Var, and there's no Op,
+  // then the Var is allowed to be undefined.
+  _ env_lhs;
+  switch e1.raw_exp {
+  case Var(v):
+    if(po == null) env_lhs = set_unassigned(env,Set::delete(unassigned(env),v));
+    else           env_lhs = env;
+  default:         env_lhs = env;
+  }
+  _ synth_lhs = tcExp(g,env_lhs,e1);
+  _ t1        = synth_lhs.typ;
+  check_valid_lhs(g,env,e1);
+
+  _ env_rhs;
+  switch e1.raw_exp {
+  case Var(v): env_rhs = env;
+  default:     env_rhs = set_unassigned(env,un_after_exp(synth_lhs));
+  }
+  _ synth_rhs = tcExp(g,env_rhs,e2);
+  _ t2        = synth_rhs.typ;
+
+  _ un_after    = un_after_exp(synth_rhs);
+  _ assigned_to = List::append(synth_lhs.assigned_to,synth_rhs.assigned_to);
+  switch e1.raw_exp {
+  case Var(v): 
+    un_after    = Set::delete(un_after,v);
+    assigned_to = ^list(v,assigned_to);
+  default: ;
+  }
+
+  if (po == null) {
+    if (!unify_coerce1(g,e2,t1))
+      return exp_err4(loc,"type mismatch: ",typ2string(t1)," != ",
+		      typ2string(t2));
+  } else {
+    _ p        = po.v;
+    _ pair     = tcBinPrimop(g,env,loc,p,e1,e2);
+    _ p2       = pair.1;
+    _ t_result = pair.2;
+    if (p != p2)
+      exp.raw_exp = ^raw_exp.AssignOp(^(e1,^Opt(p2),e2));
+    if (!(unify(g,t_result,t1) || coercable(t_result)))
+      return exp_err(loc,"Cannot use this operator in front of an assignment");
+  }
+  return ^f_exp_synth(t1,
+		      synth_lhs.does_raise || synth_rhs.does_raise,
+		      ^f_exp_unassigned.Always(un_after),
+		      assigned_to);
+}
+
+static f_exp_synth tcFunCall(global_env g,c_env env,location loc,
+			     *(exp,< <typ>list>Opt, <exp>list) pat) {
+  _ e  = pat.1;
+  _ ts = pat.2;
+  _ es = pat.3;
+
+  _ list_result = tcExpList(g,env,^list(e,es));
+  _ t = compress(e.typ.v);
+  switch t {
+  case FnType*(c,vs,rt,argts):
+    // calculate an (implicit) instantiation
+    _ inst = List::map(gen_type_var,vs);
+    // calculate instantiated return type
+    rt = subst(inst,rt);
+    // calculate instantiated argument types
+    argts = List::map_c(subst,inst,argts);
+    if (ts == null) {
+      // implicit instantiation -- update abstract syntax
+      pat.2 = ^Opt(List::map(snd@<var,typ>,inst));
+      ts = pat.2;
+    } else {
+      // explicit instantiation -- unify with implicit instantiation
+      try 
+	List::app2_c(unify,g,ts.v,List::map(snd@<var,typ>,inst));
+      handle excep switch excep {
+      case List_mismatch: return exp_err(loc,"argument number mismatch");
+      }
+    }
+    // for each argument -- check that it has the appropriate type
+    while ((es != null) && (argts != null)) {
+      exp e = es.hd;
+      typ t = argts.hd;
+      typ t2 = e.typ.v;
+      if (!unify_coerce1(g,e,t))
+	return exp_err4(loc,"argument type mismatch:  actual has type ",
+			typ2string(t2)," but formal has type ",
+			typ2string(t));
+      es = es.tl;
+      argts = argts.tl;
+    }
+    if (es != null) 
+      return exp_err(e.loc,"too many arguments for function");
+    else if (argts != null) 
+      return exp_err(e.loc,"too few arguments for function");
+    return list_result_to_synth(list_result,rt);
+
+  default: 
+    return exp_err2(loc,"attempt to apply non function type ", typ2string(t));
+  }
+}
+
+static f_exp_synth tcTypInst(global_env g,c_env env,location loc,
+		     exp e, <typ>list ts) {
+  _ synth = tcExp(g,env,e);
+  switch compress(synth.typ) {
+  case FnType*(c,vs,rt,argts): // allows partial instantiation
+    <*(var,typ)>list inst = null;
+    while(vs != null && ts != null) {
+      inst = ^list(^(vs.hd,ts.hd),inst);
+      vs   = vs.tl;
+      ts   = ts.tl;
+    }
+    if(ts != null)
+      return exp_err(loc,"instantiation with too many arguments");
+    rt    = subst(inst,rt);
+    argts = List::map_c(subst,inst,argts);
+    _ new_t = ^typ.FnType(^(c,vs,rt,argts));
+    check_valid_type(loc,g,tyvars(env),new_t);
+    synth.typ = new_t;
+    return synth;
+  default: return exp_err2(loc,"cannot instantiate a non function type: ",
+			   typ2string(synth.typ));
+  }
+}
+
+static f_exp_synth tcNewStruct(global_env g,c_env env,location loc, exp exp,
+	       *(type_name,<<typ>list>Opt, <*(<field_name>Opt,exp)>list) p) {
+  // the parser does not distinguish NewExn or NewAbstype from NewStruct 
+  // so we have to make the distinction here and rewrite in case it's 
+  // really a new exception or abstype.
+  _ n   = p.1;
+  _ ts  = p.2;
+  _ fes = p.3;
+  // complete the name in case it was opened
+  if (!(Dict::member(g.structs,n)) && !(Dict::member(g.exceptions,n))
+      && !(Dict::member(g.abstypes,n))) {
+    _ name = Dict::lookup_opt(g.open_typs,n);
+    if (name == null)
+      name = Dict::lookup_opt(g.open_vals,n);
+    if (name == null) 
+      return exp_err2(loc,n," is not an exception, abstype, or struct");
+    n   = name.v;
+    p.1 = n;
+  }
+  // it could be a struct, exception, or abstype.  Make sure it's exactly one.
+  bool is_struct    = Dict::member(g.structs,n);
+  bool is_abstype   = Dict::member(g.abstypes,n);
+  bool is_exception = Dict::member(g.exceptions,n);
+  if((is_struct && is_abstype)
+     || (is_struct && is_exception)
+     || (is_abstype && is_exception))
+    return exp_err2(loc, "Ambiguous new (struct or exception or abstype) ",n);
+  if((!is_struct) && (!is_abstype) && (!is_exception))
+    return exp_err2(loc,n," is not a struct, abstype, or exception.");
+
+  if(is_exception) {
+    <exp>Opt eopt;
+    if(ts != null)
+      return exp_err2(loc,n,
+		      " is an exception.  Type arguments are not allowed.");
+    if(List::length(fes) > 1)
+      return exp_err2(loc,n," is an expeption.  Too many arguments.");
+    if(fes == null)
+      eopt = null;
+    else { 
+      if(fes.hd.1 != null)
+	return exp_err2(loc,n," is an exception.  Field name not allowed.");
+      eopt = ^Opt(fes.hd.2);
+    }
+    exp.raw_exp = ^raw_exp.NewExn(^(n,eopt));
+    return tcExp(g,env,exp);
+  }
+  if(is_abstype) {
+    if(List::length(fes) != 1)
+      return exp_err2(loc,n," is an abstype, must take exactly one argument.");
+    if(fes.hd.1 != null)
+      return exp_err2(loc,n," is an abstype.  Field name not allowed.");
+    exp.raw_exp = ^raw_exp.NewAbstype(^(n,ts,null,fes.hd.2));
+    return tcExp(g,env,exp);
+  }
+  FORCE_LABEL
+   // else it must be a struct
+   destruct_struct(g,n);
+   _ sd = Dict::lookup(g.structs,n).1;
+   // determine type instantiation
+   _ inst         = List::map(gen_type_var,sd.tyvars);
+   _ result_types = List::map(snd@<var,typ>,inst);
+   if (ts == null) {
+     // plug in implicit instantiation
+     ts  = ^Opt(result_types);
+     p.2 = ts;
+   } else {
+     // otherwise unify explicit instantiation to constrain result types
+     try 
+       List::app2_c(unify,g,ts.v,result_types);
+     handle excep switch excep {
+     case List_mismatch: 
+       return exp_err(loc,"new struct type argument mismatch");
+     }
+   }
+   FORCE_LABEL
+
+   // check that we have the right number of expressions
+   if(List::length(fes) != List::length(sd.fields))
+     return exp_err(loc,"wrong number of arguments for this new struct");
+   // type-check before shuffling fields b/c of definite assignment
+   _ stripped_es = List::map(snd@<<field_name>Opt,exp>,fes);
+   _ list_result = tcExpList(g,env,stripped_es);
+
+   // check that each argument expression has the right type for the fields
+   _ field_types = sd.fields;
+   <exp>list es = null; // UNIFICATION BROKEN
+   // we put the expressions in the order of the field names to check types.
+   if (fes != null && fes.hd.1 == null)
+     // no explicit field names -- nothing to do.
+     es = stripped_es;
+   else {
+     // explicit field names, put the expressions back in the order of
+     // the field declarations
+     for(_ fts = field_types; fts != null; fts = fts.tl) {
+       field_name f = fts.hd.1;
+       _ fs;
+       for(fs = fes; fs != null; fs = fs.tl)
+	 if(fs.hd.1 != null && strcmp(fs.hd.1.v,f) == 0)
+	   break;
+       if (fs == null) terr2(loc,"missing initializer for field ",f);
+       else es = ^list(fs.hd.2,es);
+     }
+     es = List::rev(es);
+   }
+
+   FORCE_LABEL
+
+   // now we're in order, actually compare the types
+   while (es != null) {
+     exp        e  = es.hd;
+     field_name f  = field_types.hd.1;
+     typ        t  = subst(inst,field_types.hd.3);
+     if (!unify_coerce1(g,e,t))
+       return exp_err5(loc,f," field has type ",
+		       typ2string(t)," but argument has type ",
+		       typ2string(e.typ.v));
+     es = es.tl;
+     field_types = field_types.tl;
+   }
+
+   return list_result_to_synth(list_result, ^typ.NamedType(^(n,result_types)));
+} 
+
+static f_exp_synth tcStructMember(global_env g,c_env env,location loc,
+				   exp exp,*(exp,field_name) pat) {
+   // this could really be a union member expression so we may have to rewrite
+   _ e = pat.1;
+   _ f = pat.2;
+   _ synth = tcExp(g,env,e);
+   _ t = compress(synth.typ);
+   switch t {
+   case NamedType*(n,ts):
+     _ sd;
+     try
+       sd = Dict::lookup(g.structs,n).1;
+     handle excep switch excep {
+     case Dict::Absent: 
+       // re-try it as a union member expression
+       exp.raw_exp = ^raw_exp.UnionMember(pat);
+       return tcExp(g,env,exp);
+     }
+     destruct_struct(g,n);
+     _ vs     = sd.tyvars;
+     _ inst   = List::zip(vs,ts);
+     _ fields = sd.fields;
+     while (true) {
+       if (fields == null) 
+	 return exp_err4(loc," struct ",n," has no field ",f);
+       if (strcmp(fields.hd.1,f) == 0) break;
+       fields = fields.tl;
+     }
+     synth.typ = subst(inst,fields.hd.3);
+     return synth;
+
+   default: 
+     return exp_err3(loc,"expression has type ",typ2string(t),
+		     " instead of struct or union type");
+   }
+ }
+
+ static f_exp_synth tcUnionMember(global_env g,c_env env,location loc,
+				  exp e, field_name f) {
+   _ synth = tcExp(g,env,e);
+   _ t     = compress(synth.typ);
+   switch t {
+   case NamedType*(n,ts):
+     _ ud;
+     try
+       ud = Dict::lookup(g.unions,n).1;
+     handle excep switch excep {
+     case Dict::Absent: 
+       return(exp_err2(loc,n," is not a struct or union type"));
+     }
+     destruct_union(g,n);
+     _ vs     = ud.tyvars;
+     _ inst   = List::zip(vs,ts);
+     _ fields = ud.fields;
+     // find the field in the union declaration
+     while (true) {
+       if (fields == null) 
+	 return exp_err4(loc,"union ",n," has no field ",f);
+       if (strcmp(fields.hd.1,f) == 0) break;
+       fields = fields.tl;
+     }
+     // instantiate the field type appropriately
+     synth.typ = subst(inst,fields.hd.2);
+     return synth;
+   default:
+     return(exp_err3(loc,"expression has type ",typ2string(t),
+		     " instead of a union or struct type"));
+   }
+ }
+
+ static f_exp_synth tcNewUnion(global_env g,c_env env,location loc,
+			   *(type_name,< <typ>list>Opt,field_name,<exp>Opt) p) {
+   _ n    = p.1;
+   _ ts   = p.2;
+   _ f    = p.3;
+   _ eopt = p.4;
+   if(strcmp(n,"") == 0) {
+     _ ud2 = Dict::lookup_opt(g.union_fs,f);
+     if(ud2==null) return(exp_err2(loc,f," is not a valid union field."));
+     if(ud2.v==null) return(exp_err2(loc,f," is an ambiguous union field."));
+     p.1 = n = ud2.v.v.name;
+   } else if (!Dict::member(g.unions,n)) {
+     _ name = Dict::lookup_opt(g.open_typs,n);
+     if (name == null) 
+       return(exp_err2(loc,n," is not a declared union type"));
+     p.1 = n = name.v;
+   }
+   _ ud = Dict::lookup(g.unions,n).1;
+   destruct_union(g,n);
+   _ inst  = List::map(gen_type_var,ud.tyvars);
+   _ evars = List::map(snd@<var,typ>,inst);
+   _ rty   = ^typ.NamedType(^(n,evars));
+   if (ts == null)
+     p.2 = ts = ^Opt(evars);
+   else {
+     try
+       List::app2_c(unify,g,evars,ts.v);
+     handle excep switch excep {
+     case List_mismatch:
+       return exp_err(loc,"instantiation has wrong number of arguments");
+     }
+   }
+   typ t;
+   try 
+     t = List::assoc_cmp(strcmp,ud.fields,f);
+   handle excep switch excep {
+   case Not_found: return exp_err3(loc,f," is not a variant of union type ",n);
+   }
+   typ t = subst(inst,t);
+   switch compress(t) {
+   case VoidType:
+     if (eopt != null)
+       return exp_err3(loc,"field ",f," has has no argument");
+     return base(env,rty);
+   default:
+     if (eopt == null)
+       return exp_err4(loc,"field ",f," requires an argument of type ",
+		       typ2string(t));
+     _ e     = eopt.v;
+     _ synth = tcExp(g,env,e);
+     if (!unify_coerce1(g,e,t)) 
+       return(exp_err6(loc,"field ",f," requires an argument of type ",
+		       typ2string(t)," not ",typ2string(synth.typ)));
+     synth.typ = rty;
+     return synth;
+   }
+ } 
+
+ static f_exp_synth tcNewTuple(global_env g, c_env env, location loc,
+			       <exp>list es) {
+   return // notice this relies on left-to-right evaluation of function args
+     list_result_to_synth(tcExpList(g,env,es),
+			  ^typ.TupleType(
+				 List::map(fun typ f(exp e) { return e.typ.v; },
+				 es)));
+ }
+
+ static f_exp_synth tcTupleMember(global_env g,c_env env,location loc,
+				  exp e, int i) {
+   _ synth = tcExp(g,env,e);
+   _ t     = synth.typ;
+   switch compress(t) {
+   case TupleType(ts): 
+     try {
+       synth.typ = List::nth(ts,i-1); 
+       return synth;
+     }
+     handle excep switch excep {
+     case List::Nth: 
+       return exp_err3(loc,"tuple has ",string_of_int(length(ts)), " fields");
+     }
+   default: 
+     return exp_err2(loc,"expecting tuple type but expression has type ",
+		     typ2string(t));
+   }
+ }
+
+ static f_exp_synth tcSubscript(global_env g,c_env env,location loc,
+				exp e1, exp e2) {
+   _ list_result = tcExpList(g,env,^list(e1,^list(e2,null)));
+   if (!unify_coerce1(g, e2, ^typ.IntType(^(false,^size_of.B4))))
+     return exp_err3(loc,"subscript type ",typ2string(e2.typ.v)," not an int");
+
+   typ t1 = compress(e1.typ.v);
+   switch t1 {
+   case StringType: return list_result_to_synth(list_result,^typ.CharType);
+   default: 
+     typ t = new_evar(^var_class.Any);
+     if (!unify(g,^typ.ArrayType(^(t,null)),t1)) 
+       return exp_err2(loc,"subscript on non-array/string type ",
+		       typ2string(t1));
+     return list_result_to_synth(list_result,t);
+   }
+ }
+
+ static f_exp_synth tcCSubscript(global_env g,c_env env,location loc,
+				exp e1, exp e2) {
+   _ list_result = tcExpList(g,env,^list(e1,^list(e2,null)));
+   if (!unify_coerce1(g, e2, ^typ.IntType(^(false,^size_of.B4))))
+     return exp_err3(loc,"subscript type ",typ2string(e2.typ.v)," not an int");
+
+   typ t1 = compress(e1.typ.v);
+   switch t1 {
+   case CArrayType *(t,_,_): return list_result_to_synth(list_result,t);
+   default: return exp_err2(loc,"subscript on non-constant-array type (unification does not work here.) ",
+			    typ2string(t1));
+   }
+ }
+
+ static f_exp_synth tcNewExn(global_env g,c_env env,location loc,
+			     *(var,<exp>Opt) p) {
+   _ id = p.1;
+   _ eopt = p.2;
+   _ topt = Dict::lookup_opt(g.exceptions,id);
+   if (topt == null) {
+     _ id2 = Dict::lookup_opt(g.open_vals,id);
+     if (id2 == null)
+       return exp_err2(loc,"unknown exception ",id);
+     else {
+       p.1 = id = id2.v;
+       topt = Dict::lookup_opt(g.exceptions,id);
+       if (topt == null)
+	 return exp_err2(loc,"unknown exception ",id);
+     }
+   }
+   destruct_exn(g,id);
+   typ t1 = topt.v.1;
+   if (eopt == null) {
+     switch t1 {
+     case VoidType: ;
+     default: terr5(loc,"exception ",id," requires ",typ2string(t1)," value");
+     }
+     return base(env,^typ.ExnType);
+   } else {
+     exp e = eopt.v;
+     switch t1 {
+     case VoidType: 
+       terr3(loc,"exception ",id," carries no value");
+       return base(env,^typ.ExnType);
+     default: 
+       _ synth = tcExp(g,env,e);
+       if (!(unify_coerce1(g,e,t1)))
+	 terr5(loc,"exception ",id," requires ",typ2string(t1),
+	       strconcat(" != ",typ2string(synth.typ)));
+       synth.typ = ^typ.ExnType;
+       return synth;
+     }
+   }
+ }
+
+ static f_exp_synth tcRaise(global_env g,c_env env,location loc,
+			    exp e) {
+   typ t = tcExp(g,env,e).typ;
+   if (!unify(g,t,^typ.ExnType)) 
+     return exp_err2(loc,"expected exn type, but found ",typ2string(t));
+   return ^f_exp_synth(new_evar(^var_class.Any),
+		       true,
+		       ^f_exp_unassigned.Always(mt_varset_g.v),
+		       // this is okay b/c it raises, could also do 
+		       // e.assigned_to
+		       null); 
+ }
+
+ static f_exp_synth tcSeqExp(global_env g,c_env env,location loc,
+			     <exp>list es) {
+   if (es == null) impossible("SeqExp with no expressions");
+   _ list_result = tcExpList(g,env,es);
+   while (es.tl != null)
+     es = es.tl;
+   return list_result_to_synth(list_result, es.hd.typ.v);
+ }
+
+ static f_exp_synth tcCast(global_env g,c_env env,location loc,
+			   typ t, exp e) {
+   _ synth = tcExp(g,env,e);
+   typ t2 = synth.typ;
+   if (!(coercable(t) && coercable(t2)))
+     return(exp_err4(loc,"cast is only allowed on integral types, not",
+		     typ2string(t)," and ",typ2string(t2)));
+   synth.typ = t;
+   return synth;
+ }
+
+ static f_exp_synth tcNewAbstype(global_env g,c_env env,location loc,
+			      *(type_name,<<typ>list>Opt,<<typ>list>Opt,exp) q){
+   _ n     = q.1;
+   _ e     = q.4;
+   _ synth = tcExp(g,env,e);
+
+   if (!Dict::member(g.abstypes,n)) {
+     _ name = Dict::lookup_opt(g.open_typs,n);
+     if (name == null)
+       return exp_err2(loc,n," is not a declared abstype");
+     q.1 = n = name.v;
+   }
+   _ adopt = Dict::lookup_opt(g.abstypes,n);
+   if (adopt == null)
+     return exp_err2(loc,"unknown abstype constructor ",q.1);
+   _ ad = adopt.v.1;
+   destruct_abstype(g,n);
+   _ inst1  = List::map(gen_type_var,ad.all_tyvars);
+   _ inst2  = List::map(gen_type_var,ad.exist_tyvars);
+   _ inst   = List::append(inst1,inst2);
+   _ evars1 = List::map(snd@<var,typ>,inst1);
+   _ evars2 = List::map(snd@<var,typ>,inst2);
+   typ rty = ^typ.NamedType(^(n,evars1));
+   if (q.2 == null)
+     q.2 = ^Opt(evars1);
+   else {
+     try
+       List::app2_c(unify,g,q.2.v,evars1);
+     handle excep switch excep {
+     case List_mismatch:
+       return(exp_err(loc,"new abstype; universal type mismatch"));
+     }
+   }
+   if (q.3 == null)
+     q.3 = ^Opt(evars2);
+   else {
+     try
+       List::app2_c(unify,g,q.3.v,evars2);
+     handle excep switch excep {
+     case List_mismatch:
+       return(exp_err(loc,"new abstype; existential type mismatch"));
+     }
+   }
+   typ t2 = subst(inst,ad.defn);
+   if (!unify_coerce1(g,e,t2)) {
+     return exp_err4(loc,"expression has type ",typ2string(e.typ.v),
+		     " but abstype constructor requires ",
+		     typ2string(t2));
+   }
+   synth.typ = rty;
+   return synth;
+ }
+
+ static f_exp_synth tcCodegen(global_env g,c_env env,location loc,
+			      fndecl fd) {
+   // Notice we don't track any definite assignment under a codegen
+   // I.e. we're very conservative
+   // BUG: If a Codegen assigns a var (within a Cut), we may need to know that
+   // One solution would be a special "anything might be assigned" value
+   // that could be synthesized.  Or as a kludge, a special var name that
+   // meant that.
+   c_env env2 = ^c_env.Frame(^(fndecl2f_env(fd),env));
+   check_fundecl_valid_type(g,loc,fd);
+   tcFunDecl(g,env2,loc,fd);
+   return base(env,fd_type(fd));
+ }
+
+ // generate a "fresh" identifier for an inner function
+ static int counter = 0;
+ static var new_inner_fn_id(var x) {
+   return strconcat("_inner?",
+		    strconcat(string_of_int(counter++),
+			      strconcat("?",x)));
+ }
+
+ // substitute variable y for x where y is a fresh variable
+ static void subst_stmt(var y,var x,stmt s) {
+   switch s.raw_stmt {
+   case Skip          : ; // skip -- funny, huh? Dan: not really. ;-)
+   case Exp(e)        : subst_exp(y,x,e);
+   case Seq(p)        : subst_stmt(y,x,p.1); subst_stmt(y,x,p.2); 
+   case Return(eopt)  : if (eopt != null) subst_exp(y,x,eopt.v);
+   case IfThenElse(t) :
+     subst_exp(y,x,t.1); subst_stmt(y,x,t.2); subst_stmt(y,x,t.3); 
+   case While(p)      : subst_exp(y,x,p.1); subst_stmt(y,x,p.2);
+   case Break(_)      : ; // skip
+   case Continue(_)   : ; // skip
+   case For(q)        : 
+     subst_exp(y,x,q.1); subst_exp(y,x,q.2); subst_exp(y,x,q.3);
+     subst_stmt(y,x,q.4);
+   case IntSwitch(t)  :
+     subst_exp(y,x,t.1); subst_stmts(y,x,List::map(snd@<int,stmt>,t.2));
+     subst_stmt(y,x,t.3);
+   case CharSwitch(t) :
+     subst_exp(y,x,t.1); subst_stmts(y,x,List::map(snd@<char,stmt>,t.2));
+     subst_stmt(y,x,t.3);
+   case UnionSwitch(t):
+     subst_exp(y,x,t.1); subst_arms(y,x,t.2); 
+     if (t.3 != null) subst_stmt(y,x,t.3.v);
+   case ExnSwitch(t)  :
+     subst_exp(y,x,t.1); subst_arms(y,x,t.2); 
+     if (t.3 != null) subst_stmt(y,x,t.3.v);
+   case Decl(q)       : 
+     <exp>Opt eopt = q.3;
+     if (eopt != null) subst_exp(y,x,eopt.v);
+     if (strcmp(q.1,x) != 0) subst_stmt(y,x,q.4);
+   case Label(p)      : subst_stmt(y,x,p.2);
+   case Cut(_)        : terr(s.loc,"can't use cut in inner function");
+   case Splice(_)     : terr(s.loc,"can't use splice in inner function");
+   case Do(p): subst_stmt(y,x,p.1); subst_exp(y,x,p.2);
+   case TryHandle(t)  : 
+     subst_stmt(y,x,t.1); 
+     if (strcmp(t.2,x) != 0) subst_stmt(y,x,t.3);
+   case TryCatchFinally(q):
+     subst_stmt(y,x,q.1);
+     subst_arms(y,x,q.2);
+     if (q.3 != null) subst_stmt(y,x,q.3.v);
+     if (q.4 != null) subst_stmt(y,x,q.4.v);
+   case With(q)       : 
+     subst_exp(y,x,q.4);
+     if (strcmp(q.1,x) != 0) subst_stmt(y,x,q.5);
+   case Rdtsc *(e1,e2):
+     subst_exp(y,x,e1);
+     subst_exp(y,x,e2);
+   }
+ }
+ static void subst_stmts(var y,var x,<stmt>list stmts) {
+   while (stmts != null) {
+     subst_stmt(y,x,stmts.hd); 
+     stmts = stmts.tl;
+   }
+ }
+ static void subst_arms(var y,var x,<switch_arm>list arms) {
+   while (arms != null) {
+     subst_arm(y,x,arms.hd); 
+     arms = arms.tl;
+   }
+ }
+ static void subst_arm(var y,var x,switch_arm arm) {
+   if (!pattern_has_var(x,arm.pat)) 
+     subst_stmt(y,x,arm.body);
+ }
+ static bool prim_pattern_has_var(var x,prim_pattern p) {
+   switch p {
+   case Wild(_): return false;
+   case Var(z): return(strcmp(z.1,x) == 0);
+   }
+ }
+ static bool pattern_has_var(var x,pattern p) {
+   switch p {
+   case None: return false;
+   case Prim(prim): return prim_pattern_has_var(x,prim);
+   case Tuple(pats): 
+     while (pats != null) {
+       if (prim_pattern_has_var(x,pats.hd)) return true;
+       pats = pats.tl;
+     }
+     return false;
+   }
+ }
+ static void subst_exps(var y,var x,<exp>list exps) {
+   while (exps != null) {
+     subst_exp(y,x,exps.hd);
+     exps = exps.tl;
+   }
+ }
+ static void subst_exp(var y,var x,exp e) {
+   switch e.raw_exp {
+   case Const(_)       : ; // skip
+   case ConstArray(p)  : subst_exps(y,x,p.1);
+   case ConstCArray(p) : subst_exps(y,x,p);
+   case Var(z)         : if (strcmp(z,x) == 0) e.raw_exp = ^raw_exp.Var(y);
+   case Primop(p)      : subst_exps(y,x,p.2);
+   case Conditional(t) : 
+     subst_exp(y,x,t.1); subst_exp(y,x,t.2); subst_exp(y,x,t.3);
+   case AssignOp(t)    : subst_exp(y,x,t.1); subst_exp(y,x,t.3);
+   case FunCall(t)     : subst_exp(y,x,t.1); subst_exps(y,x,t.3);
+   case TypInst(p )    : subst_exp(y,x,p.1); 
+   case NewStruct(t)   :
+     subst_exps(y,x,List::map(snd@< <field_name>Opt,exp>,t.3));
+   case StructMember(p): subst_exp(y,x,p.1); 
+   case NewUnion(t)    : if (t.4 != null) subst_exp(y,x,t.4.v);
+   case UnionMember(p) : subst_exp(y,x,p.1); 
+   case NewTuple(es)   : subst_exps(y,x,es);
+   case TupleMember(p) : subst_exp(y,x,p.1); 
+   case Subscript(p)   : subst_exp(y,x,p.1); subst_exp(y,x,p.2); 
+   case CSubscript(p)  : subst_exp(y,x,p.1); subst_exp(y,x,p.2);
+   case Codegen(_)     : terr(e.loc,"can't use codegen in inner function");
+   case Fill(_)        : terr(e.loc,"can't use fill in inner function");
+   case NewExn(p)      : if (p.2 != null) subst_exp(y,x,p.2.v);
+   case Raise(e)       : subst_exp(y,x,e);
+   case SeqExp(es)     : subst_exps(y,x,es);
+   case Nop            : ; // skip
+   case Cast(p)        : subst_exp(y,x,p.2);
+   case NewAbstype(p)  : subst_exp(y,x,p.4);
+   case Fun(fd)        : 
+     if ((strcmp(fd.name,x) != 0) && 
+	 (!List::mem(strcmp,List::map(fst@<var,typ>,fd.args),x))) 
+       subst_stmt(y,x,fd.body);
+   }
+ }
+
+
+ static f_exp_synth tcFill(global_env g,c_env env,location loc,exp e) {
+   // BUG: assignment in fill doesn't get noticed.  See comments in
+   // tcCodegen
+   switch env {
+   case Frame(p): 
+     return base(env,tcExp(g,^c_env.Hidden(p),e).typ);
+   case Hidden(_):
+     return exp_err(loc,"fill cannot be use while codegen is in cut");
+   case Outermost(_):
+     return exp_err(loc,"fill can only be used within codegen.");
+   }
+ }
+
+ // type-check a nested function -- give the function a fresh name
+ // and substitute that fresh name throughout the body, then add
+ // it to the global environment and list of top-level declarations.
+ static f_exp_synth tcFun(global_env g,c_env env,location loc,exp exp,
+			  fndecl fd) {
+   typ t        = check_fundecl_valid_type(g,loc,fd);
+   var new_name = new_inner_fn_id(fd.name);
+   subst_stmt(new_name,fd.name,fd.body);
+   _ new_fd = ^fndecl(true,fd.convention,new_name,fd.tyvars,fd.ret_type,fd.args,fd.body);
+   c_env env2 = ^c_env.Outermost(fndecl2f_env(new_fd));
+   add_global(g,new_name,t);
+   tcFunDecl(g,env2,loc,new_fd);
+   _ td = ^top_decl(^raw_top_decl.FunDecl(new_fd),loc);
+   inner_functions = ^list(td,inner_functions);
+   exp.raw_exp = ^raw_exp.Var(new_name);
+   return base(env,t);
+ }
+
+ static *(primop,typ) binop_err(location loc,primop p,string s) {
+   terr3(loc,primop2string(p),": ",s);
+   return ^(p,new_evar(^var_class.Any));
+ }
+
+static primop op_to_floatop(location loc, primop p) {
+  switch p {
+    // Arithmetic operators.
+  case Plus:   return ^.PlusF;
+  case Minus:  return ^.MinusF;
+  case Times:  return ^.TimesF;
+  case TimesU: return ^.TimesF;
+  case Div:    return ^.DivF;
+  case DivU:   return ^.DivF;
+  case PlusF:  return p;
+  case MinusF: return p;
+  case TimesF: return p;
+  case DivF:   return p;
+    // Boolean operators.
+  case Gt:   return ^.GtF;
+  case GtU:  return ^.GtF;
+  case Lt:   return ^.LtF;
+  case LtU:  return ^.LtF;
+  case Gte:  return ^.GteF;
+  case GteU: return ^.GteF;
+  case Lte:  return ^.LteF;
+  case LteU: return ^.LteF;
+  case GtF:  return p;
+  case LtF:  return p;
+  case GteF: return p;
+  case LteF: return p;
+    // Polymorphic operators.
+  case Eq: return ^.EqF;
+  case Neq: return ^.NeqF;
+  case EqF: return p;
+  case NeqF: return p;
+  default: // Shift operations cannot be converted to FP 
+   terr3(loc,primop2string(p),": ","operator does not apply to floating point types.");
+   return p;
+  }
+}
+ static *(primop,typ) tcArithBinPrimop (global_env g,c_env env,location loc,
+				      primop p,exp e1,exp e2) {
+   if (!(unify_coerce2(g,e1,e2)))
+     return(binop_err(loc,p,"operator applied to non-numeric type"));
+   typ t = compress(e1.typ.v);
+   if (!coercable(t))
+     return(binop_err(loc,p,"comparison applied to non-numeric type"));
+   switch t {
+   case IntType*(s,_):
+     if (!s) {
+       switch p {
+       case Times: return(^(^primop.TimesU,t));
+       case Div:   return(^(^primop.DivU,t));
+       case Mod:   return(^(^primop.ModU,t));
+       default:    return(^(p,t));
+       }
+     } else 
+       return(^(p,t));
+   case FloatType: return ^(op_to_floatop(loc,p),t);
+   case DoubleType: return ^(op_to_floatop(loc,p),t);
+   default: return(^(p,t));
+   }
+ }
+
+ static *(primop,typ) tcBoolBinPrimop (global_env g,c_env env,location loc,
+				       primop p,exp e1,exp e2) {
+   if (!(unify_coerce2(g,e1,e2))) 
+     return(binop_err(loc,p,"comparison applied to non-numeric type"));
+   typ t = compress(e1.typ.v);
+   if (!coercable(t))
+     return(binop_err(loc,p,"comparison applied to non-numeric type"));
+   switch t {
+   case IntType*(s,_):
+     if (!s) 
+       switch p {
+       case Gt: p = ^primop.GtU;
+       case Lt: p = ^primop.LtU;
+       case Gte: p = ^primop.GteU;
+       case Lte: p = ^primop.LteU;
+       default: ; // skip
+     }
+   case FloatType: p = op_to_floatop(loc,p);
+   case DoubleType: p = op_to_floatop(loc,p);
+   default: ; // skip
+   }
+   return ^(p,^typ.BooleanType);
+ }
+
+ static *(primop,typ) tcPolyBinPrimop (global_env g,c_env env,location loc,
+				       primop p,exp e1,exp e2) {
+   if (!(unify_coerce2(g,e1,e2))) {
+     string s1 = strconcat(" ! = ",typ2string(e2.typ.v));
+     string s2 = strconcat(typ2string(e1.typ.v),s1);
+     return(binop_err(loc,p,strconcat("comparison of two types: ",s2)));
+   }
+   switch compress(e1.typ.v) {
+   case FloatType:  p = op_to_floatop(loc,p);
+   case DoubleType: p = op_to_floatop(loc,p);
+   default: 
+     switch p { // This can never happen unless we type-check twice.
+     case EqF: 
+       binop_err(loc,p,"floating point == applied to non floating point type.");
+     case NeqF: 
+       binop_err(loc,p,"floating point != applied to non floating point type.");
+     default: ;
+     }
+   }
+   return ^(p,^typ.BooleanType);
+ }
+
+ static *(primop,typ) tcBinPrimop(global_env g,c_env env,location loc,
+				  primop p,exp e1,exp e2) {
+#define CASE_ARITH(X) case X: return(tcArithBinPrimop(g,env,loc,p,e1,e2))
+#define CASE_BOOL(X)  case X: return(tcBoolBinPrimop (g,env,loc,p,e1,e2))
+#define CASE_POLY(X)  case X: return(tcPolyBinPrimop (g,env,loc,p,e1,e2))
+
+   switch p {
+     CASE_ARITH(Plus);
+     CASE_ARITH(Times);
+     CASE_ARITH(TimesU);
+     CASE_ARITH(Minus);
+     CASE_ARITH(Div);
+     CASE_ARITH(DivU);
+     CASE_ARITH(Mod);
+     CASE_ARITH(ModU);
+     CASE_ARITH(Bitand);
+     CASE_ARITH(Bitor);
+     CASE_ARITH(Bitxor);
+     CASE_ARITH(Bitlshift);
+     CASE_ARITH(Bitlrshift);
+     CASE_ARITH(Bitarshift);
+     CASE_ARITH(PlusF);
+     CASE_ARITH(MinusF);
+     CASE_ARITH(TimesF);
+     CASE_ARITH(DivF);
+     CASE_BOOL(Gt);
+     CASE_BOOL(GtU);
+     CASE_BOOL(Lt);
+     CASE_BOOL(LtU);
+     CASE_BOOL(Gte);
+     CASE_BOOL(GteU);
+     CASE_BOOL(Lte);
+     CASE_BOOL(LteU);
+     CASE_BOOL(GtF);
+     CASE_BOOL(GteF);
+     CASE_BOOL(LtF);
+     CASE_BOOL(LteF);
+     CASE_POLY(Eq);
+     CASE_POLY(Neq);
+     CASE_POLY(EqF);
+     CASE_POLY(NeqF);
+   default: return(binop_err(loc,p,"wrong number of arguments"));
+   }
+
+#undef CASE_ARITH
+#undef CASE_BOOL
+#undef CASE_POLY
+ }
+
+ static typ tcUnPrimop(global_env g,c_env env,location loc,primop p,exp e) {
+   typ t = e.typ.v;
+   switch p {
+   case Not:
+     if (!unify(g,t,^typ.BooleanType))
+       terr2(loc,"! requires bool, not ",typ2string(t));
+     return ^typ.BooleanType;
+   case Bitnot:
+     if (!unify_coerce1(g,e,^typ.IntType(^(true,^size_of.B4))))
+       terr2(loc,"~ requires int, not ",typ2string(t));
+     return ^typ.IntType(^(true,^size_of.B4));
+   case Size:
+     switch compress(t) {
+     case StringType:   ; // skip
+     case ArrayType(_): ; // skip
+     default:
+       terr2(loc,"size requires string or array, not ", typ2string(t));
+     }
+     return ^typ.IntType(^(true,^size_of.B4));
+   case Ord:
+     if (!unify(g,t,^typ.CharType))
+       terr2(loc,"ord requires char, not ",typ2string(t));
+     return ^typ.IntType(^(true,^size_of.B4));
+   case Chr:
+     if (!unify_coerce1(g,e,^typ.IntType(^(true,^size_of.B4))))
+       terr2(loc,"chr requires int, not ",typ2string(t));
+     return ^typ.CharType;
+   default: 
+     terr2(loc,primop2string(p),": wrong number of arguments");
+     return new_evar(^var_class.Any);
+   }
+ }
+
+ static void check_valid_lhs(global_env g, c_env env, exp e) {
+   switch e.raw_exp {
+   case Var(x): 
+     // Bug fix: make sure we're not assigning to a function!
+     switch e.typ.v {
+     case FnType(_):
+       try lookup(env,x);
+       handle y switch y {
+       case Not_found: terr(e.loc, "cannot assign to function");
+       }
+     default: ;
+     }
+   case Cast*(_,e): check_valid_lhs(g,env,e);
+   case StructMember*(e1,f):
+     typ t = compress(e1.typ.v); 
+     switch t {
+     case NamedType*(n,_):
+       try {
+	 _ pr     = Dict::lookup(g.structs,n);
+	 destruct_struct(g,n);
+	 _ fields = pr.1.fields;
+	 while (true) {
+	   if (fields == null) {
+	     terr2(e.loc,"unknown field ",f);
+	     return;
+	   } else if (strcmp(f,fields.hd.1) == 0) {
+	     switch fields.hd.2 {
+	     case ReadWrite: return;
+	     case ReadOnly:  terr2(e.loc,f," field is const");
+	     }
+	   } else fields = fields.tl;
+	 } 
+       } handle excep switch excep {
+       case Dict::Absent: terr2(e.loc,n," is not a struct name");
+       }
+     default: terr2(e.loc,typ2string(t)," is not a struct");
+     }
+   case Subscript*(e1,e2):
+     switch compress(e1.typ.v) {
+     case StringType:   return;
+     case ArrayType(_): return;
+     default: terr2(e1.loc,typ2string(e1.typ.v)," is not an array or string");
+     }
+   case CSubscript*(e1,e2):
+     switch compress(e1.typ.v) {
+     case CArrayType(_): return;
+     default: terr2(e1.loc,typ2string(e1.typ.v)," is not a constant-sized array");
+     }
+   case TupleMember(_): return;
+   default: terr(e.loc,"not a valid left-hand-side for an assignment");
+   }
+ }
+
+static void rewrite_specials(exp exp) {
+
+  _ e = exp.raw_exp;
+
+  switch e {
+  case Var(v):
+    _ ao = is_special(v);
+    if(ao==null) return;
+    _ a = ao.v;
+
+    if(a.1==0) exp.raw_exp = ^.Primop(^(a.2,null));
+    
+  case FunCall *(e1,tlo, es):
+    if(tlo != null && tlo.v != null) return; 
+
+    switch e1.raw_exp {
+    case Var(v):
+      _ ao = is_special(v);
+      if(ao == null) return;
+      _ a = ao.v;
+      
+      exp.raw_exp = ^.Primop(^(a.2,es));
+      if(List::length(es)!= a.1) 
+	terr(exp.loc, "Builtin operator used with wrong arity.");
+    default: ;
+    }
+  default: ;
+  }  
+}

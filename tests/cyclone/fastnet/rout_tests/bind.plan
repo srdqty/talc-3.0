@@ -1,0 +1,12 @@
+(* Should print two messages which are identical except
+   in the names of the host list *)
+val z = 2
+fun f(src) =
+  OnRemote(|print|((z,thisHost())),src,getRB()/2,defaultRoute)
+
+fun doit(dest) =
+  let val c = |f|(any_addr) in
+  (f(any_addr);
+   OnRemote(c,dest,getRB(),defaultRoute))
+  end
+   

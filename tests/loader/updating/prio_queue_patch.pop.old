@@ -1,0 +1,108 @@
+/* The patches have the Queue interface, but call the PrioQueue
+   functionality */
+
+#include "prio_queue.h"
+#include "queue.h"
+#include "hashtable.h"
+#include "core.h"
+open Core;
+
+/* local functions for help with the conversion process */
+
+/* convert a queue to a priority queue */
+#define DEFAULT_PRIORITY 0
+static <a>PrioQueue::prio_queue q2pq<a>(<a>Queue::queue q) {
+  PrioQueue::prio_queue pq = PrioQueue::create(Queue::max_size(q));
+  int qlen = Queue::length(q);
+  for (int i = 0; i<qlen; i++) {
+    a x = Queue::dequeue(q);
+    PrioQueue::enqueue(pq,x,DEFAULT_PRIORITY);
+  }
+  return pq;
+}
+
+/* convert a priority queue to a queue */
+static<a> Queue::queue pq2q<a>(<a>PrioQueue::prio_queue pq) {
+  Queue::queue q = Queue::create(PrioQueue::max_size(pq));
+  int pqlen = PrioQueue::length(pq);
+  for (int i = 0; i<pqlen; i++) {
+    a x = PrioQueue::dequeue(pq);
+    Queue::enqueue(q,x);
+  }
+  return q;
+}
+
+/* we keep a hashtable that maps queues of the old implementation to
+   queues in the new implementation.  This is an interesting design
+   point, with some alternatives:
+
+   1) don't keep the table; functionally convert the queue on the way
+      in and on the way out
+   2) store the table differently.  For example, rather than a general
+      hashtable, we could keep a small array.  This would help in the
+      case that there aren't many queues in the program (is this
+      likely?)
+
+   Finally, note that this trick will not work if the type for queue
+   is not abstract.  This is because the old code could access the
+   contents directly.  In this case, we are relegated to 1, which is
+   costly.
+*/
+
+/* hashtable mapping queues to priority queues */
+static 
+<<<a>Queue::queue,<a>PrioQueue::prio_queue>Hashtable::table>Opt q_map = null;
+
+/* initialize hashtable at load time */
+static void init() {
+  <<a>Queue::queue,<a>PrioQueue::prio_queue>Hashtable::table map =
+       Hashtable::create(11,ptr_compare,hash);
+  q_map = new Core::Opt(map);
+}
+
+/* lookup priority queue using queue as key.  If not present in the
+   table, perform the conversion and add it */
+static <a>PrioQueue::prio_queue get_pq<a>(<a>Queue::queue q) {
+  <<a>Queue::queue,<a>PrioQueue::prio_queue>Hashtable::table map = q_map.v;
+  
+  try {
+    return Hashtable::lookup(map,q);
+  } handle e {
+    switch e {
+    case Not_found:
+      /* need to create a priority queue for this queue and store it */
+      <a>PrioQueue::prio_queue pq = q2pq(q);
+      Hashtable::insert(map,q,pq);
+      return pq;
+    default:
+      raise (e);
+    }
+  }
+}
+
+/* no patch for create; just calls the old routine */
+/* <a>queue create(int max_sz) */
+
+void patch_enqueue<a>(<a>Queue::queue q, a elem) {
+  <a>PrioQueue::prio_queue pq = get_pq(q);
+  PrioQueue::enqueue(pq,a,DEFAULT_PRIORITY);
+  
+  /* do nothing to original queue.  This is OK because it's abstract;
+     if it weren't, we'd have to add something to it as well. */
+}
+
+a dequeue<a>(<a>Queue::queue q) {
+  <a>PrioQueue::prio_queue pq = get_pq(q);
+  return PrioQueue::dequeue(pq);
+}
+
+int length<a>(<a>Queue::queue q) {
+  <a>PrioQueue::prio_queue pq = get_pq(q);
+  return PrioQueue::length(pq);
+}
+
+int max_size<a>(<a>Queue::queue q) {
+  <a>PrioQueue::prio_queue pq = get_pq(q);
+  return PrioQueue::max_size(pq);
+}
+

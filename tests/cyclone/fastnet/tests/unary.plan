@@ -1,0 +1,35 @@
+(*
+ *      op  done?
+ *     ---  ----
+ *     NEG   x
+ *     NOT   x
+ *      HD   x
+ *      TL   x
+ *     FST   x
+ *     SND   x
+ *     NTH   x
+ *    NOTI   x
+ * EXPLODE   x
+ * IMPLODE   x
+ *     ORD   x
+ *     CHR   x
+ *)
+
+(*
+ * List syntax: fastNET ['t', 'h', 'i', 's']
+ *              PLANet  [4;3;2;1]
+ * Sequences:   fastNET (print (where); print (" : "); print (count))
+ *              PLANet  (print (where); print (" : "); print (count))
+ *)
+fun a() : unit = (~1,not(true))
+fun b() : unit = 1::2::[]
+fun c() : unit = (hd([1;2;3]), tl([1;2;3]))
+fun d() : unit = (fst(1, 2, 3), snd(1, 2, 3), #0 (1,2,3), #2 (1,2,3))
+fun e() : unit = (noti 0, noti 1, noti 123)
+fun f() : unit = explode "this"
+fun g() : unit = implode ('t'::'h'::'i'::'s'::[])
+fun h() : unit = implode ['t'; 'h'; 'i'; 's']
+fun i() : unit = ord('A')
+fun j() : unit = chr(65)
+
+fun main() : unit = (a(), b(), c(), d(), e(), f(), g(), h(), i(), j())

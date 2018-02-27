@@ -1,0 +1,31 @@
+#include "core.h"
+open Core;
+
+int cg_test(int w, int x)
+{
+  int i = 3 + 4;
+
+  int f(int, int, int) = 
+      codegen(int spec(int a, int b, int c)
+	    {
+	      int res = a;
+	      
+	      res = res + b;
+	      res = res + 1;
+	      
+	      return res;
+	    });
+  i = i + f(w + x, 5, 7);
+
+  return i;
+}
+
+void pop_main()
+{
+  print_string("This is a simple cg test\n");
+  print_string("The result of the invocation should be 22\n");
+  print_string("The result of the invocation is ");
+  print_int(cg_test(4,5));
+  print_string("\n");
+}
+

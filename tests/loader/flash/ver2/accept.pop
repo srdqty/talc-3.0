@@ -1,0 +1,305 @@
+/*
+
+Copyright (c) '1999' RICE UNIVERSITY. All rights reserved 
+Created by Vivek Sadananda Pai [vivek@cs.rice.edu], Departments of
+Electrical and Computer Engineering and of Computer Science
+
+
+This software, "Flash", is distributed to individuals for personal
+non-commercial use and to non-profit entities for non-commercial
+purposes only.  It is licensed on a non-exclusive basis, free of
+charge for these uses.  All parties interested in any other use of the
+software should contact the Rice University Office of Technology
+Transfer [techtran@rice.edu]. The license is subject to the following
+conditions:
+
+1. No support will be provided by the developer or by Rice University.
+2. Redistribution is not permitted. Rice will maintain a copy of Flash
+   as a directly downloadable file, available under the terms of
+   license specified in this agreement.
+3. All advertising materials mentioning features or use of this
+   software must display the following acknowledgment: "This product
+   includes software developed by Rice University, Houston, Texas and
+   its contributors."
+4. Neither the name of the University nor the names of its
+   contributors may be used to endorse or promote products derived
+   from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY WILLIAM MARSH RICE UNIVERSITY, HOUSTON,
+TEXAS, AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES,
+INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+IN NO EVENT SHALL RICE UNIVERSITY OR CONTRIBUTORS BE LIABLE FOR ANY
+DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE
+GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+INTERRUPTIONS) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER
+IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
+OTHERWISE), PRODUCT LIABILITY, OR OTHERWISE ARISING IN ANY WAY OUT OF
+THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH
+DAMAGE.
+
+This software contains components from computer code originally
+created and copyrighted by Jef Poskanzer (C) 1995. The license under
+which Rice obtained, used and modified that code is reproduced here in
+accordance with the requirements of that license:
+
+** Copyright (C) 1995 by Jef Poskanzer <jef@acme.com>.  All rights reserved.
+**
+** Redistribution and use in source and binary forms, with or without
+** modification, are permitted provided that the following conditions
+** are met:
+** 1. Redistributions of source code must retain the above copyright
+**    notice, this list of conditions and the following disclaimer.
+** 2. Redistributions in binary form must reproduce the above copyright
+**    notice, this list of conditions and the following disclaimer in the
+**    documentation and/or other materials provided with the distribution.
+** 
+** THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+** ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+** IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+** ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+** FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+** DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+** OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+** HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+** LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+** OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+** SUCH DAMAGE.
+*/
+
+#include "core.h"
+#include "unixlib.h"
+#include "c_string.h"
+
+#include "config.h"		/* move early to define FD_SETSIZE */
+#include "conn.h"
+#include "handy.h"
+#include "timer.h"
+#include "libhttpd.h"
+#include "loop.h"
+#include "common.h"
+
+/* ---------------------------------------------------------------- */
+void
+PrepareConnForNextRequest(httpd_conn hc)
+{
+  /* resets values of a connection - if called directly, this is being
+     done for persistent connections */
+
+  hc.hc_method = METHOD_ERROR;
+  hc.hc_accept[0] = '\000';
+  hc.hc_accepte[0] = '\000';
+  hc.hc_status = 500;
+
+  hc.hc_encodedurl = hc.hc_protocol = 
+    hc.hc_referer = hc.hc_userAgent =
+      hc.hc_cookie = hc.hc_contentType = "";
+  
+  hc.hc_ifModifiedSince = -1;
+  hc.hc_contentLength = -1;
+  hc.hc_isPersistentConnection = false;
+  /* hc.hc_numChunkLocks = 0; */
+  hc.hc_stripped = "" /* null */ ;
+  hc.hc_bytesSent = 0;
+  /* hc.hc_neededDiskRead = false; */
+  /* hc.hc_hadMincoreMisses = false; */
+}
+/* ---------------------------------------------------------------- */
+static void
+PrepareConnOnAccept(httpd_conn hc, int fd, /* inet_addr */ int addr)
+{
+  /* prepares the connection for the first request after the accept */
+
+  hc.hc_fd = fd;
+  hc.hc_nagleOff = false;
+
+  /* we assume that accept() inherits the O_NDELAY
+     settings, so we don't need to do it ourselves
+     if (fcntl(hc.fd, F_SETFL, O_NDELAY) < 0)
+     syslog(LOG_ERR, "fcntl O_NDELAY - %m");
+     */
+  hc.hc_clientAddr = addr;
+  
+  PrepareConnForNextRequest(hc);
+}
+/* ---------------------------------------------------------------- */
+static httpd_conn
+InitializeConn(int cnum)
+{
+  httpd_conn hc = 
+    ^httpd_conn{
+      hc_cnum = cnum,
+      hc_clientAddr = 0,
+      hc_method = 0,
+      hc_status = 0,
+      hc_encodedurl = "",
+      hc_protocol = "",
+      hc_hne = null,
+      hc_cookie = "",
+      hc_contentType = "",
+      hc_referer = "",
+      hc_userAgent = "",
+      hc_accept = "",
+      hc_accepte = "",
+      hc_ifModifiedSince = 0,
+      hc_contentLength = 0,
+      hc_mimeFlag = false,
+      hc_fd = 0,
+      hc_headerInfo = null,
+      hc_isPersistentConnection = false,
+      hc_dataEnt = null,
+      hc_expirationTime = 0,
+      hc_expireFunc = IdleTimeout, /* just a placeholder */
+      hc_timerPrivate = 0,
+      hc_sndbuf = 0,
+      hc_bytesSent = 0,
+      /*
+      hc_numChunkLocks = 0,
+      hc_siblings = null,
+      hc_next = null,
+      */
+      hc_stripped = "",
+      /* 
+	 hc_asyncByteRead = 0,
+	 hc_asyncReadLen = 0,
+      */
+      hc_nagleOff = false
+      /*
+	hc_origFirstLineLen = 0,
+	hc_origFirstLine = "",
+	hc_neededDiskRead = false
+	hc_cacheEnt = null;
+	hc_headerInfo = null;
+	hc_cgiInfo = null;
+      */
+    };
+  hc.hc_accept = realloc_str(hc.hc_accept, 0);
+  hc.hc_accepte = realloc_str(hc.hc_accepte, 0);
+  /* InitTimer(hc); */ /* just sets Timer to 0, which it already is */
+  return(hc);
+}
+/* ---------------------------------------------------------------- */
+static bool
+AllocateNewConnEntries(int cnum)
+{
+  /* returns true on failure */
+  int numEntries = 1024 / (SIZEOF_HTTPD_CONN + 4 /* for the pointer */);
+  int i;
+
+  if (numEntries < 5)
+    numEntries = 5;
+  if (numEntries + cnum > maxConnects)
+    numEntries = maxConnects - cnum;
+  /* assert(numEntries); */
+  
+  for (i = 0; i < numEntries; i++) {
+    allConnects[cnum+i] = InitializeConn(cnum+i);
+  }
+
+  return(false);
+}
+/* ---------------------------------------------------------------- */
+bool
+AcceptConnections(int cnum, bool acceptMany)
+{
+  /* returns true if we need to create new threads,
+     or returns false for everything else. Yes, the
+     return code only makes sense for the threaded
+     version, but that's OK */
+
+  httpd_conn c;
+  int newConnFD;
+
+  /* Is there room in the connection table? */
+  if (numConnects >= maxConnects) {
+    fprintf(tal_stderr, "too many conns\n");
+    return(false);
+  }
+
+  do {
+    int /* inet_addr */ sin_addr;
+    int i;
+
+    try {
+      *(int,sockaddr) res;
+      sockaddr sin;
+
+      res = unix_accept(HS.fd);
+      newConnFD = res.1;
+      sin = res.2;
+      switch sin {
+      case ADDR_INET *(addr,_):
+	sin_addr = addr;
+      case ADDR_UNIX (_):
+	fprintf (tal_stderr,"Bogus sockaddr in accept\n");
+	return false;
+      }
+    } handle e {
+      return false; /* assumed Unix_error--no connections to accept */
+    }
+
+    /* mainStats.cs_numAccepts++; */
+
+    if (acceptMany) {
+      /* find the connection number each time */
+      cnum = -1;
+      /* Find a free connection entry. */
+      for (i = firstFreeConnHint; i < FD_SETSIZE/8; i++) {
+	if (freeConnBits[i] != 0) {
+	  int j;
+	  int val;
+	  for (j = 0, val = freeConnBits[i]; 
+	       ((val & 1) == 0); 
+	       j++, val >>=1)
+	    ;
+	  cnum = (i<<3)+j;
+	  firstFreeConnHint = i;
+	  /* clear the appropriate bit later, after
+	     we know there are no errors with the connection */
+	  break;
+	}
+      }
+    }
+     
+    if (cnum == -1) {
+      fprintf(tal_stderr, 
+	      "freeConnsHead is -1: this shouldn't have happened\n");
+      exit(-1);
+    }
+
+    c = allConnects[cnum];
+
+    if (c == null) {
+      /* allocate and initialize new connections */
+      if (AllocateNewConnEntries(cnum)) {
+	/* sending a 500 message at this point is hard,
+	   so just skip it. We don't expect this to occur */
+	unix_close(newConnFD);
+	return(false);
+      }
+      c = allConnects[cnum];
+    }
+    
+    /* initialize the connection before doing anything else */
+    PrepareConnOnAccept(c, newConnFD, sin_addr);
+
+    MakeConnFDAssociation(c, c.hc_fd);
+
+    freeConnBits[cnum>>3] &= ~(1<<(cnum&7));
+    numConnects++;		/* do this here, since we might
+				   close the connection when reading */
+    /* although this read might seem unnecessary because of the
+       optimistic write after the regular read in the main loop, it
+       seems to have a major impact on performance if it's removed */
+
+    if (DoConnReadingBackend(c, newConnFD, true) == 
+	^DCRCode.DCR_READMORE) 
+      SetSelectHandler(newConnFD, DoConnReading, SSH_READ);
+  } while (numConnects < maxConnects && acceptMany);
+
+  if (numConnects >= maxConnects) 
+    DisallowNewClients();
+  return(false);
+}
+/* ---------------------------------------------------------------- */

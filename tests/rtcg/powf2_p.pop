@@ -1,0 +1,30 @@
+#include "poptiming.h"
+#include "core.h"
+open Core;
+
+double pow2(int n, double x) {
+  double t = x;
+  double result = 1.0;
+  while(n!=0) {
+    if((n & 1)==1) result *= t;
+    t = t * t;
+    n = n >> 1;
+  }
+  return result;
+}
+
+void pop_main() {
+  string args[] = std_args();
+  if(size(args)!=2) {
+    printf("%s: usage <exponent>\n",args[0]);
+    return;
+  }
+  int exp = int_of_string(args[1]);
+  double result = 0;
+  double x = 0.8;
+
+  MAIN_TEST("powf2",COMPILER,PLAIN_KIND,args[1],0,pow2(exp,x));
+
+  result = pow2(exp,x);
+  printf("exponent = %d, result = %g\n",exp,result);
+}

@@ -1,0 +1,40 @@
+extern void print_string(string);
+
+?struct <'a>list{
+    'a head;
+    <'a> list tail;
+}
+
+/* Works here ... */
+  ?struct intlist {
+    int head;
+    intlist tail;
+  }
+
+prefix Foo {
+
+  ?struct <'a>list {
+      'a head;
+      <'a>list tail;
+    }
+
+/* ... but not here!
+  ?struct intlist {
+    int head;
+    intlist tail;
+  }
+*/
+
+  <int> list il;
+  
+  void bar()
+    {
+      print_string("hello world\n");
+    }
+
+}
+
+void main()
+{
+  Foo.bar();
+}

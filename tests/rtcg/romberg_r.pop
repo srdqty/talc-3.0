@@ -1,0 +1,92 @@
+/* Copied from tempo */
+
+#include<core.h>
+#include<math.h>
+#include "poptiming.h"
+open Core;
+open Math;
+
+// This integrates the function f from a to b with 2^(2M) subdivisions
+float romberg_gen(float a,float b, int M)(float f(float)) {
+  *(float) r0[] = new_array(M+1,^(0.0f));
+  *(float) r1[] = new_array(M+1,^(0.0f));
+
+  float h;
+
+  for(int i=0; i<=M;i++) {
+    r0[i] = ^(0.0f);
+    r1[i] = ^(0.0f);
+  }
+
+  h = b - a;
+ 
+  return codegen(float romberg(float f(float)) {
+    float a = fill(^(a)).1;
+    float b = fill(^(b)).1;
+
+    fill(r0[0]).1 =  (f(a) + f(b)) * fill(^(h/2.0)).1;
+
+    cut {
+      for (int n = 1; n <= M; n++) {
+	h = h / 2.0;
+	_ lim = 1 << (n-1);
+	splice {
+	  float h = fill(^(h)).1;
+	  float s = 0.0;
+	
+	  for (int i = 1; i <= fill(lim); i++) { 
+	    s = s + f(a + (:float)(2.0 * i - 1) * h);
+	  }
+	fill(r1[0]).1 = fill(r0[0]).1/2.0 + h * s;
+	}
+
+	for(int m = 1; m <= n; m++) {
+	  _ p = (:float)(1.0/((1 << (2*m)) - 1));
+	  splice {
+	    _ p = fill(^(p)).1;
+	    fill(r1[m]).1 = fill(r1[m-1]).1 + 
+	      (:float)p * (fill(r1[m-1]).1 - fill(r0[m-1]).1);
+	  }
+	}
+	
+	_ tmp = r0;
+	r0 = r1;
+	r1 = tmp;
+      }
+    }
+      return fill(r0[M]).1;
+    });
+}
+
+float sqr(float x){
+  return x*x;
+}
+
+float cube(float x){
+  return x*x*x;
+}
+
+void pop_main() {
+  string s[] = std_args();
+
+  if(size(s) != 2) {
+    printf("usage: %s <precision>\n",s[0]);
+    return;
+  }
+
+  _ prec = int_of_string(s[1]);
+
+  if(prec<=0 || prec >=16) {
+    printf("Precision %d is not between 1 and 15\n",prec);
+    return;
+  }
+
+  MAIN_TEST("romberg",COMPILER,RTCG_KIND,s[1],_ romberg = romberg_gen(0.0,1.0,prec),romberg(cube));
+
+#ifdef DEBUG
+  _ result = romberg(cube);
+  printf("integral(x**3,0,1) = %g \n",result);
+#endif
+}
+
+

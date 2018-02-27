@@ -1,0 +1,24 @@
+/README/1.5/Fri Feb 19 18:59:20 1999//
+/popcompenv.ml/1.19/Wed Mar 14 18:40:20 2001//
+/popcompenv.mli/1.12/Wed Mar 14 18:40:20 2001//
+/popcompile.ml/1.124/Sat Oct 13 17:18:52 2001//
+/popcompile.mli/1.11/Sat Oct 13 17:18:52 2001//
+/popcompilereg.mli/1.1/Wed Sep 16 18:02:56 1998//
+/popcomptypes.ml/1.34/Mon Mar 19 22:15:56 2001//
+/popcomptypes.mli/1.17/Wed Mar 14 18:40:20 2001//
+/popcorn.ml/1.51/Sat Oct 13 17:18:52 2001//
+/popdynpatch.ml/1.6/Wed Mar 14 18:40:20 2001//
+/popdyntrans.ml/1.13/Sat Oct 13 17:18:52 2001//
+/poperr.ml/1.7/Mon Nov 22 18:34:48 1999//
+/popgenpatch.ml/1.5/Tue Oct 16 15:55:40 2001//
+/poplex.mll/1.38/Sat Oct 13 17:18:52 2001//
+/popparse.mly/1.46/Sat Oct 13 17:18:52 2001//
+/poppeep.ml/1.10/Thu Dec 16 21:49:16 1999//
+/poppeep.mli/1.2/Mon May 24 21:16:42 1999//
+/popsyntax.ml/1.49/Sat Oct 13 17:18:52 2001//
+/popsyntax.mli/1.43/Sat Oct 13 17:18:52 2001//
+/poptype.ml/1.81/Sat Oct 13 17:18:52 2001//
+/poptype.mli/1.24/Sun Jan  7 17:05:14 2001//
+D/calc////
+D/lib////
+D/plan////

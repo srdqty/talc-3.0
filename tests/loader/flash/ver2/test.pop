@@ -1,0 +1,6 @@
+#include "core.h"
+#include "libhttpd.h"
+
+void init() {
+  fprintf(tal_stderr,"test.pop: HS.cwd = %s\n",HS.cwd);
+}

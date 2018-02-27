@@ -1,0 +1,20 @@
+// Used to generate the interface for cloader.c
+
+#include "core.h"
+
+struct seg_info {
+  unsigned int address;
+  unsigned int kind;
+  unsigned int data[];
+}
+
+struct exec_info {
+  unsigned int entry; // address of entry point
+  unsigned int data_size; // size of the data segments
+  seg_info segments[];
+}
+
+exec_info load_exec(Cstring fname) {
+  // This function is never called.  Used to generate interface file.
+  return ^exec_info(0,0,{: seg_info });
+}

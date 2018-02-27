@@ -1,0 +1,15 @@
+(* ping with a payload *)
+svc print : 'a -> unit
+
+fun ack() =
+  print ("Success")
+
+svc thisHostIs : host -> bool
+svc getRB : void -> int
+svc defaultRoute : host -> host * dev
+
+fun ping (source, destination, payload) =
+  if (thisHostIs (destination)) then
+    OnRemote (|ack| (), source, getRB (), defaultRoute)
+  else 
+    OnRemote (|ping| (source, destination, payload), destination, getRB (), defaultRoute)

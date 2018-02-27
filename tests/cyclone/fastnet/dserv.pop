@@ -1,0 +1,65 @@
+/*
+#include "absyn.h"
+#include "env.h"
+#include "svc.h"
+*/
+#include "core.h"
+
+/* Imported from simple_call.pop */
+extern exception Foo;
+extern exn a;
+extern int b;
+extern int func2(int);
+
+/* To be looked up by simple_call.pop */
+int c = 0;
+void foo() {
+  /* Env::print_service_env(); */
+
+  /*  Env::service_env = null;
+      Env::print_service_env(); */
+  try {
+    c = 6;
+    b = func2(0);
+  } handle e {
+    switch (e) {
+      case Foo: {
+        b = 7;
+      }
+    }
+  }
+} 
+
+exception Bar;
+exn d = new Bar();
+
+/* dynamic service */
+void test()
+{
+  printf("Hello world\n");
+}
+
+/*
+value HelloWorld(<value> List::list vl, pop_pkt ppkt)
+{
+  printf("Hello world\n");
+  return(^ value.Unit);
+}
+*/
+
+/* Called when the file is loaded */
+static void init () {
+
+  /*
+    Env::service_env = ^List::list(^("HelloWorld", HelloWorld),Env::service_env);
+  */
+
+  printf("-------------\n");
+  printf("in simp.o:init()\n");
+  printf("-------------\n");
+  c = 5;
+  exn e = new Foo();
+  a = e;
+  return;
+}
+

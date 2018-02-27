@@ -1,0 +1,379 @@
+/***************************************************************************
+ * data types
+ **************************************************************************/
+
+#include <list.h>
+#include <string.h>
+
+open List;
+
+union tipe {
+  <tipe> list Tuple;
+  tipe     List;
+  void     Int;
+  void     Char;
+  void     String;
+  void     Bool;
+  void     Host;
+  void     Port;
+  void     Key;
+  void     Blob;
+  void     Exn;
+  void     Dev;
+  void     Chunk;
+}
+
+union unop {
+  void NEG;
+  void NOT;
+  void HD;
+  void TL;
+  void FST;
+  void SND;
+  int  NTH;
+  void NOTI;
+  void EXPLODE;
+  void IMPLODE;
+  void ORD;
+  void CHR;
+}
+
+
+union binop {
+  void DIV;
+  void MOD;
+  void TIMES;
+  void PLUS;
+  void MINUS;
+  void AND;
+  void OR;
+  void LESS;
+  void LESSEQ;
+  void GREATER;
+  void GREATEREQ;
+  void EQ;
+  void NOTEQ;
+  void CONS;
+  void CONCAT;
+  void LSHIFT;
+  void RSHIFT;
+  void XORI;
+  void ANDI;
+  void ORI;
+}
+
+
+union value {
+  void                          Unit;
+  int                           Int;
+  char                          Char;
+  string                        String;
+  bool                          Bool;
+  <value> list            VTuple;
+  <value> list            VList;
+  *(string, <value> list, <def> list) VChunk;
+  /* todo: Host, Blob, Port, Key, Exception, Dev */
+}
+
+
+union exp {
+  value                      Val;
+  string                     Var;       
+  <exp> list                 ETuple;
+  <exp> list                 ESequence;
+  *(string, <exp> list)      App;
+  *(exp,exp,exp)             If;
+  string                     Raise;
+  *(exp,string,exp)          Try;
+  *(<def> list,exp)          Let;
+  *(unop,exp)                Unop;
+  *(string, <exp> list)      EChunk;
+  *(binop,exp,exp)           Binop;
+  *(exp,exp,exp,exp)         OnRemote;
+  *(exp,exp,exp,exp)         OnNeighbor;
+  *(exp,exp,exp,exp,exp,exp) RetransOnRemote;
+  *(string,exp,exp)          Foldr;
+  *(string,exp,exp)          Foldl;
+}
+
+struct valdef {
+  string var;
+  tipe   tipe;
+  exp    exp;
+}
+
+struct formal
+{
+  string id;
+  tipe t;
+}
+
+struct fundef {
+  string    var;
+  <formal>  list params;
+  tipe      result_type;
+  exp       body;
+}
+
+struct fundef {
+  string    var;
+  <formal>  list params;
+  tipe      result_type;
+  exp       body;
+}
+
+union def {
+  valdef Valdef;
+  fundef Fundef;
+  string Exndef;
+}
+
+struct pop_pkt {
+  <def> list program;
+  string fn_to_exec;
+  <value> list actuals;
+  string sourceAddr;
+  string evalAddr;
+  int rb;
+}
+
+
+/***************************************************************************
+ * Printers
+ **************************************************************************/
+
+
+string def_to_str(def d) {
+  string s = "";
+
+  switch (d) {
+  case Fundef(f): return(sprintf("%s\n", fundef_to_str(f)));
+  case Exndef(x): return(sprintf("exception %s\n", x));
+  case Valdef(v): return(sprintf("%s\n", valdef_to_str(v)));
+  }
+}
+
+string deflist_to_str(<def> list dl) {
+  string s = "";
+  while (dl != null) {
+    s = sprintf("%s%s", s, def_to_str(dl.hd));
+    dl = dl.tl;
+  }
+  return s;
+}
+
+string fundef_to_str(fundef f) {
+  return(sprintf("fun %s(%s):%s = %s", f.var, paramlist_to_str(f.params),
+		 tipe_to_str(f.result_type),  exp_to_str(f.body)));
+}
+
+string paramlist_to_str(<formal> list pl) {
+  string s = "";
+
+  if (pl != null) {
+    s = sprintf("%s:%s", pl.hd.id, tipe_to_str(pl.hd.t));
+
+    pl = pl.tl;
+    while (pl != null) {
+      s = sprintf("%s,%s:%s", s, pl.hd.id, tipe_to_str(pl.hd.t));
+      pl = pl.tl;
+    }
+  }
+  return s;
+}
+
+string valdef_to_str(valdef v) {
+  return sprintf("val %s:%s = %s",
+		 v.var, tipe_to_str(v.tipe), exp_to_str(v.exp));
+
+}
+
+string tipe_to_str(tipe t) {
+  switch (t) {
+  case Tuple(tl): return tipelist_to_str(tl);
+  case List(t):   return sprintf("(%s) list", tipe_to_str(t));
+  case Int:       return "int";
+  case Char:      return "char";
+  case String:    return "string";
+  case Bool:      return "bool";
+  case Host:      return "host";
+  case Port:      return "port";
+  case Key:       return "key";
+  case Blob:      return "blob";
+  case Exn:       return "exn";
+  case Dev:       return "dev";
+  case Chunk:     return "chunk";
+  }
+}
+
+string tipelist_to_str(<tipe> list tl) {
+  if (tl == null)
+    return("unit");
+  else {
+    string s;
+    
+    s = sprintf("(%s", tipe_to_str(tl.hd));
+    while (tl.tl != null) {
+      tl = tl.tl;
+      s = sprintf("%s*%s", s, tipe_to_str(tl.hd));
+    }
+    s = sprintf("%s)", s);
+    return s;
+  }
+}
+    
+string unop_to_str(unop u) {
+  switch (u) {
+  case NEG:     return "~";
+  case NOT:     return "not";
+  case HD:      return "hd";
+  case TL:      return "tl";
+  case FST:     return "fst";
+  case SND:     return "snd";
+  case NTH(i):  return(sprintf("#%d", i));
+  case NOTI:    return "noti";
+  case EXPLODE: return "explode";
+  case IMPLODE: return "implode";
+  case ORD:     return "ord";
+  case CHR:     return "chr";
+  }
+}
+
+string binop_to_string(binop b) {
+  switch (b) {
+  case DIV:       return("/");
+  case MOD:       return("%");
+  case TIMES:     return("*");
+  case PLUS:      return("+");
+  case MINUS:     return("-");
+  case AND:       return("and");
+  case OR:        return("or");
+  case LESS:      return("<");
+  case LESSEQ:    return("<=");
+  case GREATER:   return(">");
+  case GREATEREQ: return(">=");
+  case EQ:        return("=");
+  case NOTEQ:     return("<>");
+  case CONS:      return("::");
+  case CONCAT:    return("^");
+  case LSHIFT:    return("<<");
+  case RSHIFT:    return(">>");
+  case XORI:      return("xori");
+  case ANDI:      return("andi");
+  case ORI:       return("ori");
+  }
+}    
+
+
+string value_to_str(value v) {
+  switch (v) {
+  case Unit:       return "()";
+  case Int(i):     return Core::string_of_int(i);
+  case Char(c):    return(sprintf("'%c'", c));
+  case String(s):  return sprintf("\"%s\"", s);
+  case Bool(b):    if (b) return "true"; else return "false";
+  case VTuple(vl): return sprintf("(%s)", valuelist_to_str(vl, ","));
+  case VList(vl):  return sprintf("[%s]", valuelist_to_str(vl, ";"));
+  case VChunk(c):  return sprintf("|%s|%s", c.1, valuelist_to_str(c.2,","));
+  }
+}
+
+string valuelist_to_str(<value> list vl, string c) {
+  string s = "";
+
+  while (vl != null) {
+    s = sprintf("%s%s", s, value_to_str(vl.hd));
+    vl = vl.tl;
+    if (vl != null) 
+      s = sprintf("%s%s", s, c);
+  }
+  return s;
+}
+
+string exp_to_str(exp e)
+{
+  switch (e) {
+  case Val(v): return value_to_str(v);
+  case Var(x): return x;
+  case ETuple(el): return sprintf("(%s)", explist_to_str(el));
+  case ESequence(el): return sprintf("(%s)", sequence_to_str(el));
+  case App(p): return sprintf("%s(%s)", p.1, explist_to_str(p.2));
+  case If(t): return sprintf("(if %s then %s else %s)",
+		     exp_to_str(t.1), exp_to_str(t.2), exp_to_str(t.3));
+  case Raise(x): return sprintf("(raise %s)", x);
+  case Try(t): return sprintf("(try %s handle %s => %s)",
+			      exp_to_str(t.1), t.2, exp_to_str(t.3));
+
+  case Let(p): return sprintf("let %sin %s end", 
+			      deflist_to_str(p.1), exp_to_str(p.2));
+
+  case Unop(p): return sprintf("(%s %s)", unop_to_str(p.1), exp_to_str(p.2));
+  case EChunk(p): return sprintf("|%s| (%s)", p.1, explist_to_str(p.2));
+  case Binop(t): return sprintf("(%s %s %s)", exp_to_str(t.2),
+				binop_to_string(t.1), exp_to_str(t.3));
+  case OnRemote(q): return sprintf("OnRemote%s", four_args_to_str(q));
+  case OnNeighbor(t): return sprintf("OnNeighbor%s", four_args_to_str(t));
+  case RetransOnRemote(s):
+    return sprintf("RetransOnRemote(%s,%s,%s,%s,%s,%s)", 
+		   exp_to_str(s.1), exp_to_str(s.2), exp_to_str(s.3),
+		   exp_to_str(s.4), exp_to_str(s.5), exp_to_str(s.6));
+  case Foldr(t): return sprintf("foldr%s", str_2exps_to_str(t));
+  case Foldl(t): return sprintf("foldl%s", str_2exps_to_str(t));
+  }
+}
+
+string str_2exps_to_str(*(string, exp, exp) t) {
+  return sprintf("(%s,%s,%s)", t.1, exp_to_str(t.2), exp_to_str(t.3));
+}
+
+string four_args_to_str(*(exp,exp,exp,exp) t) {
+  return sprintf("(%s,%s,%s,%s)", exp_to_str(t.1), exp_to_str(t.2),
+		 exp_to_str(t.3), exp_to_str(t.4));
+}
+
+string explist_to_str(<exp> list el) {
+  string s = "";
+  while (el != null) {
+    s = sprintf("%s%s", s, exp_to_str(el.hd));
+    el = el.tl;
+    if (el != null) 
+      s = sprintf("%s,", s);
+  }
+  return s;
+}
+
+string sequence_to_str(<exp> list el) {
+  string s = "";
+  while (el != null) {
+    s  = sprintf("%s%s", s, exp_to_str(el.hd));
+    el = el.tl;
+    if (el != null) 
+      s = sprintf("%s;", s);
+  }
+  return s;
+}
+
+/* PLAN programs */
+
+string pop_pkt_to_str(pop_pkt pkt) {
+
+  return sprintf("%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%c",
+    deflist_to_str(pkt.program),
+    "val entry_fun  : unit = \"", pkt.fn_to_exec,                     "\"\n", 
+    "val entry_args : unit = [",  valuelist_to_str(pkt.actuals, ";"), "]\n",
+    "val entry_src  : unit = \"", pkt.sourceAddr,                     "\"\n",
+    "val entry_eval : unit = \"", pkt.evalAddr,                       "\"\n",
+    "val entry_rb   : unit = ",   pop_int_to_plan_int(pkt.rb),
+    EOF);
+
+}
+
+/* need to convert - to ~ (for negative numbers) */
+string pop_int_to_plan_int(int i)
+{
+  if (i < 0)
+     return sprintf("~%d", -i);
+  else
+     return sprintf("%d", i);
+}
+

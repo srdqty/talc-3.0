@@ -1,0 +1,25 @@
+extern double sin(double);
+
+void f()()
+{
+  return
+    codegen(void tmp()
+    {
+      float x;
+      int y;
+
+      x = 3.1f;
+      x = sin(3.1f);
+      /* x = fill(sin(3.1f)); */
+      /* x = fill(3.1f); */
+
+      y = 3;
+      y = fill(3);
+    }
+  );
+}
+
+void pop_main()
+{
+  f();
+}

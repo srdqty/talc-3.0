@@ -1,0 +1,56 @@
+; TAL INTERFACE printf_e
+	KIND 	<unit = *[]>
+
+	;  int, double, string
+	KIND	<P = 	+[unit, unit, unit]> 	; Printable
+	RECKIND	<Pl = +[unit, *[P, Pl] ]>	; List of printables	
+
+	TYPE	<?str = Exist[?sz:Sint].^*[S(?sz)^r,array(?sz,B1^rw)]> ; type of strings
+	TYPE 	<?dou = ^*[B4^rw,B4^rw]> ; type of doubles
+	
+	TYPE 	<rint  = inj 0 [] [P]>		; constructor representations
+	TYPE 	<rdouble  = inj 1 [] [P]>	
+	TYPE	<rstring = inj 2 [] [P]>
+
+	TYPE 	<rnull = roll[Pl] (inj 0 [] [+[unit, *[P, Pl]] ])>
+	TYPE 	<rcons = fn hd:P. fn tl:Pl . roll[Pl] (inj 1 [hd,tl] [+[unit, *[P, Pl] ]])>
+
+	; The following constructor function converts a constructor representation,
+	; such as rint, into the corresponding TAL type 
+	TYPE 	<interpP = fn a:P . case (a) b [B4, ?dou, ?str]>
+
+	; Likewise, this function converts the representation of a list of 
+	; types into a stack type -- note, as Pl is a recursive function,
+	; this function is primitive recursive.
+	PRIMREC <interpPl : pl -!> Ts = fn a: +[unit, *[P, pl]] . \
+				case (a) b [ se, (interpP b.0):: (interpPl b.1)] >
+
+	; unroll is not primitive in this language as it can be defined so 
+	; easily.
+	PRIMREC <unrol : p -!>  +[unit, *[P, p]]  = fn a: +[unit, *[P, p]]. a>
+
+	; Types of term representations of Printables
+	TYPE 	<typeP  = fn a:P. \
+		^+[ *[S(0)^r,(case (a) b [ B4, void[T4],void[T4]])^r], \
+		    *[S(1)^r,(case (a) b [ void[T4], B4,void[T4]])^r], \
+           	    *[S(2)^r,(case (a) b [ void[T4],void[T4], B4])^r]]>
+
+	; Types of term representations of Printable lists
+	TYPE <typePl = rec ( 							\
+		f : Pl -!> T4 . fn a : Pl.					\
+		   ^+[ *[S(0)^r, (case (unrol a) b [ B4, void[T4] ])^r],	\
+		       *[S(1)^r, (case (unrol a) b [ void[T4], 			\
+			                             ^*[(typeP b.0)^rw,(f b.1)^rw]])^rw]]).0>
+
+	;
+	; EXPORTED LABEL
+	;
+	VAL _printf,  <All[rep:Pl s1:Ts]. code { ESP: sptr (code { ESP: sptr s1}) :: \
+	 		(typePl rep) :: (interpPl rep) @ s1 }>
+
+
+
+
+
+
+

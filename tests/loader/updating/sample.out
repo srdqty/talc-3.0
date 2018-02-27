@@ -1,0 +1,50 @@
+Sick
+Sick
+Sick
+Sick
+Sick
+Sick
+Load: events_patch1
+Loading file events_patch1...
+Tick
+Load: events_patch2
+Loading file events_patch2...
+Load: proc_events_patch1
+Loading file proc_events_patch1...
+in patch init file
+proc_events2: opening events
+stub:get_next_event
+stub:calling old version
+Tick
+stub:get_next_event
+stub:calling old version
+Tick
+stub:get_next_event
+stub:calling old version
+Tick
+stub:get_next_event
+stub:calling old version
+stub:get_next_event
+stub:calling new version
+in proc_events2:get_next_event
+proc_events2:file_gets returned 4
+Tick
+stub:get_next_event
+stub:calling new version
+in proc_events2:get_next_event
+proc_events2:file_gets returned 4
+Tick
+stub:get_next_event
+stub:calling new version
+in proc_events2:get_next_event
+proc_events2:file_gets returned 4
+Tick
+stub:get_next_event
+stub:calling new version
+in proc_events2:get_next_event
+proc_events2:file_gets returned 4
+Tick
+stub:get_next_event
+stub:calling new version
+in proc_events2:get_next_event
+proc_events2:file_gets returned 0

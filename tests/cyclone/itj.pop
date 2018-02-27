@@ -1,0 +1,28 @@
+#include "core.h"
+open Core;
+
+void pop_main()
+{
+  int i;
+
+  int f(int) =
+    codegen(int spec(int a)
+	    {
+	      if(a == 1) {
+		print_string("(true:1)");
+		
+		cut i = 1;
+		
+		print_string("(true:2)");
+	        a = a + 1;
+	      } else {
+		print_string("(false)");
+	        a = a + 7;
+	      }
+
+	      return a;
+	    });
+  print_int(f(1));
+  print_string("\n");
+}
+

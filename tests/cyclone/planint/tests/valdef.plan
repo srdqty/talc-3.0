@@ -1,0 +1,9 @@
+val a : unit = ()
+val b : unit = 123 + 456
+val c : unit = 'c'
+val d : unit = "this"
+val e : unit = true
+val f : unit = []
+val g : unit = [1;2;3]
+
+fun main() : unit = (a, b, c, d, e, f, g)

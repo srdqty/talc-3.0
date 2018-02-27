@@ -1,0 +1,45 @@
+#include "core.h"
+open Core;
+
+extern <*(int (int))>Opt   pop_load(string,string); 
+/* extern <a> a tal_load(string,string); */
+
+void pop_main()
+{
+  string s[] = tal_args;
+  if (size(s)!=3)
+    {
+      print_string("usage: ");
+      print_string(s[0]);
+      print_string(": <object file> <types file>");
+      print_newline();
+    }
+  else
+    {
+      /* read the object file into a string */
+      int file_len = file_length(s[1]);
+      string buf = new_string(file_len);
+
+      int to_file_len = file_length(s[2]);
+      string to_buf = new_string(to_file_len);
+
+      FILE fp = file_open(s[1], "rb");
+      f_string_read(fp,buf,0,file_len);
+      file_close(fp);
+
+      fp = file_open(s[2], "rb");
+      f_string_read(fp,to_buf,0,to_file_len);
+      file_close(fp);
+
+      /* load it */
+      <*(int (int))>Opt ofoo = pop_load(buf,to_buf); 
+      *(int (int)) foo = ofoo.v; 
+
+      /* run it */
+      print_string("<fun>(5) = ");
+      print_int((foo.1)(5)); 
+      print_string("\n"); 
+
+    }
+  return;
+}

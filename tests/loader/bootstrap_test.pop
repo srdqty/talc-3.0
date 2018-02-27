@@ -1,0 +1,104 @@
+#include "core.h"
+#include "dlpop.h"
+open Core;
+
+
+#define fntuple_type *(int (int), string (int))
+
+/* Loads the functions "fact" and "name" from the given file. */
+fntuple_type loadem( string filename )
+{
+  try {
+    printf("entering loadem, opening '%s'.\n", filename);
+
+    string filenames [] = { filename };
+    handle_t hs[] = dlopens( filenames );
+    handle_t h = hs[0];
+    printf("file opened.\n");
+
+    int one(int) = dlsym( h, "fact", repterm@<*(int (int))> );
+    printf("One read.\n");
+
+    string two(int) = dlsym( h, "name", repterm@<*(string (int))> );
+    printf("Two read.\n");
+
+    return new (one, two);
+  } handle y {
+    switch y {
+     case WrongType(s): {
+      print_string ("Wrong type for symbol : ");
+      print_string (s);
+    }
+    case SymbolNotFound(s): {
+      print_string ("Can't find symbol : ");
+      print_string (s);
+    }
+    case FailsTypeCheck: {
+      print_string ("File doesn't type-check");
+    }
+    case Core::FileOpenError(s): {
+      print_string ("Can't open file : ");
+      print_string (s);
+    }
+    default:
+      print_string ("Exception Raised");
+    }
+    print_string ("\n");
+    raise( y );
+  }
+}
+    
+
+/* no pop_main because we're called from C. */
+/*
+void pop_main()
+{
+  try {
+    fntuple_type tuple = loadem( "dwebtest", { "fact", "name" } );
+    printf("fact(5) = %d\n", tuple.1( 5 ) );
+    printf("name(0) = %s\n", tuple.2( 0 ) );
+  } handle y {
+    printf("Error!\n");
+  }
+}
+*/
+
+
+/*
+void pop_main() {
+  try {
+    printf("entering mutual_call\n");
+    string filenames [] = { "even","odd" };
+    handle_t hs [] = dlopens(filenames);
+    handle_t evenh = hs[0];
+    handle_t oddh = hs[1];
+    bool odd(int) = dlsym(oddh,"odd",repterm@<*(bool (int))>);
+    printf("odd(1) = %s\n", bool2str(odd(1)));
+    bool even(int) = dlsym(evenh,"even",repterm@<*(bool (int))>);
+    printf("even(1) = %s\n", bool2str(even(1)));
+    dlclose(oddh);
+    dlclose(evenh);
+  } handle y {
+    switch y {
+    case WrongType(s): {
+      print_string ("Wrong type for symbol : ");
+      print_string (s);
+    }
+    case SymbolNotFound(s): {
+      print_string ("Can't find symbol : ");
+      print_string (s);
+    }
+    case FailsTypeCheck: {
+      print_string ("File doesn't type-check");
+    }
+    case Core::FileOpenError(s): {
+      print_string ("Can't open file : ");
+      print_string (s);
+    }
+    default:
+      print_string ("Exception Raised");
+    }
+    print_string ("\n");
+  }  
+}
+*/

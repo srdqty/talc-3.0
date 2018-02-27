@@ -1,0 +1,26 @@
+/Makefile/1.4/Tue Nov 21 02:16:00 2000//
+/coff_obj_common.c/1.1/Tue Oct 19 18:25:00 1999//
+/coff_obj_i386.c/1.1/Tue Oct 19 18:25:00 1999//
+/coff_obj_load.c/1.1/Tue Oct 19 18:25:00 1999//
+/coff_obj_print.c/1.1/Tue Oct 19 18:25:00 1999//
+/coff_obj_reloc.c/1.1/Tue Oct 19 18:25:00 1999//
+/dlnative.tal.lin/1.8/Mon Mar 20 22:26:14 2000//
+/dlnative.tal.win/1.7/Mon Mar 20 22:26:14 2000//
+/dlnative_e.tali/1.5/Mon Mar 20 22:26:14 2000//
+/dlnative_i.tali/1.1/Mon Mar 20 22:26:14 2000//
+/dlpop.tal.lin/1.6/Tue Nov 30 22:35:54 1999//
+/dlpop.tal.win/1.4/Tue Nov 30 22:55:24 1999//
+/dlpop_e.tali/1.10/Mon Feb  7 21:49:36 2000//
+/dlpop_i.tali/1.8/Mon Feb  7 21:49:36 2000//
+/elf_obj_common.c/1.2/Wed Oct 20 23:26:02 1999//
+/elf_obj_i386.c/1.1/Tue Oct 19 18:25:00 1999//
+/elf_obj_load.c/1.1/Tue Oct 19 18:25:00 1999//
+/elf_obj_print.c/1.1/Tue Oct 19 18:25:00 1999//
+/elf_obj_reloc.c/1.1/Tue Oct 19 18:25:00 1999//
+/loader.tali/1.4/Fri Oct 26 13:43:16 2001//
+/loader.tmpl/1.2/Sat Oct 13 17:18:54 2001//
+/obj_install.c/1.2/Sat Oct 13 17:18:54 2001//
+/poploader.tal/1.10/Sat Oct 13 17:18:54 2001//
+/poploader_e.tali/1.9/Sat Oct 13 17:18:54 2001//
+/poploader_i.tali/1.5/Sat Oct 13 17:18:54 2001//
+D/include////

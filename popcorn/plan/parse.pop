@@ -1,0 +1,1095 @@
+/* Copyright (c) 1998, Greg Morrisett
+ * parse.pop:  parser for the PLAN language
+ *
+ */
+extern union keyword {
+  void   IF;
+  void   IN;
+  void   HD;
+  void   TL;
+  void   OR;
+  void   FUN;
+  void   VAL;
+  void   KEY;
+  void   EXN;
+  void   DEV;
+  void   TRY;
+  void   LET;
+  void   END;
+  void   NOT;
+  void   FST;
+  void   SND;
+  void   ORD;
+  void   CHR;
+  void   AND;
+  void   ORI;
+  void   INT;
+  void   LIST;
+  void   UNIT;
+  void   CHAR;
+  void   BOOL;
+  void   HOST;
+  void   PORT;
+  void   BLOB;
+  void   THEN;
+  void   ELSE;
+  void   TRUE;
+  void   NOTI;
+  void   XORI;
+  void   ANDI;
+  void   CHUNK;
+  void   RAISE;
+  void   FALSE;
+  void   FOLDR;
+  void   FOLDL;
+  void   HANDLE;
+  void   STRING;
+  void   EXPLODE;
+  void   IMPLODE;
+  void   ONREMOTE;
+  void   EXCEPTION;
+  void   ONNEIGHBOR;
+  void   RETRANSONREMOTE;
+}
+
+extern union token {
+  string  ERROR;
+  void    EOF;
+  int     Number;
+  keyword Keyword;
+  string  Id;
+  char    Char;
+  string  String;
+  void    LPAREN;
+  void    RPAREN;
+  void    LBRACKET;
+  void    RBRACKET;
+  void    BAR;
+  void    TILDE;
+  void    DIV;
+  void    PERCENT;
+  void    ASTERISK;
+  void    PLUS;
+  void    MINUS;
+  void    LESS;
+  void    GREATER;
+  void    EQ;
+  void    COLON;
+  void    SEMICOLON;
+  void    HASH;
+  void    CARAT;
+  void    PERIOD;
+  void    COMMA;
+}
+
+extern void print_string(string);
+extern void print_token(token);
+extern void print_char(char);
+extern void print_int(int);
+extern token peek_token();
+extern token next_token();
+
+static keyword next_keyword() {
+  switch (next_token()) {
+  case Keyword(k):
+      return(k);
+  default:
+    error("expecting keyword");
+    return(new keyword.IF);
+  }
+}
+
+?struct deflist {
+  def           def;
+  deflist       next;
+}
+
+void print_deflist(deflist dl) {
+  while (dl != null) {
+    print_def(dl.def);
+    dl = dl.next;
+  }
+}
+
+union def {
+  fundef Fundef;
+  string Exndef;
+  valdef Valdef;
+}
+
+void print_def(def d) {
+  switch (d) {
+  case Fundef(f):
+    print_fundef(f);
+  case Exndef(x):
+    print_string("exception ");
+    print_string(x);
+  case Valdef(v):
+    print_valdef(v);
+  }
+  print_string("\n");
+}
+
+struct fundef {
+  string    var;
+  paramlist params;
+  tipe      result_type;
+  exp       body;
+}
+
+void print_fundef(fundef f) {
+  print_string("fun ");
+  print_string(f.var);
+  print_string("(");
+  print_paramlist(f.params);
+  print_string("):");
+  print_tipe(f.result_type);
+  print_string(" = ");
+  print_exp(f.body);
+}
+
+?struct paramlist {
+  string    var;
+  tipe      tipe;
+  paramlist next;
+}
+
+void print_paramlist(paramlist pl) {
+  if (pl != null) {
+    print_string(pl.var);
+    print_string(":");
+    print_tipe(pl.tipe);
+    pl = pl.next;
+    while (pl != null) {
+      print_string(",");
+      print_string(pl.var);
+      print_string(":");
+      print_tipe(pl.tipe);
+      pl = pl.next;
+    }
+  }
+}
+
+struct valdef {
+  string var;
+  tipe   tipe;
+  exp    exp;
+}
+
+void print_valdef(valdef v) {
+  print_string("val ");
+  print_string(v.var);
+  print_string(":");
+  print_tipe(v.tipe);
+  print_string(" = ");
+  print_exp(v.exp);
+}
+
+union tipe {
+  tipelist Tuple;
+  tipe     List;
+  void     Int;
+  void     Char;
+  void     String;
+  void     Bool;
+  void     Host;
+  void     Port;
+  void     Key;
+  void     Blob;
+  void     Exn;
+  void     Dev;
+  void     Chunk;
+  tyvar    Var;
+}
+
+extern struct tyvar {
+  int     id;
+  tipeopt topt;
+}
+
+?struct tipeopt {
+  tipe t;
+}
+
+private int type_var_counter = 0;
+
+tipe new_type_var() {
+  return(new tipe.Var(new tyvar(++type_var_counter,null)));
+}
+
+void print_tipe(tipe t) {
+  switch (t) {
+  case Tuple(tl): print_tipelist(tl);
+  case List(t):
+    print_string("(");
+    print_tipe(t);
+    print_string(") list");
+  case Int: print_string("int");
+  case Char: print_string("char");
+  case String: print_string("string");
+  case Bool: print_string("bool");
+  case Host: print_string("host");
+  case Port: print_string("port");
+  case Key: print_string("key");
+  case Blob: print_string("blob");
+  case Exn: print_string("exn");
+  case Dev: print_string("dev");
+  case Chunk: print_string("chunk");
+  case Var(tyvar):
+    if (tyvar.topt == null) {
+      print_string("'a"); print_int(tyvar.id);
+    } else {
+      print_string("'a");
+      print_int(tyvar.id);
+      print_string("[");
+      print_tipe(tyvar.topt.t);
+      print_string("]");
+    }
+  }
+}
+
+?struct tipelist {
+  tipe     t;
+  tipelist next;
+}
+
+void print_tipelist(tipelist tl) {
+  if (tl == null)
+    print_string("unit");
+  else {
+    print_string("(");
+    print_tipe(tl.t);
+    while (tl.next != null) {
+      tl = tl.next;
+      print_string("*");
+      print_tipe(tl.t);
+    }
+    print_string(")");
+  }
+}
+    
+union unop {
+  void NEG;
+  void NOT;
+  void HD;
+  void TL;
+  void FST;
+  void SND;
+  int  PROJ;
+  void NOTI;
+  void EXPLODE;
+  void IMPLODE;
+  void ORD;
+  void CHR;
+}
+
+void print_unop(unop u) {
+  switch (u) {
+  case NEG: print_string("~");
+  case NOT: print_string("not");
+  case HD: print_string("hd");
+  case TL: print_string("tl");
+  case FST: print_string("fst");
+  case SND: print_string("snd");
+  case PROJ(i): 
+    print_string("#");
+    print_int(i);
+  case NOTI: print_string("noti");
+  case EXPLODE: print_string("explode");
+  case IMPLODE: print_string("implode");
+  case ORD: print_string("ord");
+  case CHR: print_string("chr");
+  }
+}
+
+union binop {
+  void DIV;
+  void MOD;
+  void TIMES;
+  void PLUS;
+  void MINUS;
+  void AND;
+  void OR;
+  void LESS;
+  void LESSEQ;
+  void GREATER;
+  void GREATEREQ;
+  void EQ;
+  void NOTEQ;
+  void CONS;
+  void CONCAT;
+  void LSHIFT;
+  void RSHIFT;
+  void XORI;
+  void ANDI;
+  void ORI;
+}
+
+string binop_to_string(binop b) {
+  switch (b) {
+  case DIV: return("/");
+  case MOD: return("%");
+  case TIMES: return("*");
+  case PLUS: return("+");
+  case MINUS: return("-");
+  case AND: return("and");
+  case OR: return("or");
+  case LESS: return("<");
+  case LESSEQ: return("<=");
+  case GREATER: return(">");
+  case GREATEREQ: return(">=");
+  case EQ: return("=");
+  case NOTEQ: return("<>");
+  case CONS: return("::");
+  case CONCAT: return("^");
+  case LSHIFT: return("<<");
+  case RSHIFT: return(">>");
+  case XORI: return("xori");
+  case ANDI: return("andi");
+  case ORI: return("ori");
+  }
+}    
+
+union exp {
+  string                     Var;
+  bool                       Bool;
+  void                       Null;
+  int                        Int;
+  char                       Char;
+  string                     String;
+  explist                    Tuple;
+  *(string,explist)          App;
+  *(exp,exp,exp)             If;
+  string                     Raise;
+  *(exp,string,exp)          Try;
+  *(deflist,exp)             Let;
+  *(unop,exp)                Unop;
+  *(string,explist)          Barapp;
+  *(binop,exp,exp)           Binop;
+  *(exp,exp,exp,exp)         Onremote;
+  *(exp,exp,exp)             Onneighbor;
+  *(exp,exp,exp,exp,exp,exp) Retransonremote;
+  *(exp,exp,exp)             Foldr;
+  *(exp,exp,exp)             Foldl;
+}
+
+void print_exp(exp e) {
+  switch (e) {
+  case Var(x): print_string(x);
+  case Bool(b): if (b) print_string("true"); else print_string("false");
+  case Null: print_string("[]");
+  case Int(i): print_int(i);
+  case Char(c): print_char('\''); print_char(c); print_char('\'');
+  case String(s): print_char('"'); print_string(s); print_char('"');
+  case Tuple(el): print_char('('); print_explist(el); print_char(')');
+  case App(p): 
+    print_string(p.1); print_char('('); print_explist(p.2); print_char(')');
+  case If(t):
+    print_string("(if "); print_exp(t.1); print_string(" then ");
+    print_exp(t.2); print_string(" else "); print_exp(t.3);
+    print_string(")");
+  case Raise(x): print_string("(raise "); print_string(x); print_string(")");
+  case Try(t):
+    print_string("(try "); print_exp(t.1); print_string(" handle ");
+    print_string(t.2); print_string(" => "); print_exp(t.3); 
+    print_string(")");
+  case Let(p):
+    print_string("let "); print_deflist(p.1);
+    print_string("in "); print_exp(p.2); print_string(" end");
+  case Unop(p):
+    print_string("("); print_unop(p.1); print_char(' '); print_exp(p.2);
+    print_string(")");
+  case Barapp(p):
+    print_char('|'); print_string(p.1); print_char('(');
+    print_explist(p.2); print_string(")|");
+  case Binop(t):
+    print_char('('); print_exp(t.2); print_char(' '); 
+    print_string(binop_to_string(t.1)); print_char(' ');
+    print_exp(t.3); print_char(')');
+  case Onremote(q):
+    print_string("OnRemote(");
+    print_exp(q.1); print_char(','); print_exp(q.2); print_char(',');
+    print_exp(q.3); print_char(','); print_exp(q.4); print_char(')');
+  case Onneighbor(t): print_string("OnNeighbor"); print_3args(t);
+  case Retransonremote(s):
+    print_string("RetransOnRemote(");
+    print_exp(s.1); print_char(','); print_exp(s.2); print_char(',');
+    print_exp(s.3); print_char(','); print_exp(s.4); print_char(',');
+    print_exp(s.5); print_char(','); print_exp(s.6); print_char(')');
+  case Foldr(t): print_string("foldr"); print_3args(t);
+  case Foldl(t): print_string("foldl"); print_3args(t);
+  }
+}
+
+void print_3args(*(exp,exp,exp) t) {
+  print_char('(');
+  print_exp(t.1); print_char(',');
+  print_exp(t.2); print_char(',');
+  print_exp(t.3); print_char(')');
+}
+
+?struct explist {
+  exp e;
+  explist next;
+}
+
+void print_explist(explist el) {
+  while (el != null) {
+    print_exp(el.e);
+    el = el.next;
+    if (el != null) print_string(",");
+  }
+}
+
+private bool has_errors = false;
+
+static void error(string s) {
+  print_string("ERROR: ");
+  print_string(s);
+  print_string("\n");
+  has_errors = true;
+}
+
+static exp error_exp(string s) {
+  error(s);
+  return(new exp.Null);
+}
+
+static deflist get_deflist() {
+  deflist dl; /* = null deflist; */
+  deflist last_dl;
+  deflist temp;
+
+  while (true) {
+    switch (peek_token()) {
+    case Keyword(k):
+      switch(k) {
+      case FUN:
+	next_token();
+	temp = new deflist(new def.Fundef(get_fundef()),null);
+	if (last_dl == null) dl = temp; else last_dl.next = temp;
+	last_dl = temp;
+	continue;
+      case EXCEPTION:
+	next_token();
+	temp = new deflist(new def.Exndef(get_exndef()),null);
+	if (last_dl == null) dl = temp; else last_dl.next = temp;
+	last_dl = temp;
+	continue;
+      case VAL:
+	next_token();
+	temp = new deflist(new def.Valdef(get_valdef()),null);
+	if (last_dl == null) dl = temp; else last_dl.next = temp;
+	last_dl = temp;
+	continue;
+      default:
+	break;
+      }
+    default:
+      break;
+    }
+  }
+  return(dl);
+}
+
+static string get_exndef() {
+  switch (next_token()) {
+    case Id(x):
+      return(x);
+  default:
+    error("expecting <id>");
+    return("<error>");
+  }
+}
+
+static valdef get_valdef() {
+  switch (next_token()) {
+  case Id(x):
+      switch (next_token()) {
+      case COLON:
+	tipe t = get_tipe();
+	switch (next_token()) {
+	case EQ:
+	  return(new valdef(x,t,get_fexp()));
+	default:
+	  error("missing = in val def");
+	}
+      default:
+	error("missing : in val def");
+      }
+  default:
+    error("missing <id> in val def");
+  }
+  return(new valdef("<error>",new tipe.Int,new exp.Null));
+}
+	
+
+static fundef get_fundef() {
+  switch (next_token()) {
+  case Id(x):
+    switch (next_token()) {
+    case LPAREN:
+      paramlist params = get_paramlist();
+      switch (next_token()) {
+      case COLON: 
+	tipe ret_tipe = get_tipe();
+	switch (next_token()) {
+	case EQ:
+	  exp body = get_fexp();
+	  return(new fundef(x,params,ret_tipe,body));
+	default:
+	  error("missing = in fundef");
+	}
+      default:
+	error("missing : in fundef");
+      }
+    default:
+      error("missing ( in fundef");
+    }
+  default:
+    error("missing <id> in fundef");
+  }
+  return(new fundef("<error>",null,new tipe.Int,new exp.Null));
+}
+
+static paramlist get_paramlist() {
+  paramlist p;
+  token t = next_token();
+
+  switch (t) {
+  case RPAREN:
+    return(p);
+  default:
+    while (true) {
+      switch (t) {
+      case Id(x):
+	switch (next_token()) {
+	case COLON:
+	  tipe tp = get_tipe();
+	  p = new paramlist(x,tp,p);
+	  switch (next_token()) {
+	  case RPAREN:
+	    return(p);
+	  case COMMA:
+	    t = next_token();
+	    continue;
+	  default:
+	    error("expecting , or )");
+	    break;
+	  }
+	default:
+	  error("expecting : ");
+	  break;
+	}
+      default:
+	error("expecting <id>");
+	break;
+      }
+    }
+    return(null);
+  }
+}
+
+static tipe get_tipe() {
+  tipe t = get_btipe();
+
+  switch (peek_token()) {
+  case ASTERISK:
+    next_token();
+    tipelist ts = get_tipelist();
+    return(new tipe.Tuple(new tipelist(t,ts)));
+  default:
+    return(t);
+  }
+}
+
+static tipelist get_tipelist() {
+  tipelist ts;
+  tipe t = get_btipe();
+  
+  while (true) {
+    ts = new tipelist(t,ts);
+    switch(peek_token()) {
+    case ASTERISK:
+      next_token();
+      t = get_btipe();
+      continue;
+    default:
+      break;
+    }
+  }
+  return(ts);
+}
+
+static tipe get_btipe() {
+  tipe t = get_atipe();
+
+  while (true) {
+    switch (peek_token()) {
+    case Keyword(k):
+      switch (k) {
+      case LIST:
+	next_token();
+	t = new tipe.List(t);
+	continue;
+      default:
+	break;
+      }
+    default:
+      break;
+    }
+  }
+  return(t);
+}
+
+static tipe get_atipe() {
+  
+  switch (next_token()) {
+  case Keyword(k):
+    switch (k) {
+    case UNIT:
+      return(new tipe.Tuple(null));
+    case INT:
+      return(new tipe.Int);
+    case CHAR:
+      return(new tipe.Char);
+    case STRING:
+      return(new tipe.String);
+    case BOOL:
+      return(new tipe.Bool);
+    case HOST:
+      return(new tipe.Host);
+    case PORT:
+      return(new tipe.Port);
+    case KEY:
+      return(new tipe.Key);
+    case BLOB:
+      return(new tipe.Blob);
+    case EXN:
+      return(new tipe.Exn);
+    case DEV:
+      return(new tipe.Dev);
+    case CHUNK:
+      return(new tipe.Chunk);
+    default:
+      error("bad atomic type");
+    }
+  case LPAREN:
+    tipe t = get_tipe();
+    switch (next_token()) {
+    case RPAREN:
+      return(t);
+    default:
+      error("missing ) in type");
+   }
+  default:
+    error("bad type");
+  }
+  return(new tipe.Int);
+}
+
+static exp get_aexp() {
+  switch (next_token()) {
+  case Id(x):
+    switch (peek_token()) {
+    case LPAREN:
+      next_token();
+      explist es = get_explist();
+      return(new exp.App(new(x,es)));
+    default:
+      return(new exp.Var(x));
+    }
+  case Number(n):
+    return(new exp.Int(n));
+  case Char(c):
+    return(new exp.Char(c));
+  case String(s):
+    return(new exp.String(s));
+  case TILDE:
+    return(new exp.Unop(new(new unop.NEG,get_aexp())));
+  case HASH:
+    switch (next_token()) {
+      case Number(n):
+	return(new exp.Unop(new(new unop.PROJ(n),get_aexp())));
+    default:
+      return(error_exp("expecing <num>"));
+    }
+  case LPAREN:
+    explist es = get_explist();
+    if (es == null)
+      return(new exp.Tuple(null));
+    if (es.next == null)
+      return(es.e);
+    return(new exp.Tuple(es));
+  case LBRACKET:
+    return(get_objlist());
+  case BAR:
+    switch (next_token()) {
+    case Id(x):
+      switch (next_token()) {
+      case LPAREN:
+	explist es = get_explist();
+	switch (next_token()) {
+	case BAR:
+	  return(new exp.Barapp(new(x,es)));
+	default: return(error_exp("expecting |"));
+	}
+      default: return(error_exp("expecting ("));
+      }
+    default: return(error_exp("expecting <id>"));
+    }
+  case Keyword(k):
+    switch (k) {
+    case TRUE:
+      return(new exp.Bool(true));
+    case FALSE:
+      return(new exp.Bool(false));
+    case NOT:
+      return(new exp.Unop(new(new unop.NOT, get_aexp())));
+    case HD:
+      return(new exp.Unop(new(new unop.HD, get_aexp())));
+    case TL:
+      return(new exp.Unop(new(new unop.TL, get_aexp())));
+    case FST:
+      return(new exp.Unop(new(new unop.FST, get_aexp())));
+    case SND:
+      return(new exp.Unop(new(new unop.SND, get_aexp())));
+    case NOTI:
+      return(new exp.Unop(new(new unop.NOTI, get_aexp())));
+    case EXPLODE:
+      return(new exp.Unop(new(new unop.EXPLODE, get_aexp())));
+    case IMPLODE:
+      return(new exp.Unop(new(new unop.IMPLODE, get_aexp())));
+    case ORD:
+      return(new exp.Unop(new(new unop.ORD, get_aexp())));
+    case CHR:
+      return(new exp.Unop(new(new unop.CHR, get_aexp())));
+    case ONREMOTE:
+      /* gets (exp,exp,exp,exp) */
+      *(exp,exp,exp,exp) es = get_4args();
+      return(new exp.Onremote(es));
+    case ONNEIGHBOR:
+      *(exp,exp,exp) es = get_3args();
+      return(new exp.Onneighbor(es));
+    case RETRANSONREMOTE:
+      *(exp,exp,exp,exp,exp,exp) es = get_6args();
+      return(new exp.Retransonremote(es));
+    case FOLDR:
+      *(exp,exp,exp) es = get_3args();
+      return(new exp.Foldr(es));
+    case FOLDL:
+      *(exp,exp,exp) es = get_3args();
+      return(new exp.Foldl(es));
+    default:
+      return(error_exp("bad keyword in exp"));
+    }
+  default:
+    return(error_exp("bad token in exp"));
+  }
+}
+
+static explist get_explist() {
+  explist el;
+  explist last_el;
+  explist temp;
+
+  switch (peek_token()) {
+  case RPAREN:
+    next_token();
+  default:
+    while (true) {
+      exp e = get_fexp();
+      temp = new explist(e,null);
+      if (last_el == null) el = temp; else last_el.next = temp;
+      last_el = temp;
+      switch (next_token()) {
+      case COMMA:
+	continue;
+      case RPAREN:
+	break;
+      default:
+	error("expecting , or )");
+	return(null);
+      }
+    }
+  }
+  return(el);
+}
+
+static exp get_objlist() {
+
+  switch (peek_token()) {
+  case RBRACKET:
+    next_token();
+    return(new exp.Null);
+  default:
+    return(get_objlist2());
+  }
+}
+
+static exp get_objlist2() {
+  exp e = get_fexp();
+
+  switch (next_token()) {
+  case COMMA:
+    return(new exp.Binop(new(new binop.CONS,e,get_objlist2())));
+  case RBRACKET:
+    return(new exp.Binop(new(new binop.CONS,e,new exp.Null)));
+  default:
+    return(error_exp("expecting , or ]"));
+  }
+}
+
+static void get_comma() {
+  switch (next_token()) {
+  case COMMA:
+    return;
+  default:
+    error("expecting , ");
+  }
+}
+
+static void get_lparen() {
+  switch (next_token()) {
+  case LPAREN:
+    return;
+  default:
+    error("expecting ( ");
+  }
+}
+
+static void get_rparen() {
+  switch (next_token()) {
+  case RPAREN:
+    return;
+  default:
+    error("expecting ) ");
+  }
+}
+
+static *(exp,exp,exp,exp) get_4args() {
+  get_lparen();
+  exp e1 = get_fexp();
+  get_comma();
+  exp e2 = get_fexp();
+  get_comma();
+  exp e3 = get_fexp();
+  get_comma();
+  exp e4 = get_fexp();
+  get_rparen();
+  return(new(e1,e2,e3,e4));
+}
+
+static *(exp,exp,exp,exp,exp,exp) get_6args() {
+  get_lparen();
+  exp e1 = get_fexp();
+  get_comma();
+  exp e2 = get_fexp();
+  get_comma();
+  exp e3 = get_fexp();
+  get_comma();
+  exp e4 = get_fexp();
+  get_comma();
+  exp e5 = get_fexp();
+  get_comma();
+  exp e6 = get_fexp();
+  get_rparen();
+  return(new(e1,e2,e3,e4,e5,e6));
+}
+
+static *(exp,exp,exp) get_3args() {
+  get_lparen();
+  exp e1 = get_fexp();
+  get_comma();
+  exp e2 = get_fexp();
+  get_comma();
+  exp e3 = get_fexp();
+  get_rparen();
+  return(new(e1,e2,e3));
+}
+  
+static exp get_bexp() {
+  exp e = get_aexp();
+
+  switch (peek_token()) {
+  case ASTERISK:
+    next_token();
+    return(new exp.Binop(new(new binop.TIMES,e,get_bexp())));
+  case DIV:
+    next_token();
+    return(new exp.Binop(new(new binop.DIV,e,get_bexp())));
+  case PERCENT:
+    next_token();
+    return(new exp.Binop(new(new binop.MOD,e,get_bexp())));
+  default:
+    return(e);
+  }
+}
+
+static exp get_cexp() {
+  exp e = get_bexp();
+
+  switch (peek_token()) {
+  case PLUS:
+    next_token();
+    return(new exp.Binop(new(new binop.PLUS,e,get_cexp())));
+  case MINUS:
+    next_token();
+    return(new exp.Binop(new(new binop.MINUS,e,get_cexp())));
+  default:
+    return(e);
+  }
+}
+
+static exp get_dexp() {
+  exp e = get_cexp();
+
+  switch (peek_token()) {
+  case Keyword(k):
+    switch (k) {
+    case XORI:
+      next_token();
+      return(new exp.Binop(new(new binop.XORI,e,get_dexp())));
+    case ANDI:
+      next_token();
+      return(new exp.Binop(new(new binop.ANDI,e,get_dexp())));
+    case ORI:
+      next_token();
+      return(new exp.Binop(new(new binop.ORI,e,get_dexp())));
+    default: return(e);
+    }
+  case EQ:
+    next_token();
+    return(new exp.Binop(new(new binop.EQ,e,get_dexp())));
+  case LESS:
+    next_token();
+    switch (peek_token()) {
+    case EQ:
+      next_token();
+      return(new exp.Binop(new(new binop.LESSEQ,e,get_dexp())));
+    case GREATER:
+      next_token();
+      return(new exp.Binop(new(new binop.NOTEQ,e,get_dexp())));
+    case LESS:
+      next_token();
+      return(new exp.Binop(new(new binop.LSHIFT,e,get_dexp())));
+    default:
+      return(new exp.Binop(new(new binop.LESS,e,get_dexp())));
+    }
+  case GREATER:
+    next_token();
+    switch (peek_token()) {
+    case EQ:
+      next_token();
+      return(new exp.Binop(new(new binop.GREATEREQ,e,get_dexp())));
+    case GREATER:
+      next_token();
+      return(new exp.Binop(new(new binop.RSHIFT,e,get_dexp())));
+    default:
+      return(new exp.Binop(new(new binop.GREATER,e,get_dexp())));
+    }
+  case COLON:
+    next_token();
+    switch (next_token()) {
+    case COLON:
+      return(new exp.Binop(new(new binop.CONS,e,get_dexp())));
+    default: return(error_exp("expecting :"));
+    }
+  default: return(e);
+  }
+}
+
+static exp get_eexp() {
+  exp e = get_dexp();
+
+  switch (peek_token()) {
+  case CARAT:
+    next_token();
+    return(new exp.Binop(new(new binop.CONCAT,e,get_dexp())));
+  default:
+    return(e);
+  }
+}
+
+static exp get_fexp() {
+  switch (peek_token()) {
+  case Keyword(k):
+    next_token();
+    switch (k) {
+    case IF:
+      exp e1 = get_fexp();
+      switch (next_keyword()) {
+      case THEN:
+	exp e2 = get_fexp();
+	switch (next_keyword()) {
+	case ELSE:
+	  exp e3 = get_fexp();
+	  return(new exp.If(new(e1,e2,e3)));
+	default: return(error_exp("expecting else"));
+	}	  
+      default: return(error_exp("expecting then"));
+      }
+    case RAISE:
+      switch (next_token()) {
+      case Id(x):
+	return(new exp.Raise(x));
+      default: return(error_exp("expecting <id>"));
+      }
+    case TRY:
+      exp e1 = get_fexp();
+      switch (next_keyword()) {
+      case HANDLE:
+	switch (next_token()) {
+	case Id(x):
+	  switch (next_token()) {
+	  case EQ:
+	    switch (next_token()) {
+	    case GREATER:
+	      return(new exp.Try(new(e1,x,get_fexp())));
+	    default: return(error_exp("expecting =>"));
+	    }
+	  default: return(error_exp("expecting =>"));
+	  }
+	default: return(error_exp("expecting <id>"));
+	}
+      default: return(error_exp("expecting handle"));
+      }
+    case LET:
+      deflist d = get_deflist();
+      switch (next_keyword()) {
+      case IN:
+	exp e = get_fexp();
+	switch (next_keyword()) {
+	case END: return(new exp.Let(new(d,e)));
+	default:  return(error_exp("expecting end"));
+	}
+      default: return(error_exp("expecting in"));
+      }
+    default: return(error_exp("bad top exp"));
+    }
+  case LPAREN:
+    next_token();
+    explist es = get_explist();
+    if (es == null) 
+      return(new exp.Tuple(es));
+    else if (es.next == null)
+      return(es.e);
+    else 
+      return(new exp.Tuple(es));
+  default:
+    return(get_eexp());
+  }
+}
+
+*(bool,deflist) get_program() {
+  deflist dl = get_deflist();
+
+  switch (next_token()) {
+  case EOF:
+    return(new(true,dl));
+  default:
+    error("expecting EOF");
+    return(new(false,dl));
+  }
+}
+

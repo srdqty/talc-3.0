@@ -1,0 +1,51 @@
+// Does simple file comparison.  Prints out number of bytes that are different.
+// Useful for comparing popcorn.exe to popcorn_test.exe 
+//
+// Enjoy,
+// Fred
+
+#include<core.h>
+open Core;
+
+void pop_main() {
+
+  string tal_args[] = std_args();
+
+  if (size(tal_args)!=3) {
+    printf("usage: %s <file1> <file2>\n",tal_args[0]);
+    return;
+  } 
+  
+  _ f1_len = file_length(tal_args[1]);
+  _ f2_len = file_length(tal_args[2]);
+
+  if(f1_len != f2_len) printf("Files of different lengths.\n");
+
+  _ f_len = (f1_len < f2_len) ? f1_len : f2_len;
+
+  FILE f1,f2;
+  try {
+    f1 = file_open(tal_args[1],"r");
+    f2 = file_open(tal_args[2],"r");
+  } handle y switch y {
+  case FileOpenError(s): printf("File open error %s",s); return;
+  default: raise(y);
+  }
+
+  int diffs = 0;
+  int total = 0;
+  while(total < f_len) {
+    _ c1 = fgetc(f1);
+    _ c2 = fgetc(f2);
+    total++;
+    if(c1!=c2) diffs++;
+  }
+
+  printf("total = %d, diff = %d",total,diffs);
+  if(f1_len < f_len) printf(", file1 ended first");
+  if(f2_len < f_len) printf(", file2 ended first");
+  printf("\n");
+
+  file_close(f1);
+  file_close(f2);
+}

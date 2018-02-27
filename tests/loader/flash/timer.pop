@@ -1,0 +1,83 @@
+/* general includes */
+#include "core.h"
+#include "unixlib.h"
+
+/* flash webserver includes */
+#include "conn.h"
+// #include "timer.h"
+#include "libhttpd.h"
+
+#define MAXTIMERHOP 512         /* maximum number of seconds for a timer
+                                   must be a power of 2 */
+int numActiveTimers[MAXTIMERHOP];
+int lastTimerCheckTime;
+
+/* ---------------------------------------------------------------- */
+void
+ClearTimer(httpd_conn c)
+{
+  if (c.hc_expirationTime != 0)
+    numActiveTimers[c.hc_expirationTime & (MAXTIMERHOP-1)]--;
+
+  c.hc_expirationTime = 0;
+}
+/* ---------------------------------------------------------------- */
+void
+SetTimer(httpd_conn c, int numSecs, void expireFunc(httpd_conn))
+{
+  int expTime;
+  int newTime;
+
+  if (numSecs < 1 || numSecs >= MAXTIMERHOP) {
+    fprintf(tal_stderr, "bad call to SetTimer");
+    exit(-1);
+  }
+
+  expTime = c.hc_expirationTime;
+  newTime = globalTimeOfDay.tv_sec + numSecs;
+
+  if (expTime == newTime)
+    return;
+
+  if (expTime != 0)
+    numActiveTimers[expTime & (MAXTIMERHOP-1)]--;
+
+  c.hc_expirationTime = newTime;
+  c.hc_expireFunc = expireFunc;
+  numActiveTimers[newTime & (MAXTIMERHOP-1)]++;
+}
+/* ---------------------------------------------------------------- */
+void
+InitTimer(httpd_conn c)
+{
+  c.hc_expirationTime = 0;
+}
+/* ---------------------------------------------------------------- */
+void
+CheckTimers()
+{
+  int i;
+
+  if (lastTimerCheckTime == globalTimeOfDay.tv_sec)
+    return;
+
+  i = lastTimerCheckTime;
+  lastTimerCheckTime = globalTimeOfDay.tv_sec;
+
+  for (; i <= globalTimeOfDay.tv_sec; i++) {
+    if (numActiveTimers[i & (MAXTIMERHOP-1)] == 0)
+      continue;
+
+    /* otherwise, check all connections */
+    for (int conn = 0; conn < maxConnects; conn++) {
+      if (allConnects[conn] == null)
+        return;                 /* end of active table */
+      if ((allConnects[conn].hc_expirationTime != 0) &&
+          (allConnects[conn].hc_expirationTime <= globalTimeOfDay.tv_sec))
+        allConnects[conn].hc_expireFunc(allConnects[conn]);
+    }
+    return;
+  }
+}
+/* ---------------------------------------------------------------- */
+

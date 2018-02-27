@@ -1,0 +1,104 @@
+
+#include "core.h"
+#include "gmlsyntax.h"
+#include "parse.h"
+#include "eval.h"
+#include "math.h"
+#include "render.h"
+
+open Core;
+
+extern void Lex::lex_init();
+
+<Gmlsyntax::syn>list parse(string fname) {
+    _ includes = ^list(fname,null);
+    _ prog = null;
+    while(includes!=null) {
+	_ filename = includes.hd;
+	includes = includes.tl;
+	
+	_ f;      
+	try
+	    f = file_open(filename,"r");
+	handle y {
+	    printf("File open failed for %s.\n",filename);
+	    raise(^Failure("file open failed.\n"));
+	}
+	
+	Lex::lex_init();
+	try {
+	    _ x = Parse::parse_program(f);
+	    includes = List::append(x.1,includes);
+	    prog = List::append(x.2,prog);
+	} handle y {
+	    switch y {
+	    case Parse::ParseError: printf("Parsing failed.\n");
+	    default: printf("Unrecognized exception during parsing.\n");
+	    }
+	    raise(^Failure("parsing failed.\n"));
+	}
+	
+	file_close(f);
+    }
+    return prog;
+}
+
+int pop_main() {
+
+  Math::neg_inf = -1.0/0.0; // When we support constant expression
+  Math::pos_inf =  1.0/0.0;  // initializers this won't be necessary.
+
+  _ args = std_args();
+
+  switch size(args) {
+  case 2: ;
+  case 3: 
+    if(strcmp(args[1],"-b")==0) {
+      Render::optimize_scene = false;
+    }
+    else {
+      printf("usage: %s [-b] filename\n",args[0]);
+      return 1;
+    }
+  default:
+    printf("usage: %s [-b] filename\n",args[0]);
+    return 1;
+  }
+
+  _ filename = args[size(args)-1];
+
+  _ prog = parse(filename);
+
+  // print_syntax(prog);
+  
+  _ ts = Gmlsyntax::syn_to_token(prog,null);
+
+  // print_tokens(ts);
+
+  _ clos = ^.Vclos(^(null,ts));
+  _ sp = Eval::eval(clos,null);
+  
+  if(sp!=null) {
+    printf("Terminated with non-empty stack.\n");
+  }
+
+  return 0;
+}
+
+
+static void print_syntax(<Gmlsyntax::syn>list prog) {
+  fflush(tal_stdout);
+  for(_ x = prog; x != null; x=x.tl) {
+    Gmlsyntax::print_syn(x.hd);
+    printf(" ");
+  }
+  fflush(tal_stdout);
+}
+
+static void print_tokens(<Gmlsyntax::token>list ts) {
+  for(_ x = ts; x != null; x=x.tl) {
+    Gmlsyntax::print_token(x.hd);
+    printf(" ");
+  }
+}
+

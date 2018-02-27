@@ -1,0 +1,29 @@
+/Makefile/1.1/Sat Jun  3 11:46:38 2000//
+/absyn.h/1.1/Sat Jun  3 11:46:38 2000//
+/absyn.pop/1.1/Sat Jun  3 11:46:38 2000//
+/bench.pop/1.1/Sat Jun  3 11:46:38 2000//
+/cg.pop/1.1/Sat Jun  3 11:46:38 2000//
+/check.out/1.1/Sat Jun  3 11:46:38 2000//
+/env.h/1.1/Sat Jun  3 11:46:38 2000//
+/env.pop/1.1/Sat Jun  3 11:46:38 2000//
+/eval.h/1.1/Sat Jun  3 11:46:38 2000//
+/eval.pop/1.1/Sat Jun  3 11:46:38 2000//
+/i.pop/1.1/Sat Jun  3 11:46:38 2000//
+/ig.pop/1.1/Sat Jun  3 11:46:38 2000//
+/interface_tab/1.1/Sat Jun  3 11:46:38 2000//
+/lex.h/1.1/Sat Jun  3 11:46:38 2000//
+/lex.pop/1.1/Sat Jun  3 11:46:38 2000//
+/misc.h/1.1/Sat Jun  3 11:46:38 2000//
+/misc.pop/1.1/Sat Jun  3 11:46:38 2000//
+/parse.h/1.1/Sat Jun  3 11:46:38 2000//
+/parse.pop/1.1/Sat Jun  3 11:46:38 2000//
+/ping.plan/1.1/Sat Jun  3 11:46:38 2000//
+/plan.pop/1.1/Sat Jun  3 11:46:38 2000//
+/reference.out/1.1/Sat Jun  3 11:46:38 2000//
+/rout_tab/1.1/Sat Jun  3 11:46:38 2000//
+/svc.h/1.1/Sat Jun  3 11:46:38 2000//
+/svc.pop/1.1/Sat Jun  3 11:46:38 2000//
+/tmp.pop/1.1/Sat Jun  3 11:46:38 2000//
+/traceroute.plan/1.1/Sat Jun  3 11:46:38 2000//
+D/interp_tests////
+D/tests////

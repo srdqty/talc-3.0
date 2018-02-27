@@ -1,0 +1,7 @@
+(* gets a blob from a file *)
+
+svc getBlobFromFile : string -> blob
+
+(* p: string -> blob *)
+fun p(file) =
+  getBlobFromFile(file)

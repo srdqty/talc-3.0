@@ -1,0 +1,7 @@
+	TYPE	<?str = Exist[?sz:Sint].^*[S(?sz)^r,array(?sz,B1^rw)]>
+	TYPE 	<?dou = ^*[B4^rw,B4^rw]>
+
+	VAL 	_print_int,<All[s1: Ts]. \
+	(code { ESP: sptr (code {ESP: sptr s1, EAX: B4})::B4::s1})>
+	VAL 	_print_double,<All[s1: Ts]. code { ESP: sptr (code {ESP: sptr s1, EAX: B4})::?dou::s1}>
+	VAL 	_print_string,<All[s1: Ts]. code { ESP: sptr (code {ESP: sptr s1, EAX: B4})::?str::s1}>

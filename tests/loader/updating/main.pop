@@ -1,0 +1,25 @@
+#include "events.h"
+extern exception No_event;
+extern event get_next_event();
+extern bool process_event(event);
+extern void init_events();
+
+/* main function/loop */
+
+void pop_main() {
+  bool done = false;
+  init_events();
+  while (!done) {
+    try {
+      event e = get_next_event();
+      done = !process_event(e);
+    } handle e {
+      switch e {
+      case No_event:
+	done = true;
+      default:
+	raise (e);
+      }
+    }
+  }
+}

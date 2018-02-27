@@ -1,0 +1,178 @@
+// float.pop
+// Check that floating point operations are working properly.
+// Uncomment pragma to generate intermediate code.
+#pragma PIL
+
+#include "core.h"
+open Core;
+
+// General
+/*
+extern void fprint_double(FILE,double);
+extern void fprint_float(FILE,float);
+*/
+
+void print_double(double d) {
+  fprint_double(tal_stdout,d);
+}
+
+void print_float(float f) {
+  fprint_float(tal_stdout,f);
+}
+
+double mult(float f,double d) 
+{
+  return d * f;
+}
+
+double somefun(int i, double d, float f, int j){
+  return (mult(f,d) - i + j) / 2.0lf;
+}
+
+void test_general()
+{
+  // prints 5
+  print_double(somefun(8,4.0lf,5.0f,-2));
+  print_newline();
+
+  return;
+}
+
+// Structs
+
+struct foo {
+  int i;
+  float f;
+  double d;
+  bool t;
+}
+
+void test_struct()
+{
+  foo z = new foo(1,1.2f,2.0lf,false);
+
+  if (z.t) {
+    print_string("float.pop: test globals: wrong\n");
+  } else {
+    // prints 4.2
+    print_double(z.f + z.d + z.i);
+    print_newline();
+  }
+
+  return;
+}
+
+// Unions
+
+union bar {
+  double x;
+  int v;
+}
+
+void test_union() {
+  bar z = new bar.x(1.0);
+  double x,y;
+
+  switch z {
+  case x(f): x = f;
+  case v(i): return;
+  }
+
+  switch z {
+  case x(f): y = f;
+  default: return;
+  }
+
+  print_double(x);
+  print_newline();
+  print_double(y);
+  print_newline();
+  
+}
+// Global Data
+double da[] = {1.0lf,2.0lf,3.0lf};
+float  fa[] = {5.0f,6.0f};
+
+foo foobar = new foo(12,13.0f,14.0lf,true);
+
+void test_globals() 
+{
+  int i;
+  float sf = 0;
+  //  double sd = 0;
+
+  //  for (i=0; i < size(da); i++) {
+  //    sd += da[i];
+  //  }
+
+  //  print_double(sd);
+  //  print_newline();
+
+  for (i=0; i < size(fa); i++) {
+    sf += fa[i];
+  }
+
+  // prints 11
+  print_float(sf);
+  print_newline();
+
+  if (foobar.t) {
+    // prints -15
+    print_double(foobar.i - foobar.f - foobar.d);
+    print_newline();
+  } else {
+    print_string("float.pop: test globals: wrong");
+  }
+
+  return;
+} 
+
+// Floats & Exceptions
+exception value_exn(double);
+
+void test_raise_value(double d)
+{
+  raise(new value_exn(d));
+}
+
+void test_handle()
+{
+  try
+    {
+      test_raise_value(3.2lf);
+    }
+  handle y
+    {
+      switch y
+	{
+	case value_exn(d2): 
+	  { print_string("\nCaught value_exn: ");
+	  print_double(d2);
+	  print_newline();
+	  }
+        default: print_string("\nError: default?");
+	}	
+    }
+}
+
+void test_cmp(double d1,double d2) {
+  if (d1 < d2) print_string("d1 < d2\n");
+  else print_string("d1 >= d2\n");
+
+}
+void pop_main()
+{
+  print_string("\nBegin Float Tests\n");
+  test_general();
+  test_struct();
+  test_union();
+  test_globals();
+  test_handle();
+  test_cmp(1.3f,3.4f);
+  print_string("\nEnd Float Tests\n");
+
+  return; 
+}
+
+
+

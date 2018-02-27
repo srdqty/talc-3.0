@@ -1,0 +1,26 @@
+// check_def_init.pop
+// Check that default initializers work for all kinds of types.
+
+static char w;
+static int x;
+static bool y;
+static string z;
+static int a[];
+static *(int,bool,char) b;
+
+struct foo { int x; bool y; char z; }
+
+static foo c;
+
+struct <a,b>bar { a x; b y; }
+
+static <string,bool>bar d;
+
+union <a,b>myfoo { a caseOne; b caseTwo; }
+
+static <bool,string>myfoo e;
+
+void pop_main()
+{
+ return;
+} 

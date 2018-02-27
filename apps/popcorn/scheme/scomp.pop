@@ -1,0 +1,1245 @@
+
+////////////////////////////////////////////////////////////////////////////
+// scheme-- to TAL compiler written in popcorn, file scomp.pop            //
+// Copyright Greg Morrisett, Dan Grossman                                 //
+// January 1999, all rights reserved                                      //
+// Ported from caml code Copyright June 1998, Morrisett, Glew, Weirich    //
+////////////////////////////////////////////////////////////////////////////
+
+#include "core.h"
+#include "list.h"
+#include "dict.h"
+#include "id.h"
+#include "tal.h"
+#include "sast.h"
+#include "sil.h"
+open Core;
+open List;
+open Id;
+open Tal;
+open Sast;
+open Sil;
+
+prefix Scomp;
+open   Scomp;
+
+//////////////////////////SETTINGS///////////////////////////
+bool print_comments    = true; // for making assembly more readable
+bool peephole_optimize = true; // leave true except when testing 
+                                      // optimizer
+////////////////////////////ENTRY POINT/////////////////////
+exception undefined_var(var);
+
+tal_imp code_gen(<*(string,ilexp)>list defs) {
+  scomp_init();
+
+  id                       dummy_id = id_new("d");
+  <data_item>list          d        = null;
+  < <data_item>list>coerce dummy_co = ^coerce(d,null);
+
+  reset_generator();
+  *(id, kind, con) defines_con_blk  = comp_defines(defs);
+  flush_code();
+  comp_functions();
+  code_block code_blk_arr[] = new_array(List::length(code_blocks),
+				        ^code_block(dummy_id,
+					       	    null,
+						    {:instruction}));
+  int i = size(code_blk_arr);
+  while (i-- > 0) {
+    code_blk_arr[i] = code_blocks.hd;
+    code_blocks     = code_blocks.tl;
+  }
+  <data_block>list strs = get_strings();
+  i = List::length(strs);
+  data_block data_blk_arr[] = new_array(i, ^data_block(dummy_id,
+						       null,
+						       dummy_co));
+  while (i-- > 0) {
+    data_blk_arr[i] = strs.hd;
+    strs            = strs.tl;
+  }  
+  return ^tal_imp({"tal.tali","stdlib.tali","scheme.tali"},
+		  {"tal_prog.tali"},
+		  {:*(id,con)},
+		  {defines_con_blk},
+		  code_blk_arr,
+		  data_blk_arr);
+}
+
+///////////////////////////// SYNTACTIC NICETIES /////////////////////
+static instruction move_clist(genop g1, genop g2, <coercion>list cl) {
+  return ^instruction.Mov(^(g1,^coerce(g2,cl)));
+}
+static instruction move(genop g1, genop g2) {
+  return move_clist(g1,g2,null);
+}
+static instruction move_coerce(genop g1, genop g2, coercion c) {
+  return move_clist(g1,g2,^list(c,null));
+}
+static instruction push(genop g) { // need other version if ever coerce
+  return ^instruction.Push(^coerce(g,null));
+}
+static instruction pop(genop g) {
+  return ^instruction.Pop(g);
+}
+static instruction cmp(genop g1, genop g2) {
+  return ^instruction.Cmp(^(^coerce(g1,null), ^coerce(g2,null)));
+}
+static instruction coerce_clist(reg r, <coercion>list cl) {
+  return ^instruction.Coerce(^coerce(^genop.Reg(r),cl));
+}
+static instruction coerce(reg r, coercion c) {
+  return coerce_clist(r,^list(c,null));
+}
+static instruction fallthru() {
+  return ^instruction.Fallthru(^list(stack_c(), null));
+}
+static instruction malloc(id i, int sz) {
+  return ^instruction.Malloc(^(i, sz, null));
+}
+static genop prjr_clist (reg r, int offset, <coercion>list cl) {
+  return ^genop.Prjr(^(^coerce(r,cl),offset));
+}
+static genop prjr(reg r, int offset) {
+  return prjr_clist(r,offset,null);
+}
+static genop prjr_coerce(reg r, int offset, coercion c) {
+  return prjr_clist(r,offset,^list(c,null));
+}
+static genop Reg(reg r) {  
+  return ^genop.Reg(r); 
+}
+static genop Immed(int i) {
+  return ^genop.Immed(i);
+}
+static reg eax = ^reg.Eax;
+static reg ebx = ^reg.Ebx;
+static reg ecx = ^reg.Ecx;
+static reg edx = ^reg.Edx;
+static reg esi = ^reg.Esi;
+static reg edi = ^reg.Edi;
+static reg ebp = ^reg.Ebp;
+static reg esp = ^reg.Esp;
+
+static coercion unroll  = ^coercion.Unroll;
+static coercion fromsum = ^coercion.Fromsum;
+static coercion tosum(con c) { return ^coercion.Tosum(c);}
+static coercion roll(con c)  { return ^coercion.Roll(c);}
+static coercion pack(con c1, con c2) { return ^coercion.Pack(^(c1,c2));}
+
+static con dummycon() { return cempty();}
+
+//////////////////////////RUNTIME LABELS/////////////////////
+
+// must use Opt because ids are abstract and these are global vars.
+ 
+static bool been_initialized = false;
+
+static <id>Opt exit_label             = null; 
+static <id>Opt openin_label           = null; 
+static <id>Opt openout_label          = null; 
+static <id>Opt closein_label          = null; 
+static <id>Opt closeout_label         = null; 
+static <id>Opt flushout_label         = null; 
+static <id>Opt getchar_label          = null; 
+static <id>Opt peekchar_label         = null; 
+static <id>Opt putchar_label          = null; 
+static <id>Opt current_in_port_label  = null; 
+static <id>Opt current_out_port_label = null; 
+static <id>Opt push_in_port_label     = null; 
+static <id>Opt push_out_port_label    = null; 
+static <id>Opt pop_in_port_label      = null; 
+static <id>Opt pop_out_port_label     = null; 
+static <id>Opt newstring_label        = null; 
+static <id>Opt newstringchar_label    = null; 
+static <id>Opt print_label            = null; 
+static <id>Opt not_int_label          = null; 
+static <id>Opt not_fn_label           = null; 
+static <id>Opt not_pair_label         = null; 
+static <id>Opt not_char_label         = null; 
+static <id>Opt not_indesc_label       = null; 
+static <id>Opt not_outdesc_label      = null; 
+static <id>Opt not_string_label       = null; 
+
+static <id>Opt write_label            = null;
+
+static <id>Opt  tal_main_id           = null;
+static <con>Opt tal_main_con          = null;
+
+static void scomp_init() {
+  if (!been_initialized) {
+    been_initialized = true;
+    exit_label             = ^Opt(id_of_string("_tal_exit"       ));
+    openin_label           = ^Opt(id_of_string("_scopen_in"      ));
+    openout_label          = ^Opt(id_of_string("_scopen_out"     ));
+    closein_label          = ^Opt(id_of_string("_scclose_in"     ));
+    closeout_label         = ^Opt(id_of_string("_scclose_out"    ));
+    flushout_label         = ^Opt(id_of_string("_scflush_out"    ));
+    getchar_label          = ^Opt(id_of_string("_scgetchar"      ));
+    peekchar_label         = ^Opt(id_of_string("_scpeekchar"     ));
+    putchar_label          = ^Opt(id_of_string("_scputchar"      ));
+    current_in_port_label  = ^Opt(id_of_string("_currentInPort"  ));
+    current_out_port_label = ^Opt(id_of_string("_currentOutPort" ));
+    push_in_port_label     = ^Opt(id_of_string("_pushInPort"     ));
+    push_out_port_label    = ^Opt(id_of_string("_pushOutPort"    ));
+    pop_in_port_label      = ^Opt(id_of_string("_popInPort"      ));
+    pop_out_port_label     = ^Opt(id_of_string("_popOutPort"     ));
+    newstring_label        = ^Opt(id_of_string("_scnewstring"    ));
+    newstringchar_label    = ^Opt(id_of_string("_scnewstringchar"));
+    print_label            = ^Opt(id_of_string("_scprint"        ));
+    not_int_label          = ^Opt(id_of_string("_notInt"         ));
+    not_fn_label           = ^Opt(id_of_string("_notFn"          ));
+    not_pair_label         = ^Opt(id_of_string("_notPair"        ));
+    not_char_label         = ^Opt(id_of_string("_notChar"        ));
+    not_indesc_label       = ^Opt(id_of_string("_notIndesc"      ));
+    not_outdesc_label      = ^Opt(id_of_string("_notOutdesc"     ));
+    not_string_label       = ^Opt(id_of_string("_notString"      ));
+    write_label            = ^Opt(id_of_string("_scprint"        ));
+    tal_main_id            = ^Opt(id_of_string("_tal_main"       ));
+    tal_main_con           = ^Opt(ccode_l(^list(^(esp,csptr(cempty())), null)));
+  }
+}
+
+/////////////////////////TYPE DEFINTIONS////////////////////////
+
+// same global init problem.  This time our "solution" is eta expansion
+// and suffer the "make a new one every time" inefficiency.
+static con raw_int_c     () { return cbyte4();} 
+static con raw_bool_c    () { return chptr(^list(false_tag,
+					   ^list(true_tag,null)), null, null);}
+static id  array_size_var() { return id_of_string("size");}
+static con raw_string_c  () { 
+  return carray_s(array_size_var(), 
+		  cfield(pcbytes(^scale.Byte1), ^variance.ReadWrite));
+}
+static int false_tag         = 0;
+static int true_tag          = 1;
+static int null_tag          = 2;
+static int eof_tag           = 3;
+static int int_tag           = 0;
+static int pair_tag          = 1;
+static int string_tag        = 2;
+static int char_tag          = 3;
+static int indesc_tag        = 4;
+static int outdesc_tag       = 5;
+static int first_closure_tag = 6;
+static int closure_tag(int arity) {
+  if (arity >= 0 && arity <= max_args)
+    return first_closure_tag + arity;
+  raise compilerBug("closure tag with too many args");
+}
+
+static id  env_v   () { return id_of_string("env")    ;}
+static id  stack_v () { return id_of_string("r")      ;}
+static id  cap_v   () { return id_of_string("c")      ;}
+static con dyn_c   () { return clab(id_of_string("D"));}
+static con env_c   () { return cvar(env_v())          ;}
+static con stack_c () { return cvar(stack_v())        ;}
+static con cap_c   () { return cvar(cap_v())          ;}
+
+static id  arity2id(int arity) {
+  if (arity >= 0 && arity <= max_args)
+    return id_of_string(strconcat("c",string_of_int(arity)));
+  raise compilerBug("closure tag with too many args");
+}
+static con code_c(int arity) { 
+  return clab(arity2id(arity)); 
+}
+static con closure_c(int arity) {
+  return cexist
+    (env_v(), k4byte, 
+     cprod_b(^list(cfield(capp(clab(arity2id(arity)), env_c()), ^variance.Read),
+		   ^list(cfield(env_c(), ^variance.Read), 
+			 null))));
+}
+
+static <coercion>list dyn_coercion () {
+  return ^list(^coercion.RollTosum(dyn_c()), null);
+}
+static <coercion>list branch_coercion () {
+  return ^list(^coercion.Tapp(stack_c()),
+         ^list(^coercion.Tapp(cap_c()), null));
+}
+static <coercion>list err_coercion (env e) {
+  return ^list(^coercion.Tapp(e.stack_type), null);
+}
+static <coercion>list call_coercion(env e){
+  return ^list(^coercion.Tapp(e.stack_type), 
+         ^list(^coercion.Tapp(ccap(e.capability)), null));
+}
+
+/////////////////////////////COMPILATION ENVIRONMENT///////////////////
+
+static struct env {
+  con env_type;
+  <id, *(alias_info,con)>Dict::dict capability;
+  <string, *(int,int)>Dict::dict var_map; // var -> backwards depth,offset
+  int depth;
+  con stack_type;
+}
+static *(int,int) var_lookup(env ev, var v) {
+  try {
+    *(int,int) from_dict = Dict::lookup(ev.var_map, v.v);
+    return ^(ev.depth - from_dict.1, from_dict.2);
+  } handle y
+      switch y {
+      case Dict::Absent: raise undefined_var(v);
+      default:           raise (y);
+  }
+}
+static con env_to_con(<*(reg,con)>list regs, env e) {
+  con esp_c = csptr(e.stack_type);
+  con ebx_c = e.env_type;
+  //  return cempty();
+  return 
+    cforall(cap_v(),   ^kind.Kcap,
+	    cforall(stack_v(), ^kind.Kstack, 
+		    ccode_ms(ms_set_cap(ms_set_regs(ms_empty(),
+						    ^list(^(esp,esp_c),
+						    ^list(^(ebx,ebx_c), 
+						    regs))),
+					cjoin(^list(cap_c(),
+					      ^list(ccap(e.capability),
+					      null)))))));
+}
+static env push_con(env e, genop gop, con c) {
+  emit(push(gop));
+  return ^env(e.env_type, e.capability,
+	      e.var_map, e.depth, ccons(c,e.stack_type));
+}
+static env pop_con(env e, genop gop) {
+  emit(pop(gop));
+  con stacktail = dummycon(); // too bad switch isn't an exp
+  switch e.stack_type.rcon {
+  case Ccons(x): stacktail = x.2;
+  default:       raise compilerBug("expected Ccons in pop");
+  }
+  return ^env(e.env_type, e.capability, e.var_map, e.depth, stacktail);
+}
+
+static void get_frame(env e, int i) {
+  int j = i;
+  if (j > 0) {
+    emit(move(Reg(eax), prjr(ebx,0)));
+    while (--j > 0)
+      emit(move(Reg(eax), prjr(eax,0)));
+  } else 
+    emit(move(Reg(eax),Reg(ebx)));
+  if (i == e.depth)
+    emit(coerce(eax, unroll));
+}
+                                  
+///////////////////////////////CODE GENERATION UTILITIES////////////////
+
+// Note: I think using globals like this is ugly, but it's how the
+// caml implementation did it. Makes generator non-functional.
+// Note: lots of current_var stuff left out of port since not carrying var names
+// will probably put them back in some day.
+
+// GLOBAL CODE GEN VARIABLES
+static <code_block>list                   code_blocks    = null;
+static <*(id,con)>Opt                     current_label  = null;
+static <instruction>list                  current_instrs = null;
+static <*(env,id,<string>list,ilexp)>list functions      = null;
+static <*(id,string)>list                 strings        = null;
+
+static void push_code(env ev, id lab, <string>list args, ilexp ex) {
+  functions = ^list(^(ev,lab,args,ex),functions);
+}
+static id push_string(string str) {
+  id l    = id_new("s");
+  strings = ^list(^(l,str),strings);
+  return l;
+}
+// INITIALIZATON
+static void reset_generator() {
+  code_blocks    = null;
+  current_label  = ^Opt(^(tal_main_id.v, tal_main_con.v));
+  current_instrs = null;
+}
+// OUTPUT UTILITIES
+static void emit(instruction i) { 
+  current_instrs = cons(i, current_instrs); 
+}
+static void comment(string s) { 
+  if (print_comments) emit(^instruction.Comment(s));
+}
+static void flush_code() {
+  <instruction>list inst_l = optimize(List::rev(current_instrs));
+  int i = List::length(inst_l);
+  instruction inst_a[] = new_array(i, ^instruction.Nop);
+  int j = 0;
+  for (j ; j < i; j++) {
+    inst_a[j] = inst_l.hd;
+    inst_l    = inst_l.tl;
+  }
+  *(id,con) x    = current_label.v;
+
+  code_blocks    = ^list(^code_block(x.1, ^Opt(x.2), inst_a), code_blocks);
+  current_instrs = null;
+}
+static void emit_lab(env e, id l, <*(reg,con)>list regs) {
+  flush_code();
+  current_label = ^Opt(^(l,env_to_con(regs, e)));
+}
+static data_block compile_string(*(id,string)x) {
+  int len = size(x.2);
+  return 
+    ^data_block(x.1,
+		null,
+		^coerce
+		(^list(^data_item.D4bytes(^coerce(len,null)),
+		 ^list(^data_item.Dup,
+		 ^list(^data_item.Dbytes(x.2), null))),
+		^list(^coercion.Pack(^(pcint(len), raw_string_c())),
+		^list(^coercion.Toarray(^(4,0,cfield(pcbytes(^scale.Byte1),
+						   ^variance.ReadWrite))),
+		null))));
+}
+static <data_block>list get_strings() {
+  return List::map(compile_string, strings);
+}
+
+//////////////////////CODE GENERATION/////////////////////////////////
+// Invariants: NOTICE I CHANGED DIRECTION OF DEPTH
+//   1. each expression returns a value of type dyn_c in Eax.
+//   2. the current environment is in Ebx.
+//   3. the environment is an n-tuple frame (n >= 1) where the 
+//        first component is a pointer to the previous lexically-enclosing
+//        frame and the rest of the components are the variables defined
+//        at that depth.
+//   4. env contains:
+//         (a) the current type of the stack
+//         (b) a map from variables to (depth * offset) where the depth
+//               is the depth of the frame (0 = OLDEST FRAME) and offset 
+//               is the word offset within the frame.
+//         (c) the type of the current frame
+////////////////////////////////////////////////////////////////////
+
+static exception DoesTailCall;
+       
+// for external function calls:
+static void do_call_instr(env e, id lab) {
+  emit(^instruction.Call(^coerce(^genop.Addr(lab),
+                                 ^list(^coercion.Tapp
+				        (ccons(e.env_type, 
+					       e.stack_type)), 
+				 ^list(^coercion.Tapp(ccap(e.capability)),
+				 null)))));
+}
+static void do_call0(env e, id lab) {
+  emit(push(Reg(ebx)));
+  do_call_instr(e, lab);
+  emit(pop(Reg(ebx)));
+}
+static void do_call1(env e, id lab) {
+  emit(push(Reg(ebx)));
+  emit(push(Reg(eax)));
+  do_call_instr(e, lab);
+  emit(pop(Reg(ebx)));
+  emit(pop(Reg(ebx)));
+}
+static void do_call2(env e, id lab) {
+  emit(pop(Reg(ecx)));
+  emit(push(Reg(ebx)));
+  emit(push(Reg(eax)));
+  emit(push(Reg(ecx)));
+  do_call_instr(e, lab);
+  emit(pop(Reg(ebx)));
+  emit(pop(Reg(ebx)));
+  emit(pop(Reg(ebx)));
+}
+
+// for boxing/tagging object. kills eax and maybe genop, 
+// assumes malloc doesn't kill ebp
+static void make_obj(int tag, genop g, con c) {
+  id name = Id::id_of_string("obj");
+  emit(move(Reg(ebp),g));
+  emit(push(Reg(ebx)));
+  emit(malloc(name,8));
+  emit(pop(Reg(ebx)));
+  emit(move(prjr(eax,0), Immed(tag)));
+  emit(move(prjr(eax,4), Reg(ebp)));
+  emit(^instruction.ForgetUnique(name));
+  emit(coerce_clist(eax, List::append(dyn_coercion(),
+				      ^list(^coercion.Forgetname,null))));
+}
+// for checking and refining types
+static void check_tag(env e, int tag, id error_label) {
+  id name = Id::id_of_string("n");
+  emit(coerce(eax, unroll));
+  emit(^instruction.Nameobj(^(name, Reg(eax))));
+  emit(cmp(Reg(eax), ^genop.Immed(min_pointer_integer)));
+  emit(^instruction.Jcc(^(^condition.Below, 
+                          ^coerce(error_label, err_coercion(e)))));
+  emit(cmp(prjr(eax,0), ^genop.Immed(tag)));
+  emit(^instruction.Jcc(^(^condition.NotEq,
+                          ^coerce(error_label, err_coercion(e)))));
+  emit(coerce(eax, ^coercion.Forgetname));
+  emit(^instruction.RemoveName(name));
+}
+static void check_tag_extract(env e, int tag, id error_label) {
+  check_tag(e, tag, error_label);
+  emit(move(Reg(eax), prjr_coerce(eax,4,fromsum)));
+}
+static void check_pair(env e) {
+  check_tag(e, pair_tag, not_pair_label.v);
+  emit(coerce(eax, fromsum));
+}
+static void check_int(env e) {
+  check_tag_extract(e, int_tag, not_int_label.v);
+}
+static void check_string(env e) {
+  check_tag_extract(e, string_tag, not_string_label.v);
+}
+static void check_char(env e) {
+  check_tag_extract(e, char_tag, not_char_label.v);
+}
+static void check_indesc(env e) {
+  check_tag_extract(e, indesc_tag, not_indesc_label.v);
+}
+static void check_outdesc(env e){
+  check_tag_extract(e, outdesc_tag, not_outdesc_label.v);
+}
+static void check_fn(int arity, env e) {
+  check_tag(e, closure_tag(arity), not_fn_label.v);
+}
+static void is_tag(env ev, ilexp ex, bool indirect, int tag, string idstr, 
+		   condition uncnd) { // was called check_tag_bool
+  id false_lab  = id_new(idstr); 
+  <id>coerce co = ^coerce(false_lab,branch_coercion());
+  comp_exp(false, ev, ex);
+  comment("is Eax a <something>?"); 
+  emit(move_coerce(Reg(ecx), Reg(eax), unroll));
+  emit(move_clist (Reg(eax), Immed(0), dyn_coercion()));
+  id name = Id::id_of_string("n");
+  emit(^instruction.Nameobj(^(name, Reg(ecx))));
+  if (indirect) {
+    emit(cmp(Reg(ecx), ^genop.Immed(min_pointer_integer)));
+    emit(^instruction.Jcc(^(^condition.Below, co)));
+    emit(cmp(prjr(ecx,0), ^genop.Immed(tag)));
+    emit(^instruction.Jcc(^(uncnd, co)));
+  } else {
+    emit(cmp(Reg(ecx), ^genop.Immed(tag)));
+    emit(^instruction.Jcc(^(uncnd, co)));
+  }
+  comment("Eax is a (tagged and boxed) <something>");
+  emit(move_clist(Reg(eax), Immed(1), dyn_coercion()));
+  emit(fallthru());
+  emit_lab(ev, false_lab, ^list(^(eax,dyn_c()), null));
+} 
+static void is_indirect_eq_tag(env ev, ilexp ex, int tag, string idstr) {
+  return is_tag(ev,ex,true,tag,idstr,^condition.NotEq);
+}
+
+// heart of code generation: expressions:
+static env comp_exps_f(env ev, ilexp ex) {
+  comp_exp(false,ev,ex);
+  return push_con(ev, Reg(eax), dyn_c());
+}
+static env comp_exps (env ev, <ilexp>list exps) {
+  return List::fold_left(comp_exps_f, ev, exps);
+}
+static env comp_and_set_exps(env outer_ev, <ilexp>list exps, <string>list vars){
+  // unlike the old Popcorn compiler, we're crazy enough to put 
+  // capabilities on label types
+
+  exn err = ^compilerBug("bad environment type in comp_and_set_exps");
+  con       uninit    = cfield(cbyte4(), ^variance.ReadWrite);
+  con       init      = cfield(dyn_c(),  ^variance.ReadWrite);
+  int       numvars   = List::length(vars);
+  int       offset    = 1;
+  con       first     = cfield(outer_ev.env_type,^variance.Read);
+  <con>list inits     = null;
+  <con>list uninits   = null;
+  for(int i=0; i < numvars; ++i)
+    uninits = ^list(uninit, uninits);
+  id name = id_new("let_env");
+
+  comment("build let frame");
+  emit(move(Reg(ebp),Reg(ebx)));
+  emit(malloc(name,4+4*numvars));
+  emit(move(prjr(eax,0),Reg(ebp)));
+  emit(move(Reg(ebx),Reg(eax)));
+
+  comment("initialize let-bound variables");
+  env init_ev = ^env(cname(cvar(name)),
+		     Dict::insert(outer_ev.capability,
+				  name, ^(^alias_info.Unique,cprod_b(uninits))),
+		     outer_ev.var_map,
+		     outer_ev.depth + 1,
+		     outer_ev.stack_type);
+  
+  while(exps != null && vars != null) {
+    if (exps == null || vars == null) 
+      raise compilerBug("comp_and_set_exps list mismatch");
+
+    // compute the next field
+    comp_exp(false, init_ev, exps.hd);
+
+    // initialize the next field (please excuse the n^2 space consumption)
+    emit(move(prjr(ebx,offset*4), Reg(eax)));
+    init_ev.var_map = Dict::insert(init_ev.var_map, 
+				   vars.hd, ^(init_ev.depth, offset));
+    inits   = ^list(init,inits);
+    uninits = uninits.tl;
+    init_ev.capability = 
+      Dict::insert(init_ev.capability,
+		   name, ^(^alias_info.Unique, 
+		           cprod_b(^list(first, 
+					 List::revappend(inits,uninits)))));
+    
+    // iterate
+    offset++;
+    exps    = exps.tl;
+    vars    = vars.tl;
+  }
+  emit(^instruction.ForgetUnique(name));
+  emit(coerce(ebx, ^coercion.Forgetname));
+  return ^env(cprod_b(^list(first,inits)),
+	      outer_ev.capability,
+	      init_ev.var_map,
+	      init_ev.depth,
+	      outer_ev.stack_type);
+}
+static void comp_exp(bool tailcall, env ev, ilexp ex) {
+  con dync = dyn_c();
+
+  switch ex.e {
+  case Int(i):    emit(move(Reg(eax),Immed(i)));
+  case String(s): emit(move(Reg(eax),^genop.Addr(push_string(s))));
+  case Char(c):   emit(move(Reg(eax),Immed(ord(c))));
+  case Nil:       emit(move_clist(Reg(eax),Immed(2), dyn_coercion()));
+  case False:     emit(move_clist(Reg(eax),Immed(0), dyn_coercion()));
+  case True:      emit(move_clist(Reg(eax),Immed(1), dyn_coercion()));
+
+  case Var(x):
+    comment("lookup variable");
+    *(int,int) depth_offset = var_lookup(ev,x); // may raise undefined_var
+    int depth  = depth_offset.1;
+    int offset = depth_offset.2;
+    if (depth != 0 || ev.depth==0) {
+      get_frame(ev,depth);
+      emit(move(Reg(eax), prjr(eax, offset*4)));
+    } else
+      emit(move(Reg(eax), prjr(ebx, offset*4)));
+
+  case Set(x):
+    var    v = x.1;
+    ilexp  e = x.2;
+    comment("set variable");
+    comp_exp(false,ev,e);
+    
+    *(int,int) depth_offset = var_lookup(ev, v); // may raise undefined_var
+    int        depth        = depth_offset.1;
+    int        offset       = depth_offset.2;
+    if (depth != 0 || ev.depth==0) {
+      emit(move(Reg(ecx),Reg(eax)));
+      get_frame(ev,depth);
+      emit(move(prjr(eax, offset*4), Reg(ecx)));
+      comp_exp(false, ev, ^ilexp(^uexp.False, ^tipe.D));
+    }
+    else
+      emit(move(prjr(ebx,offset*4),Reg(eax)));
+
+  case Lambda(x):
+    <string>list args = x.args;
+    ilexp e           = x.body;
+    int num_args = List::length(args);
+    if (num_args > max_args) 
+      raise compilerBug("too many args for Lambda in scomp");
+    id  lab          = id_new("f");
+    int tag          = closure_tag(num_args);
+    con env_con      = ev.env_type;
+    con code_con     = capp(code_c(num_args), env_con);
+    con closure_con  = closure_c(num_args);
+    push_code(ev,lab,args,e); // generate code later
+    comment("begin build closure");
+    id name = Id::id_of_string("lam");
+    emit(push(Reg(ebx)));
+    emit(malloc(name,8));
+    emit(move_coerce(prjr(eax,0),^genop.Addr(lab),roll(code_con)));
+    emit(pop(Reg(ebx)));
+    emit(move(prjr(eax,4),Reg(ebx)));
+    emit(^instruction.ForgetUnique(name));
+    emit(coerce_clist(eax, ^list(pack(env_con,closure_con),
+			   ^list(^coercion.Forgetname,null))));
+    comment("end build closure");
+
+  case App(x):
+    ilexp       e  = x.1;
+    <ilexp>list es = x.2;
+    int num_args = List::length(es);
+    if (num_args > max_args)
+      raise compilerBug("too many args for Application in scomp");
+    <con>list cs = null;
+    int i = num_args;
+    while (i-- > 0) 
+      cs = ^list(dync,cs);
+    cs = ^list(env_c(),cs);
+    env ev2 = comp_exps(ev, es);
+    comp_exp(false, ev2, e);
+    comment("begin apply closure");
+    emit(^instruction.Unpack(^(env_v(),ebp,
+			       ^coerce(prjr_coerce(eax,4,fromsum),null))));
+    emit(push(Reg(ebx)));
+    id name = Id::id_of_string("app");
+    emit(malloc(name,4+num_args*4));
+    emit(pop(Reg(ebx)));
+    emit(move(Reg(ecx),prjr(ebp,4)));
+    emit(move(prjr(eax,0),Reg(ecx)));
+    i = num_args;
+    while (i > 0) {
+      emit(pop(Reg(ecx)));
+      emit(move(prjr(eax,i*4),Reg(ecx)));
+      --i;
+    }
+    emit(^instruction.ForgetUnique(name));
+    emit(coerce(eax,^coercion.Forgetname));
+    if (tailcall) {
+      
+      emit(move(Reg(ebx),Reg(eax)));
+      emit(move(Reg(eax),prjr(ebp,0)));
+      emit(^instruction.Jmp(^coerce(Reg(eax),
+				    ^list(^coercion.Tapp(stack_c()),
+				    ^list(^coercion.Tapp(ccap(ev.capability)),
+				    ^list(unroll,null))))));
+      comment("end tailcall");
+      raise DoesTailCall();
+    } else {
+      env ev3 = push_con(ev, Reg(ebx), ev.env_type);
+      emit(move(Reg(ebx),Reg(eax)));
+      emit(move(Reg(eax),prjr(ebp,0)));
+      emit(^instruction.Call(^coerce(Reg(eax), 
+				     List::append(call_coercion(ev3),
+						 ^list(unroll,null)))));
+      emit(pop(Reg(ebx)));
+    }
+
+  case Op(x): return comp_op(ev, x.1, x.2);
+    
+  case Let(x):
+    *(<string>list, <ilexp>list) vars_es  = List::split(x.1);
+    <string>list                 vars     = vars_es.1;
+    <ilexp>list                  es       = vars_es.2;
+    ilexp                        e        = x.2;
+    env ev_frame = comp_and_set_exps(ev,es,vars);
+    comment("body of the let");
+    comp_exp(tailcall, ev_frame, e);
+    comment("remove let frame");
+    emit(move(Reg(ebx),prjr(ebx,0)));
+
+  case If(x):
+    switch x.1.e {
+    case Op(y):
+      switch y.1 {
+      case Not: 
+	comp_exp(tailcall, ev, ^ilexp(^uexp.If(^(y.2.hd, x.2, x.3)), ex.t));
+	return;
+      default: ;
+      }
+    default: ;
+    }
+    id false_lab = id_new("ifFalse");
+    id end_lab   = id_new("ifEnd");
+    comp_exp(false, ev, x.1);
+    emit(^instruction.Cmp(^(^coerce(Reg(eax), null),
+                            ^coerce(^genop.Immed(0), dyn_coercion()))));
+    emit(^instruction.Jcc(^(^condition.Eq,
+                            ^coerce(false_lab,branch_coercion()))));
+    bool both_return = true;
+    try {
+      comp_exp(tailcall, ev, x.2);
+      if (tailcall)
+	emit(^instruction.Retn(null));
+      else {
+	emit(^instruction.Jmp(^coerce(^genop.Addr(end_lab),branch_coercion())));
+	both_return = false;
+      }
+    } handle y
+	switch y {
+	case DoesTailCall: ;
+	default:           raise (y);
+    }
+    emit_lab(ev,false_lab,null);
+    try {
+      comp_exp(tailcall, ev, x.3);
+      if (tailcall)
+	emit(^instruction.Retn(null));
+      else {
+	emit(fallthru());
+	both_return = false;
+      }
+    } handle y
+	switch y {
+	case DoesTailCall: ;
+	default:           raise (y);
+    }
+    if (both_return)
+      raise DoesTailCall();
+    else
+      emit_lab(ev,end_lab,^list(^(eax,dync),null));
+
+  case Seq(es):
+    if (es == null) raise compilerBug("empty sequence in scomp");
+    do
+      comp_exp(false,ev,es.hd);
+    while ((es = es.tl).tl != null);
+    comp_exp(tailcall,ev,es.hd);
+
+  case Coerce(x):
+    comp_exp(false, ev, x.2);
+    switch x.1 {
+    case Int2D:     make_obj(int_tag,     Reg(eax), raw_int_c());
+    case String2D:  make_obj(string_tag,  Reg(eax), raw_string_c());
+    case Char2D:    make_obj(char_tag,    Reg(eax), raw_int_c());
+    case Indesc2D:  make_obj(indesc_tag,  Reg(eax), raw_int_c());
+    case Outdesc2D: make_obj(outdesc_tag, Reg(eax), raw_int_c());
+    case Pair2D:    emit(coerce_clist(eax,dyn_coercion()));
+    case Fn2D(i):   make_obj(closure_tag(i),Reg(eax),closure_c(i));
+    case D2Int:     check_int(ev);
+    case D2String:  check_string(ev);
+    case D2Char:    check_char(ev);
+    case D2Indesc:  check_indesc(ev);
+    case D2Outdesc: check_outdesc(ev);
+    case D2Pair:    check_pair(ev);
+    case D2Fn(i):   check_fn(i,ev);
+    }
+  }
+}
+static void comp_op(env ev, primop p, <ilexp>list args) {
+  con dync = dyn_c();
+  ilexp dummy = ^ilexp(^uexp.False, ^tipe.D); 
+  ilexp arg1 = dummy;
+  ilexp arg2 = dummy;
+  ilexp arg3 = dummy;
+  switch List::length(args) {
+  case 0: ;
+  case 1:  arg1 = args.hd;
+  case 2:  arg1 = args.hd; arg2 = args.tl.hd;
+  case 3:  arg1 = args.hd; arg2 = args.tl.hd; arg3 = args.tl.tl.hd;
+  default: raise compilerBug("too many args to Primop in scomp");
+  }
+  switch p {
+  
+  case Plus:  comp_arith(arg1, arg2, ev, ^arithbin.Add);
+  case Minus: comp_arith(arg1, arg2, ev, ^arithbin.Sub);
+  case Times: comp_arith(arg1, arg2, ev, ^arithbin.Imul2);
+  case Div:
+    comp_exp(false, ev, arg1);
+    ev = push_con(ev, Reg(eax), raw_int_c());
+    comp_exp(false, ev, arg2);
+    emit(pop(Reg(ecx)));
+    emit(^instruction.Xchg(^(Reg(eax),ecx)));
+    emit(^instruction.Conv(^conv.Cdq));
+    emit(^instruction.ArithMD(^(^arithmd.Div,Reg(ecx))));
+  
+  case Inteq:     comp_compare(arg1,arg2,ev,^condition.Eq,        raw_int_c());
+  case Ptreq:     comp_compare(arg1,arg2,ev,^condition.Eq,        dync);
+  case Less:      comp_compare(arg1,arg2,ev,^condition.Less,      raw_int_c());
+  case Greater:   comp_compare(arg1,arg2,ev,^condition.Greater,   raw_int_c());
+  case Lesseq:    comp_compare(arg1,arg2,ev,^condition.LessEq,    raw_int_c());
+  case Greatereq: comp_compare(arg1,arg2,ev,^condition.GreaterEq, raw_int_c());
+  case Not: 
+    comp_exp(false, ev, ^ilexp(^uexp.If(^(arg1, 
+					   ^ilexp(^uexp.False, ^tipe.D),
+					   ^ilexp(^uexp.True,  ^tipe.D))),
+                                ^tipe.D));
+  
+  case Isint:     is_indirect_eq_tag(ev, arg1, int_tag,     "not_int"    );
+  case Ispair:    is_indirect_eq_tag(ev, arg1, pair_tag,    "not_pair"   );
+  case Ischar:    is_indirect_eq_tag(ev, arg1, char_tag,    "not_char"   );
+  case Isstring:  is_indirect_eq_tag(ev, arg1, string_tag,  "not_string" );
+  case Isindesc:  is_indirect_eq_tag(ev, arg1, indesc_tag,  "not_indesc" );
+  case Isoutdesc: is_indirect_eq_tag(ev, arg1, outdesc_tag, "not_outdesc");
+  case Isbool:  is_tag(ev,arg1,false,true_tag,"not_bool",^condition.Above);
+  case Isnil:   is_tag(ev,arg1,false,null_tag,"not_nil", ^condition.NotEq);
+  case Iseof:   is_tag(ev,arg1,false,eof_tag, "not_eof", ^condition.NotEq);
+  case Isfn:    is_tag(ev,arg1,true,closure_tag(0),"not_fn",^condition.Below);
+			
+  
+  case Cons:
+    comp_exp(false, ev, arg1);
+    ev = push_con(ev, Reg(eax), dync);
+    comp_exp(false, ev, arg2);
+    emit(move(Reg(ebp),Reg(eax)));
+    comment("build cons cell from Eax and top-of-stack");
+    id name = Id::id_of_string("cons");
+    emit(push(Reg(ebx)));
+    emit(malloc(name,12));
+    emit(pop(Reg(ebx)));
+    emit(move(prjr(eax,0),Immed(pair_tag)));
+    emit(move(prjr(eax,8),Reg(ebp)));
+    emit(pop(Reg(ebp)));
+    emit(move(prjr(eax,4),Reg(ebp)));
+    emit(^instruction.ForgetUnique(name));
+    emit(coerce(eax, ^coercion.Forgetname));
+  case Car:
+    comp_exp(false,ev,arg1);
+    emit(move(Reg(eax),prjr(eax,4)));
+  case Cdr:
+    comp_exp(false, ev, arg1);
+    emit(move(Reg(eax),prjr(eax,8)));
+  case Setcar:
+    comp_exp(false, ev, arg2);
+    env ev2 = push_con(ev, Reg(eax), dync);
+    comp_exp(false, ev2, arg1);
+    emit(pop(Reg(ecx)));
+    emit(move(prjr(eax,4), Reg(ecx)));
+    comp_exp(false, ev, dummy); // return False
+  case Setcdr:
+    comp_exp(false, ev, arg2);
+    env ev2 = push_con(ev, Reg(eax), dync);
+    comp_exp(false, ev2, arg1);
+    emit(pop(Reg(ecx)));
+    emit(move(prjr(eax,8), Reg(ecx)));
+    comp_exp(false, ev, dummy); // return False
+    
+  case Openin:  
+    comp_exp(false, ev, arg1); 
+    do_call1(ev, openin_label.v);
+  case Openout: 
+    comp_exp(false, ev, arg1); 
+    do_call1(ev, openout_label.v);
+  case Closein: 
+    comp_exp(false, ev, arg1); 
+    do_call1(ev, closein_label.v);
+    comp_exp(false, ev, dummy); // return False
+  case Closeout:
+    comp_exp(false, ev, arg1);
+    do_call1(ev, closeout_label.v);
+    comp_exp(false, ev, dummy); // return False
+  case Flushout:
+    comp_exp(false, ev, arg1);
+    do_call1(ev, flushout_label.v);
+    comp_exp(false, ev, dummy); // return False
+  case Getchar:  do_call0(ev, getchar_label.v);  // getchar  returns a D
+  case Peekchar: do_call0(ev, peekchar_label.v); // peekchar returns a D
+  case Putchar:  
+    comp_exp(false,ev,arg1);
+    do_call1(ev, putchar_label.v);
+    comp_exp(false, ev, dummy); // return False
+  case Write:
+    comp_exp(false,ev,arg1);
+    do_call1(ev, write_label.v);
+    comp_exp(false, ev, dummy); // return False
+  case Currentin:
+    do_call0(ev, current_in_port_label.v);
+    make_obj(indesc_tag, Reg(eax), raw_int_c());
+  case Currentout:
+    do_call0(ev, current_out_port_label.v);
+    make_obj(outdesc_tag, Reg(eax), raw_int_c());
+  case Winfile:
+    comp_exp(false, ev, arg1);
+    do_call1(ev, push_in_port_label.v);
+    comp_exp(false, ev, ^ilexp(^uexp.App(^(arg2,null)), ^tipe.D));
+    env ev2 = push_con(ev, Reg(eax), dync);
+    do_call1(ev2, pop_in_port_label.v);
+    emit(pop(Reg(eax)));
+  case Woutfile:
+    comp_exp(false, ev, arg1);
+    do_call1(ev, push_out_port_label.v);
+    comp_exp(false, ev, ^ilexp(^uexp.App(^(arg2,null)), ^tipe.D));
+    env ev2 = push_con(ev, Reg(eax), dync);
+    do_call1(ev2, pop_out_port_label.v);
+    emit(pop(Reg(eax)));
+    
+  case Newstring:
+    comp_exp(false, ev, arg1);
+    env ev2 = push_con(ev, Reg(eax), raw_int_c());
+    comp_exp(false, ev2, arg2);
+    do_call2(ev2, newstring_label.v);
+  case Sizes:
+    comp_exp(false, ev, arg1);
+    emit(^instruction.Unpack(^(array_size_var(),eax,^coerce(Reg(eax),null))));
+    emit(move(Reg(eax),prjr(eax,0)));
+    emit(coerce(eax,^coercion.Subsume(cbyte4())));
+  case Subs:
+    comp_exp(false, ev, arg1);
+    env ev2 = push_con(ev, Reg(eax), raw_string_c());
+    comp_exp(false, ev2, arg2);
+    emit(pop(Reg(ecx)));
+    emit(^instruction.Unpack(^(array_size_var(),ecx,^coerce(Reg(ecx),null))));
+    emit(^instruction.Asub(^(eax,prjr(ecx,4),1,eax,prjr(ecx,0))));
+  case Sets:
+    comp_exp(false,ev,arg1);
+    env ev2 = push_con(ev, Reg(eax), raw_string_c());
+    comp_exp(false, ev2, arg2);
+    env ev3 = push_con(ev, Reg(eax), raw_int_c());
+    comp_exp(false, ev3, arg3);
+    emit(pop(Reg(ecx)));
+    emit(pop(Reg(edx)));
+    emit(^instruction.Unpack(^(array_size_var(),edx,^coerce(Reg(edx),null))));
+    emit(^instruction.Aupd(^(prjr(edx,4),1,ecx,eax,prjr(edx,0))));
+    comp_exp(false, ev, dummy); // return False
+
+  case Chr:
+    comp_exp(false,ev,arg1);
+    emit(^instruction.ArithBin(^(^arithbin.And,Reg(eax),Immed(255))));
+  case Ord:
+    comp_exp(false,ev,arg1);
+    comment("ord!");
+    emit(move(Reg(ecx),Immed(0)));
+    emit(^instruction.Movpart(^(true,Reg(ecx),^reg_part.RPe,
+				     Reg(eax),^reg_part.RPl)));
+    emit(move(Reg(eax),Reg(ecx)));
+  }
+}
+static void comp_arith(ilexp arg1, ilexp arg2, env ev, arithbin op) {
+  comp_exp(false,ev,arg2);
+  ev = push_con(ev,Reg(eax),raw_int_c());
+  comp_exp(false,ev,arg1);
+  emit(pop(Reg(ecx)));
+  emit(^instruction.ArithBin(^(op,Reg(eax),Reg(ecx))));
+}
+static void comp_compare(ilexp arg1, ilexp arg2, env ev, condition cnd, con c) {
+  comp_exp(false,ev,arg2);
+  ev = push_con(ev,Reg(eax),c);
+  comp_exp(false,ev,arg1);
+  emit(pop(Reg(ecx)));
+  emit(move(Reg(edx),Reg(eax)));
+  emit(move_coerce(Reg(eax),Immed(0),tosum(raw_bool_c())));
+  emit(cmp(Reg(edx), Reg(ecx)));
+  emit(^instruction.Setcc(^(cnd,Reg(eax))));
+  emit(coerce_clist(eax,dyn_coercion()));
+}
+
+///////////////////////TOP-LEVEL COMPILATION////////////////////////////
+// should redo this with data labels, but this will work for now
+// in meantime, should abstract some of this with comp_exp, case Let
+static  *(id, kind, con) comp_defines(<*(string,ilexp)>list defs) {
+  con dync = dyn_c();
+  *(<string>list,<ilexp>list)   vars_exps = List::split(defs);
+  <string>list                  vars      = vars_exps.1;
+  <string,*(int,int)>Dict::dict init_vars = Dict::empty(strcmp);
+  int                           num_vars  = List::length(vars);
+  int                           i         = 0;
+  <con>list                     fields    = null;
+  <string>list                  vars_left = vars;
+
+  while (i < num_vars) {
+    fields    = ^list(cfield(dyn_c(),^variance.ReadWrite), fields);
+    init_vars = Dict::insert(init_vars, vars_left.hd, ^(0,i));
+    i++;
+    vars_left = vars_left.tl;
+  }
+  id env_ty = id_new("defty");
+  env ev = ^env(clab(env_ty),
+		Dict::empty(id_compare),
+		init_vars,
+		0,
+		cempty());
+  id name = Id::id_of_string("env");
+  emit(move_clist(Reg(ebp),Immed(0),dyn_coercion()));
+  emit(malloc(name,4*num_vars));
+  while (i-- > 0)
+    emit(move(prjr(eax,4*i),Reg(ebp)));
+  emit(^instruction.ForgetUnique(name));
+  emit(coerce(eax, ^coercion.Forgetname));
+  emit(move_coerce(Reg(ebx),Reg(eax),roll(ev.env_type)));
+  vars_left = vars;
+  while (defs != null) {
+    comp_exp(false, ev, ^ilexp(^uexp.Set(^(^var(defs.hd.1,0), defs.hd.2)),
+                               ^tipe.D));
+    defs = defs.tl;
+  }
+  emit(push(Immed(0)));
+  emit(^instruction.Jmp(^coerce(^genop.Addr(exit_label.v),
+                                ^list(^coercion.Tapp(cempty()), null))));
+  return ^(env_ty, k4byte, cprod_b(fields));
+}
+
+static void comp_function(env ev, id label, <string>list args, ilexp body) {
+  // I've written this build the con list 3 times -- should abstract!
+  // in fact, just write Util.replicate!
+  con       dync   = dyn_c();
+  int       i      = List::length(args);
+  <con>list fields = null;
+  while (i-- > 0)
+    fields = ^list(cfield(dync,^variance.ReadWrite),fields);
+  int new_depth = ev.depth+1;
+  <string,*(int,int)>Dict::dict vm = ev.var_map;
+  i = 0;
+  while (args != null) {
+    vm   = Dict::insert(vm,args.hd,^(new_depth,++i));
+    args = args.tl;
+  }
+  con new_env_type  = cprod_b(^list(cfield(ev.env_type,^variance.Read),fields));
+  con new_stack_type= ccons(ccode_l(^list(^(eax,dync),
+                                    ^list(^(esp,csptr(stack_c())), null))),
+			    stack_c());
+  env new_env       = ^env(new_env_type, Dict::empty(id_compare),
+			   vm, new_depth, new_stack_type);
+  con label_c       = cforall(stack_v(),^kind.Kstack,
+			      ccode_l(^list(^(esp, csptr(new_stack_type)),
+			              ^list(^(ebx, new_env_type), null))));
+  current_label     = ^Opt(^(label,label_c));
+  try {
+    comp_exp(true,new_env,body);
+    emit(^instruction.Retn(null));
+  } handle y 
+      switch y {
+      case DoesTailCall: ;
+      default:           raise(y);
+  }
+  flush_code();
+}
+
+static void comp_functions() {
+  while (functions != null) {
+    *(env,id,<string>list,ilexp) f = functions.hd;
+    functions = functions.tl;
+    comp_function(f.1,f.2,f.3,f.4);
+  }
+}
+                               
+//////////////////////PEEPHOLE OPTIMIZER///////////////////////////////
+// life without pattern-matching sucks
+static bool is_a_reg(genop g, reg r) {
+  switch g {
+  case Reg(x): return compare_regs(x,r)==0;
+  default:     return false;
+  }
+}
+static bool is_eax(genop g) { return is_a_reg(g, eax);}
+static bool is_edx(genop g) { return is_a_reg(g, edx);}
+static bool is_immed_0(genop g) {
+  switch g {
+  case Immed(x): return x==0;
+  default:       return false;
+  }
+}
+
+static bool is_null<a>(<a> list x)   { return x == null;}
+
+static bool is_Tosum(<coercion>list x) {
+  if (x != null && x.tl == null)
+    switch x.hd { case Tosum(y): return true; default: return false;}
+  return false;
+}
+static bool is_RollTosum(<coercion>list x) {
+  if (x != null && x.tl == null)
+    switch x.hd { case RollTosum(y): return true; default: return false;}
+  return false;
+}
+static bool is_Unroll(<coercion>list x) {
+  if (x != null && x.tl == null)
+    switch x.hd { case Unroll: return true; default: return false;}
+  return false;
+}
+static bool check_move(instruction i, 
+		       bool f1(genop),bool f2(genop), bool f3(<coercion>list)){
+  switch i {
+  case Mov(x): return f1(x.1) && f2(x.2.op) && f3(x.2.coercions);
+  default:     return false;
+  }
+}
+static genop get_fst_mov_arg(instruction i) {
+  switch i {
+  case Mov(x): return x.1;
+  default:     raise compilerBug("expected a Mov in optimizer");
+  }
+}
+static <genop>coerce get_snd_mov_arg(instruction i) {
+  switch i {
+  case Mov(x): return x.2;
+  default:     raise compilerBug("expected a Mov in optimizer");
+  }
+}
+static int check_add_esp(instruction i) {
+  // retn -1 o.w. (hack since we wouldn't generate that and its safe anyway)
+  switch i {
+  case ArithBin(x):
+    if (is_a_reg(x.2,esp))
+      switch x.1 {
+      case Add: switch x.3 { case Immed(c): return c; default: ; }
+      default: ;
+    }
+  default: ;
+  }
+  return -1;
+}
+
+static <instruction>list optimize(<instruction>list is) { 
+  if (is == null)
+    return null;
+
+//   if (List::length(is) >= 7)
+//     if (check_move(is.hd, is_edx, is_eax, is_null@<coercion>))
+//       if (check_move(is.tl.hd, is_eax, is_immed_0, is_Tosum))
+// 	switch is.tl.tl.hd {
+// 	case Cmp(x): 
+// 	  if (is_a_reg(x.1.op, edx) && is_a_reg(x.2.op, ecx))
+// 	    switch is.tl.tl.tl.hd {
+// 	    case Setcc(x): 
+// 	      if (is_a_reg(x.2, eax)) {
+// 		condition cc = x.1; 
+// 		if (check_move(is.tl.tl.tl.tl.hd, is_eax,is_eax,is_RollTosum))
+// 		  if (check_move(is.tl.tl.tl.tl.tl.hd,is_eax,is_eax,is_Unroll))
+// 		    switch is.tl.tl.tl.tl.tl.tl.hd {
+// 		    case Btagi(x):
+// 		      if (is_eax(Reg(x.1)) && x.2==0)
+// 			switch x.4 {
+// 			case Eq:
+// 			  instruction i1 = 
+// 			    ^instruction.Cmp(^(^coerce(Reg(eax),null), 
+// 			                       ^coerce(Reg(ecx),null)));
+// 			  instruction i2 = 
+// 			    ^instruction.Jcc(^(negate_condition(cc),x.3));
+// 			  return 
+//  		           optimize(cons(i1,cons(i2,is.tl.tl.tl.tl.tl.tl.tl)));
+// 			default: ;
+// 		      }
+// 		    default: ;
+// 		}
+// 	      }
+// 	    default: ;
+// 	  }
+// 	default: ;
+//   }
+  if (List::length(is) >= 2) {
+    if (check_move(is.hd, is_eax, true_f@<genop>, true_f@< <coercion>list>))
+      switch is.tl.hd {
+      case Push(x):
+	if (is_eax(x.op) && is_null(x.coercions)) {
+	  instruction i1 = ^instruction.Push(get_snd_mov_arg(is.hd));
+	  return optimize(cons(i1, is.tl.tl));
+	}
+      default: ;
+    }
+    if (check_move(is.hd, is_eax, true_f@<genop>, true_f@< <coercion>list>)) 
+      if (check_move(is.tl.hd, is_eax, is_eax, true_f@< <coercion>list>)) { 
+	<genop>coerce  cgop = get_snd_mov_arg(is.hd);
+	<coercion>list c2   = get_snd_mov_arg(is.tl.hd).coercions;
+	instruction i1      = 
+	  move_clist(Reg(eax), cgop.op, List::append(c2, cgop.coercions));
+	return optimize(cons(i1, is.tl.tl));
+      }
+    if (check_move(is.hd, is_eax, true_f@<genop>, true_f@< <coercion>list>)) 
+      if (check_move(is.tl.hd, true_f@<genop>, is_eax, is_null@<coercion>)) { 
+	<genop>coerce cgop = get_snd_mov_arg(is.hd);
+	genop gop1         = cgop.op;
+	<coercion>list c   = cgop.coercions;
+	genop gop2         = get_fst_mov_arg(is.tl.hd);
+	switch gop1 {
+	case Prjr(x): return cons(is.hd, optimize(is.tl));
+	case Prjl(x): return cons(is.hd, optimize(is.tl));
+	default: 
+	  instruction i1 = move_clist(gop2, gop1, c);
+	  return optimize(cons(i1, is.tl.tl));
+	}
+      }
+    int j = check_add_esp(is.hd);
+    if (j > 0) {
+      int k = check_add_esp(is.tl.hd);
+      if (k > 0) {
+	instruction i1 = 
+	  ^instruction.ArithBin(^(^arithbin.Add, Reg(esp), Immed(j+k)));
+	return optimize(cons(i1, is.tl.tl));
+      }
+    }
+  }
+  return cons(is.hd, optimize(is.tl));
+}	
+

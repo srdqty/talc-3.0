@@ -1,0 +1,71 @@
+#include "core.h"
+#include "dlpop.h"
+
+/*
+ * see if the program will compile with an extra label .
+ */
+extern window;
+
+struct fart {
+  int a;
+  int b;
+}
+
+fart aFart = ^fart(1,2);
+
+static struct bad2 {
+ int a;
+}
+
+open Core;
+
+void func(int i)
+{
+  printf("func called with %d\n",i);
+}
+
+void 
+pop_main() {
+  try {
+    print_string("-----\nTest: gen_add_call\n-----\n");
+    // print_table();
+    handle_t h1 = dlopen("gen_add1");
+    window make(int,int) = dlsym(h1, "make",
+					  repterm@<window (int,int)>);
+    window w = make(1,2);
+    void print_window(window) = dlsym(h1, "print_window",
+					       repterm@<void (window)>);
+    print_window(w);
+    printf("aFart.a = %d\n",aFart.a);
+    // print_table();
+    handle_t h2 = dlopen("gen_add2");
+    // print_table();
+    dlclose(h1);
+    dlclose(h2);
+  } handle y {
+    switch y {
+    case WrongType(s): {
+      print_string ("Wrong type for symbol : ");
+      print_string (s);
+    }
+    case SymbolNotFound(s): {
+      print_string ("Can't find symbol : ");
+      print_string (s);
+    }
+    case FailsTypeCheck: {
+      print_string ("File doesn't type-check");
+    }
+    case Core::FileOpenError(s): {
+      print_string ("Can't open file : ");
+      print_string (s);
+    }
+    default:
+      print_string ("Exception Raised");
+    }
+    print_string ("\n");
+  }
+}
+
+
+
+

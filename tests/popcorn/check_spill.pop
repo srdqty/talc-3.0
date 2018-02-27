@@ -1,0 +1,111 @@
+// check_spill.pop
+// A ridiculous factorial designed to force register spilling.
+
+#include "core.h"
+open Core;
+
+int pop_main()
+{
+  print_string("fact_spill(10) = ");
+  print_int(fact_spill(10));
+  print_string("\n");
+
+  return 1;
+}
+
+int fact_spill (int i) {
+  int x0=0, x1=0, x2=0, x3=0, x4=0, x5=0, x6=0, x7=0, x8=0, x9=0;
+  int sum0=0, sum1=0, sum2=0, sum3=0, sum4=0, sum5=0, sum6=0, 
+      sum7=0, sum8=0, sum9=0;
+  switch(i) {
+    case 0 : return 1 + x0 + x1 + x2 + x3 + x4 + x5 + x6+ x7 + x8 + x9;
+    case 1 : {x0 = fact_spill(0);
+	      sum0 = sum1+sum2+sum3+sum4+sum5+sum6+sum7+sum8+sum9;
+	      print_int(sum0); print_string(" ");
+	      return i * x0 + x1 + x2 + x3 + x4 + x5 + x6 + x7 + x8 + x9;}
+    case 2 : {x0 = fact_spill(0);
+              x1 = fact_spill(1);
+	      sum1 = x0+x1+sum2+sum3+sum4+sum5+sum6+sum7+sum8+sum9;
+	      print_int(sum1); print_string(" ");
+              return i * x1 + x2 + x3 + x4 + x5 + x6 + x7 + x8 + x9;}
+    case 3 : {x0 = fact_spill(0);
+              x1 = fact_spill(1);
+	      x2 = fact_spill(2);
+	      sum2 = x0+x1+x2+sum3+sum4+sum5+sum6+sum7+sum8+sum9;
+	      print_int(sum2); print_string(" ");
+              return i * x2 + x3 + x4 + x5 + x6 + x7 + x8 + x9;}
+    case 4 : {x0 = fact_spill(0);
+              x1 = fact_spill(1);
+	      x2 = fact_spill(2);
+	      x3 = fact_spill(3);
+	      sum3 = x0+x1+x2+x3+sum4+sum5+sum6+sum7+sum8+sum9;
+	      print_int(sum3); print_string(" ");
+              return i * x3 + x4 + x5 + x6 + x7 + x8 + x9;}
+    case 5 : {x0 = fact_spill(0);
+              x1 = fact_spill(1);
+	      x2 = fact_spill(2);
+	      x3 = fact_spill(3);
+	      x4 = fact_spill(4);
+	      sum4 = x0+x1+x2+x3+x4+sum5+sum6+sum7+sum8+sum9;
+	      print_int(sum4); print_string(" ");
+              return i * x4 + x5 + x6 + x7 + x8 + x9;}
+    case 6 : {x0 = fact_spill(0);
+              x1 = fact_spill(1);
+	      x2 = fact_spill(2);
+	      x3 = fact_spill(3);
+	      x4 = fact_spill(4);
+	      x5 = fact_spill(5);
+	      sum5 = x0+x1+x2+x3+x4+x5+sum6+sum7+sum8+sum9;
+	      print_int(sum5); print_string(" ");
+              return i * x5 + x6 + x7 + x8 + x9;}
+    case 7 : {x0 = fact_spill(0);
+              x1 = fact_spill(1);
+	      x2 = fact_spill(2);
+	      x3 = fact_spill(3);
+	      x4 = fact_spill(4);
+	      x5 = fact_spill(5);
+	      x6 = fact_spill(6);	
+	      sum6 = x0+x1+x2+x3+x4+x5+x6+sum7+sum8+sum9;
+	      print_int(sum6); print_string(" ");
+              return i * x6 + x7 + x8 + x9;}
+    case 8 : {x0 = fact_spill(0);
+              x1 = fact_spill(1);
+	      x2 = fact_spill(2);
+	      x3 = fact_spill(3);
+	      x4 = fact_spill(4);
+	      x5 = fact_spill(5);
+	      x6 = fact_spill(6);	
+	      x7 = fact_spill(7);	
+	      sum7 = x0+x1+x2+x3+x4+x5+x6+x7+sum8+sum9;
+	      print_int(sum7); print_string(" ");
+              return i * x7 + x8 + x9;}
+    case 9 : {x0 = fact_spill(0);
+              x1 = fact_spill(1);
+	      x2 = fact_spill(2);
+	      x3 = fact_spill(3);
+	      x4 = fact_spill(4);
+	      x5 = fact_spill(5);
+	      x6 = fact_spill(6);	
+	      x7 = fact_spill(7);	
+	      x8 = fact_spill(8);	
+	      sum8 = x0+x1+x2+x3+x4+x5+x6+x7+x8+sum9;
+	      print_int(sum8); print_string(" ");
+              return i * x8 + x9;}
+    case 10 : {x0 = fact_spill(0);
+              x1 = fact_spill(1);
+	      x2 = fact_spill(2);
+	      x3 = fact_spill(3);
+	      x4 = fact_spill(4);
+	      x5 = fact_spill(5);
+	      x6 = fact_spill(6);	
+	      x7 = fact_spill(7);	
+	      x8 = fact_spill(8);	
+	      x9 = fact_spill(9);	
+	      sum9 = x0+x1+x2+x3+x4+x5+x6+x7+x8+x9;
+	      print_int(sum9); print_string(" ");
+              return i * x9;}
+    default : return i * fact_spill(i-1);
+  }
+}
+
+//EOF: check_spill.pop

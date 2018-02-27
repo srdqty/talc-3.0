@@ -1,0 +1,257 @@
+
+// Port of the splay tree based dictionary implementation (c) Morrisett, Glew,
+// Walker, Crary.
+// Port by Dan, June 1999
+
+#include "core.h"
+#include "list.h"
+#include "splay.h"
+open Splay;
+
+prefix Dict;
+open   Dict;
+
+exception Present;
+exception Absent;
+
+abstract struct <a,b>dict {
+  int       reln(a,a);
+  <a,b>tree tree;
+}
+
+// should be the commented out one, but unification is buggy
+<a,b>dict empty<a,b>(int comp(a,a)) {
+  <a,b>tree t = ^tree.Leaf;
+  return ^dict(comp, t);
+}
+//<a,b>dict empty<a,b>(int comp(a,a)) {
+//  return ^dict(comp, ^tree.Leaf);
+//}
+
+bool is_empty<a,b>(<a,b>dict d) {
+  switch d.tree {
+  case Leaf:    return true;
+  case Node(_): return false;
+  }
+}
+
+bool member<a,b>(<a,b>dict d, a key) {
+  return splay(d.reln, key, d.tree);
+}
+
+<a,b>dict insert<a,b>(<a,b>dict d, a key, b data) {
+  <a,b>tree newleft = ^tree.Leaf, newright = ^tree.Leaf;
+  if (splay(d.reln, key, d.tree)) {
+    // we're functional, so have to make a new root node?
+    <a,b>node n = d.tree.Node.v;
+    newleft     = n.left;
+    newright    = n.right;
+  }
+  else 
+    switch d.tree {
+    case Node(noderef):
+      <a,b>node n = d.tree.Node.v;
+      if (d.reln(key,n.key) < 0) {
+	newleft  = n.left;
+	newright = ^tree.Node(^noderef(^node(n.key, n.data, 
+					     ^tree.Leaf, n.right)));
+      } else {
+	newleft  = ^tree.Node(^noderef(^node(n.key, n.data,
+					     n.left, ^tree.Leaf)));
+	newright = n.right;
+      }
+    case Leaf: ; // newleft and newright are already Leaf
+  }
+  return ^dict(d.reln, ^tree.Node(^noderef(^node(key,data,newleft,newright))));
+}
+
+<a,b>dict insert_new<a,b>(<a,b>dict d, a key, b data) {
+  // somewhat wasteful this way (makes two new top nodes)
+  if (splay(d.reln, key, d.tree))
+    raise Present();
+  return insert(d, key, data);
+}
+
+<a,b>dict inserts<a,b>(<a,b>dict d,<*(a,b)>List::list kds) {  
+  for(; kds != null; kds = kds.tl)
+    d = insert(d, kds.hd.1, kds.hd.2);
+  return d;
+}
+
+<a,b>dict singleton<a,b>(int comp(a,a),a key,b data) {
+  return ^dict(comp, ^tree.Node(^noderef(^node(key, data, 
+					       ^tree.Leaf, ^tree.Leaf))));
+}
+
+b lookup<a,b>(<a,b>dict d,a key) {
+  if (splay(d.reln, key, d.tree))
+    switch d.tree {
+    case Node(noderef): return noderef.v.data;
+    case Leaf:          raise Core::Impossible("Dict::lookup");
+  }
+  raise Absent();
+}
+
+<b>Core::Opt lookup_opt<a,b>(<a,b>dict d,a key) {
+  if (splay(d.reln, key, d.tree))
+    switch d.tree {
+    case Node(noderef): return ^Core::Opt(noderef.v.data);
+    case Leaf:          raise Core::Impossible("Dict::lookup");
+  }
+  return null;
+}
+
+
+<a,b>dict delete<a,b>(<a,b>dict d,a key) {
+  if (splay(d.reln, key, d.tree))
+    switch d.tree {
+    case Leaf: raise Core::Impossible("Dict::lookup");
+    case Node(noderef):
+      <a,b>node n = noderef.v;
+      switch n.left {
+      case Leaf:    return ^dict(d.reln, n.right);
+      case Node(noderef_left): 
+	switch n.right {
+	case Leaf:    return ^dict(d.reln, n.left);
+	case Node(node_ref_right): 
+	  splay(get_largest@<a>, key, n.left);
+	  <a,b>node newtop = n.left.Node.v; // splay changes this
+	  return ^dict(d.reln,
+		       ^tree.Node(^noderef(^node(newtop.key, newtop.data,
+						 newtop.left, n.right))));
+	}
+      }
+  }
+  else
+    return d;
+}
+      
+static int get_largest<a>(a x, a y) { return 1; }
+
+<a,b>dict delete_present<a,b>(<a,b>dict d,a key) {
+  <a,b>dict d2 = delete(d,key);
+  if (d == d2)
+    raise Absent();
+  return d2;
+}
+
+c fold<a,b,c>(c f(a,b,c),<a,b>dict d,c accum) {
+  return fold_tree(f, d.tree, accum);
+}
+static c fold_tree<a,b,c>(c f(a,b,c), <a,b>tree t, c accum) {
+  switch t {
+  case Leaf: 
+    return accum;
+  case Node(noderef): 
+    <a,b>node n = noderef.v;
+    return f(n.key, n.data, fold_tree(f, n.left, 
+				      fold_tree(f, n.right, accum)));
+  }
+}
+c fold_c<a,b,c,d>(c f(d,a,b,c),d env, <a,b>dict dict,c accum) {
+  return fold_tree_c(f,env,dict.tree,accum);
+}
+static c fold_tree_c<a,b,c,d>(c f(d,a,b,c),d env, <a,b>tree t,c accum) {
+  switch t {
+  case Leaf: 
+    return accum;
+  case Node(noderef): 
+    <a,b>node n = noderef.v;
+    return f(env, n.key, n.data, fold_tree_c(f,env,n.left, 
+					     fold_tree_c(f,env,n.right,accum)));
+  }
+}
+void app<a,b,c>(c f(a,b),<a,b>dict d) {
+  app_tree(f,d.tree);
+}
+static void app_tree<a,b,c>(c f(a,b),<a,b>tree t) {
+  switch t {
+  case Leaf: ;
+  case Node(noderef):
+    <a,b>node n = noderef.v;
+    app_tree(f, n.left);
+    f(n.key, n.data);
+    app_tree(f, n.right);
+  }
+}
+void iter<a,b>(void f(a,b),<a,b>dict d) {
+  iter_tree(f,d.tree);
+}
+static void iter_tree<a,b>(void f(a,b),<a,b>tree t) {
+  switch t {
+  case Leaf: ;
+  case Node(noderef):
+    <a,b>node n = noderef.v;
+    iter_tree(f, n.left);
+    f(n.key, n.data);
+    iter_tree(f, n.right);
+  }
+}
+void app_c<a,b,c,d>(c f(d,a,b),d env,<a,b>dict d) {
+  app_tree_c(f,env,d.tree);
+}
+static void app_tree_c<a,b,c,d>(c f(d,a,b),d env,<a,b>tree t) {
+  switch t {
+  case Leaf: ;
+  case Node(noderef):
+    <a,b>node n = noderef.v;
+    app_tree_c(f, env, n.left);
+    f(env, n.key, n.data);
+    app_tree_c(f, env, n.right);
+  }
+}
+void iter_c<a,b,c>(void f(c,a,b),c env,<a,b>dict d) {
+  iter_tree_c(f,env,d.tree);
+}
+static void iter_tree_c<a,b,c>(void f(c,a,b),c env,<a,b>tree t) {
+  switch t {
+  case Leaf: ;
+  case Node(noderef):
+    <a,b>node n = noderef.v;
+    iter_tree_c(f, env, n.left);
+    f(env, n.key, n.data);
+    iter_tree_c(f, env, n.right);
+  }
+}
+
+<a,c>dict map<a,b,c>(c f(b), <a,b>dict d) {
+  return ^dict(d.reln, map_tree(f, d.tree));
+}
+static <a,c>tree map_tree<a,b,c>(c f(b), <a,b>tree t) {
+  switch t {
+  case Leaf: return ^tree.Leaf;
+  case Node(noderef):
+    <a,b>node n = noderef.v;
+    return ^tree.Node(^noderef(^node(n.key, f(n.data), 
+				     map_tree(f, n.left), 
+				     map_tree(f, n.right))));
+  }
+}
+
+<a,c>dict map_c<a,b,c,d>(c f(d,b), d env, <a,b>dict d) {
+  return ^dict(d.reln, map_tree_c(f, env, d.tree));
+}
+static <a,c>tree map_tree_c<a,b,c,d>(c f(d,b), d env, <a,b>tree t) {
+  switch t {
+  case Leaf: return ^tree.Leaf;
+  case Node(noderef):
+    <a,b>node n = noderef.v;
+    return ^tree.Node(^noderef(^node(n.key, f(env, n.data), 
+				     map_tree_c(f, env, n.left), 
+				     map_tree_c(f, env, n.right))));
+  }
+}
+
+*(a,b) choose<a,b>(<a,b>dict d) {
+  switch d.tree {
+  case Leaf:          raise Absent();
+  case Node(noderef): return ^(noderef.v.key, noderef.v.data);
+  }
+}
+
+<*(a,b)>List::list to_list<a,b>(<a,b>dict d) {
+  return fold(to_list_f@<a,b>, d, null);
+}
+<*(a,b)>List::list to_list_f<a,b>(a k, b v, <*(a,b)>List::list accum) {
+  return ^List::list(^(k,v),accum);
+}

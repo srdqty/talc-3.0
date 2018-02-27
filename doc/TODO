@@ -1,0 +1,204 @@
+                               The TALC Wishlist
+                               =================
+
+Talx86
+======
+
+1) Finish Movpart
+2) MMX support
+3) Floating point support
+4) should make the labels in tal.inc (e.g., _taltla and GC_malloc)
+	illegal identifiers for user-level programs.
+5) GC alignment checking and/or other fixes
+6) TALC assembler bugs:
+     i) element size 2 array ops
+7) Check for further write to esp bugs
+8) Decent test suite & README file for tests/talx86
+9) Better standard library and/or automatic C -> TAL stuff
+10) Disassembler
+11) Type encoding/decoding in object files
+12) Make con abstract in tal.mli and reorganise files
+13) Update TALC assembler for Cyclone macros
+14) Build gc.a for Linux
+15)
+
+Popcorn
+=======
+
+1) Array representation change.
+x) Exceptions. Done!
+2) pop_runtime.c as TAL file.
+3) Support for various calling conventions.
+x) Modules.
+x) String subscript bug fix. Done!
+x) Raise counts as a return. Done!
+x) -7 as constant. Done!
+x) 0 length arrays. Done!
+9) Type abbreviations
+x) Switch order of type variables and stack variables for polymorphic code.
+11) Figure out the right assembly/link model
+12) Add existential types
+x) Add explicit type instantiation
+x) R/W tuples
+x) Strings mallocable and mutable
+x) Split popcompiler.ml into multiple files and do a major cleanup
+17) README file for tests/popcorn
+x) Update the popcorn/README file to reflect recent language developments
+
+Scheme in Popcorn
+=================
+
+1) Keep tal.pop up to date with Ocaml version
+2) Use popcorn's LAM
+3) Use data blocks for top level defines
+4) Implement call/cc
+5) Fix bugs with polymorphic exceptions and stuff
+6) 
+
+Scheme
+======
+
+2) eqv?  
+3) more I/O support (read) (display) (newline)
+4) strings, vectors, etc. and other data types
+5) separate compilation support
+6) fix up global defines -- should be data labels
+7) re-think IL to provide support for unboxed/untagged ints,
+      closures, etc.  then hack in optimizations to avoid 
+      checks (a la Henglein).
+8) exception support
+9) let-binding isn't nested
+10) other special forms (e.g. begin...)
+11) symbols, quoting
+12) math functions -- rational numbers, arithmetic
+13) README file for tests/scheme
+14) Get tests for work and a scheme for determining if they did or not
+15)
+
+Don't even want to try:
+- continuations
+- eval
+- multiple return values
+- macros (can we find a pkg for these somewhere?)
+- force/delay   
+
+Cyclone
+=======
+
+The first priority is to modify the assembler to handle the Cyclone
+macros.  This will let us abandon MASM and clean up some of the cruft
+that comes along with it.  In particular we want:
+
+   1) Control over whether a call is absolute or relative.
+      This would let us get rid of the hack we had to put into the
+      MALLOC macro (see the comment on tal.inc above) and also
+      will let us re-enable a peephole optimization (see the comment
+      on poppeep.ml).
+
+   2) Holes should just be labels.
+      This would let us get rid of the CGHOLEX macros entirely,
+      and would let us consolidate the fill instructions to just two.
+      It would also eliminate a loophole that currently exists in the
+      verifier (a CGHOLEJCC should be filled by a CGFILLJCC and not a
+      CGFILLJMP, and so on).
+
+-----
+
+We'd like to have better solutions to some problems dealing with the
+garbage collector:
+
+1) When we fill a hole with a pointer to a heap-allocated value, the
+   garbage collector can lose track of it.  Right now we handle this
+   by having the collector scan the code segment, and when we fill a
+   hole we also put a copy of the fill value at the end of the code
+   segment.  The second copy is guaranteed to be aligned on a 4 byte
+   boundary, so it will be found by the garbage collector.
+  
+   The problem with this is that we'd rather not have the collector
+   scan the code region, and it makes fills much more complicated.  It
+   also doesn't discriminate between heap-allocated data and
+   non-heap-allocated data; if the fill value is not heap allocated,
+   no copy of it is necessary for the collector to find.
+
+2) In general we can't predict how big a code region we'll need, so we
+   may need to dynamically grow the region.  This is not currently
+   implemented.  The difficulty is that during execution we have not
+   only a pointer to the beginning of the region but also pointers
+   inside the region.  These pointers are used for filling holes and
+   patching jumps.  The way to resize a region with the current
+   collector is to call GC_realloc, which can actually move the
+   region.  We can then adjust the pointer to the beginning of the
+   region but we have no way right now of adjusting pointers inside
+   the region.
+
+   There are several ways to handle this but they make the macros more
+   complicated.
+
+-----
+
+The stack of code generation regions should be kept in the TLA but we
+actually keep it in a global variable.
+
+-----
+
+Currently all labels defined in a template are given an explicit type.
+We'd like to omit some of these types, as is done for labels outside
+of templates.  The problem is that some labels that don't need types
+outside of templates do need types inside of templates.  In
+particular, we labels that might be the target of an inter-template
+jump need types.
+
+-----
+
+The Cyclone static analyses are taken from TEMPO and are written in
+SML/NJ.  At some point it might make sense to rewrite the analyses in
+ocaml to get an integrated system.  Also, we could extend the analyses
+to code with the Cyclone constructs -- right now they assume plain C
+code.
+
+-----
+
+We'd like to simplify the Cyclone macros.  Right now they are
+implemented with a combination of C and assembly code, as this
+facilitates debugging.  We'd like to eliminate some of the C code.
+Also, the macros are typed under the assumption that they don't
+clobber registers.  This means that we have to save and restore
+registers around the calls to C code.  The macros could be simplified
+by changing the typing rules to a caller-saves convention, as is done
+with MALLOC.
+
+-----
+
+We'd like to change the representation of template types to use
+dictionaries instead of lists.
+
+-----
+
+Right now we have special kinds and types for stacks of code
+generation regions.  We'd like to unify these with normal stacks.
+
+-----
+
+The environment type in popcompile had to be modified for Cyclone.  We
+did this in a way that least disturbed the existing code; the code is
+more awkward as a result.  There is a more straightforward design for
+the environments, and we'd like to put it in place eventually.
+
+-----
+
+We don't generate code for recursive functions, e.g.,
+
+  codegen(int f(int i) { return(f(i+1)); });
+
+will choke in popcompile.  The fix involves changing the environment
+type in popcompile, so we might as well wait until we make the more
+significant change described above.
+
+-----
+
+We don't deal with exceptions completely -- the compiler can't compile
+code that raises an exception during code generation.  In order to
+handle this properly we need to extend the type system; we need stack
+types with append for the code generation stack.  Maybe the best way
+to proceed here is to unify regular stacks and code generation
+stacks.

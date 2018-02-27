@@ -1,0 +1,16 @@
+(* install a service on a remote host *)
+svc closePort : port -> unit
+svc getImplicitPort : void -> port
+svc installServices : (string * blob) list -> unit
+svc BadService : exn
+
+fun result(s) =
+  (print(s); closePort(getImplicitPort()))
+
+fun install(name, file) =
+  try
+    (installServices([(name,file)]);
+     OnRemote(|result|("Install succeeded!\n"),getSource(),
+              getRB(),defaultRoute))
+  handle BadService => 
+    OnRemote(|result|("Install failed!\n"),getSource(),getRB(),defaultRoute)

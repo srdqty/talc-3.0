@@ -1,0 +1,59 @@
+(* Will report a tree which describes the network, based only
+   on the net's concept of neighbors, not a particular routing
+   function. *)
+
+fun reportPos(path) =
+  (print(path); print("\n"))
+
+fun procNeighbor(stuff:(host * host list * int * key),
+                 neighbor: host * dev) =
+
+  let val source = #1 stuff
+      val path = #2 stuff
+      val rb = #3 stuff
+      val session = #4 stuff
+      val hostname = #1 neighbor
+      val iface = #2 neighbor in
+
+    (OnNeighbor(|dfs|(source,path,session),hostname,rb,iface);
+     ((source,path,rb,session)))
+  end
+
+svc get : (string,key) -> 'a
+svc NotFound : exn
+svc put : (string,key,'a,int) -> unit
+
+fun dfs(source, path, session) =
+  let fun isMarked() = 
+        try
+          (get("mark",session); true)
+        handle NotFound => false
+      fun mark() = put("mark",session,true,20)
+  in 
+    if isMarked() then ()
+    else
+      (mark();
+       let val hostname = thisHostOf(getSrcDev()) in
+         (OnRemote(|reportPos|(hostname::path), source, length(path)+1,
+                   defaultRoute);
+          let val neighbors = getNeighbors() 
+              val rb = getRB() / length(neighbors) in
+            try 
+              (foldl(procNeighbor,((source,hostname::path,rb,session)),
+                    neighbors);
+	       ())
+            handle NotEnoughRB => print ("Out of RB while folding")
+          end)
+        end)
+  end
+
+svc generateKey : void -> key
+svc thisHost : void -> host list
+
+fun startDFS() =
+  let val session = generateKey()
+      val source = (hd thisHost())
+  in
+    dfs(source,[],session)
+  end
+

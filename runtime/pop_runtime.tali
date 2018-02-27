@@ -1,0 +1,39 @@
+; Popcorn Runtime
+;
+; Copyright Greg Morrisett, Neal Glew, Dan Grossman
+;   January 1999, all rights reserved
+;
+; A Popcorn module must import this interface to work.
+; We probably want to change this later but for now.
+;
+; XXX - FMS : We probably want to abstract the capabilities here as well. 
+	TYPE	<?arr = fn c:T . Exist[?sz:Sint].^*[S(?sz)^r,(^*[array(?sz,c^rw)])^r]>
+	TYPE	<?str = Exist[?sz:Sint].^*[S(?sz)^r,(^*[array(?sz,B1^rw)])^r]>
+	TYPE	<?exnname = fn c$0:Tm . ^T^rw(c$0)*[junk 4]>
+	TYPE	<?exn = Exist[c$0:Tm].^*[(?exnname c$0)^r,?str^r,c$0]>
+
+	TYPE	<_?cstk_type?mem :Tm 8 = *[?str^rw,`_?cstk_type?^rw]>
+	TYPE	<_?cstk_type? :T4 = ^T(0)`_?cstk_type?mem>
+
+; Call-stack tracing
+	VAL	___zzzz_global_cstk,<^*[`_?cstk_type?^rw]>
+	VAL	___zzzz_active_cstk,<^*[`_?cstk_type?^rw]>
+
+; GC/allocation debugging
+; comment these out if not using debugging GC
+;	VAL	__current_file,<^*[?str^rw]>
+;	VAL	__current_line,<^*[B4^rw]>	
+
+; Default exception handler.
+	VAL 	_pop_exn_handler,<code{ESP: sptr (code{ESP: sptr ?exn::se})::?exn::se}>
+	VAL 	_pop_exn_handler_verbose,<code{ESP: sptr (code{ESP: sptr ?exn::se})::?exn::se}>
+
+; Division by zero error label.
+	VAL 	_division_by_zero_error,<code{}>
+
+; Debugging stuff
+; Free!
+	TYPE	<?freeret = fn e:Tcap aebx:T4 aesi:T4 aedi:T4 aebp:T4 ?s1:Ts. (code{cap: e,EBX:aebx,ESI:aesi,EDI:aedi,EBP:aebp,ESP: sptr ?s1})>
+	VAL	_GC_free,<All[a:Tm n:Tn e:Tcap aebx:T4 aesi:T4 aedi:T4 aebp:T4 s1:Ts].code{cap: &[e,cap[n!^a]],EBX:aebx,ESI:aesi,EDI:aedi,EBP:aebp,ESP: sptr (?freeret e aebx aesi aedi aebp ((Nm(n))::s1))::(Nm(n))::s1}>
+
+; EOF: pop_runtime.tali

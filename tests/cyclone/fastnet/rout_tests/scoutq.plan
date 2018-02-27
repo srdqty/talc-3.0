@@ -1,0 +1,117 @@
+(* Will search the network, computing a metric as it goes, to find the best
+   route to take to a destination. Here we compute a metric based on the
+   size of the router queues. This is the scout packet we use for FBAR
+   routing (see our INFOCOM'99 paper). *)
+
+(* setupRoute: installs the flow route on the way back. arguments are: 
+     session  : controlling app's session--so scout packets from different 
+                applications do not interfere 
+     flowKey  : unique on destination--we will use this as the key under
+                which to install the routes
+     path     : the (host,metric) pairs corresponding to the path remaining
+                to install. the first element of the list should correspond
+                to the current host
+     last     : the last host we visited; we will make the route we install
+                point to him
+     lastMet  : the metric value on that last host
+     finalMet : what the overall route metric was *)
+
+svc get : (string,key) -> 'a
+svc flowSet : (key,host,int,dev) -> unit
+svc deliver : (port,'a) -> unit
+svc getImplicitPort : void -> port
+svc NotFound : exn
+
+(* sR : (key,key,(host * int) list,host,int,int) -> unit *)
+fun sR(session, flowKey, path:(host * int) list,
+               last, lastMet, finalMet) =
+    if (not(thisHostIs(fst(hd(path))))) then
+      () (* ended up on the wrong host somehow *)
+    else
+      try
+          if (snd(hd(path)) <> get("metric",session)) then
+            () (* a better route was discovered, so stop *)
+          else
+            (* install the route *)
+            (flowSet(flowKey,fst(defaultRoute(last)),
+                     lastMet,snd(defaultRoute(last)));
+             if (tl(path) <> []) then
+               (* more hosts to go *)
+               OnRemote(|sR|(session,flowKey,tl(path),
+                                    fst(hd(path)),snd(hd(path)),finalMet),
+	                fst(hd(tl(path))), getRB(), defaultRoute)
+             else
+               (* report back to the controlling application *)
+               (deliver(getImplicitPort(),(flowKey,finalMet))))
+      handle NotFound => (* we've been gone so long our metric timed out! *)
+        ()
+
+(* cM : compute the metric on the current host, using the route metric so
+        far as part of the computation *)
+
+svc getQueueLength : void -> int
+
+fun cM(lHM) =
+  lHM + (10 * getQueueLength()) + 1
+
+(* pN (process neighbors):
+   stuff = (source,dest,path-so-far,rb-per-packet,session-key)
+   neighbor = neighbor to send to *)
+
+fun pN(stuff:(host * host * (host * int) list * int * key),
+       neighbor: host * dev) =
+
+    (OnNeighbor(|dfs|(#1 stuff,#2 stuff,#3 stuff,#5 stuff),
+                #1 neighbor,#4 stuff,#2 neighbor);
+     stuff)
+
+(* does the brunt of the network search
+   source = where the search originated
+   dest = final destination to which we are trying to establish a route
+   path = path-so-far (hops and metrics)
+   session = per-application identifier *)
+
+svc setLT : (string,key,int,int) -> bool
+svc genKeyHost : host -> key
+
+fun dfs(source, dest, path:(host * int) list, session) =
+  (* what's the metric so far? *)
+  let val lastHM = try
+                     snd(hd(path))
+                   handle Hd => ~1
+      val nM = cM(lastHM) (* metric at this hop *)
+  in 
+    (* require that a smaller metric is better *)
+    if (setLT("metric",session,nM,15)) then
+      (* we're the best so far *)
+      let val hostname = hd(thisHost()) in
+        if (thisHostIs(dest)) then
+	  (* in fact, we have found the best route to the dest! *)
+          let val flowKey = genKeyHost(dest) in
+             (* get a destination-unique key *)
+             try
+               (* work backwards and set up the new route *)
+	       OnRemote(|sR|(session,flowKey,path,
+                                    dest,nM,nM),
+	                fst(hd(path)),getRB(),defaultRoute)
+             handle Hd => (deliver(getImplicitPort(),(flowKey,nM))) 
+               (* was already at the source *)
+          end
+        else
+	  (* not at destination yet, keep searching *)
+          (foldl(pN,
+                ((source,dest,(hostname,nM)::path,
+	          getRB() / length(getNeighbors()),session)),
+                getNeighbors());
+	   ())
+      end
+    else
+      (* someone better has already been through here, so we die *)
+      ()
+  end
+
+svc getSessionKey : void -> key
+
+(* initial call for base case *)
+fun startDFS(dest) =
+  dfs(hd thisHost(),dest,[],getSessionKey())

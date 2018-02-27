@@ -1,0 +1,282 @@
+UPDATING
+
+- In popdyntrans, we currently keep a "decls" field in the env for
+  dereferencing exception constructors stored in the GOT.  Right now we
+  always stick these in the declaration block at the beginning of the
+  function.  Instead, put them in a block that more closely surrounds the
+  use; i.e. once we pop out to the stmt level, if there are any decls
+  present, do the decl then.  This will make sure that we actually update
+  our notion of an exception more frequently.
+
+- We run into problems when using the updateable_closure translation because
+  dlpop's implementation becomes incorrect.  That is, the init function
+  actually has the incorrect type and thus dlinit will fail.  How can we
+  solve this?
+
+  1) Change the popdyntrans code to generate an init function that will have
+     the converted type.  Will similarly have to change genCinit.ml to
+     generate this kind of init function automatically.  The problem here is
+     that statically-defined init functions (like poploader) will have the
+     incorrect type.  This could be solved by having two versions of
+     poploader and choosing between them.  This method will hurt our
+     performance somewhat.
+
+  2) Compile dlpop to be updateable, but not using the fn-ptrs translation.
+     This won't work without some tweaking, because dlpop calls routines in
+     the Hashtable module, which take functions as arguments.
+
+  3) Allow selective translation of fn-ptrs.  For example, we don't do the
+     translation by default, except for when calling a list of passed in
+     routines.  For these routines, we would create the tuples or use the
+     GOT as normal for the fn-ptrs translation.
+
+     In general, we probably want to go this way to some degree to allow
+     updateable code to call routines in non-updateable libraries.
+
+  Seems to me that 1) is the cleanest, but 3) is something we could also
+  use.  Will punt for now ...
+
+X Properly deal with overriding/updating symbols:
+  - when I go to replace a symbol, move its entry from the old hashtable
+    into the new one, and then replace the value pointed to by the entry to
+    be the new one.
+  - when I override, I should remove the old element from the table
+    after I've added the new one.
+  - In both cases, it seems like I should change the rollback list
+    to also include a pointer to the table of the element I've changed.
+    Then I move the table to the front of the list when I go to
+    put it back during rollback.
+  - If during the process of removing elements from the old tables the
+    table becomes empty, I can remove it from the symbol table.  This
+    may be hard to check, so instead, I could go through the list
+    and find the tables with the same names as files I've just added
+    and remove the table from the list.  How do I do this without
+    removing the current version of the table?
+
+X Not dealing with global data correctly, static or otherwise.  Just like
+  static functions, the routines within the file that global variables are
+  declared in refer to that data directly, but the new version of the
+  file will not.  The same goes with all sharing constraints, which breaks
+  our invariant.  Options:
+
+  X Eliminate sharing statements.  New versions of unchanged functions,
+    data, etc., will nonetheless be changed in the symbol table.  These
+    will override the old values with
+    - equivalent functions
+    - different data.  The new data will have to be set, perhaps in the
+      init function, with the old value.  This could be generated
+      automatically in popgenpatch, in the case that the type of 
+      the data didn't change.
+    As an optimization, we can include sharing statements for those
+    functions that are not referred to by other functions in the
+    new version of the file.
+
+    In popgenpatch, we look at each element F of the sharing list.  If
+    it has function type, just remove it.  Otherwise, remove it, and
+    add the statement New::F = F; to the init function, in the case that
+    it's global, otherwise generate the proper massaging of the local
+    names F' and G and add the statement New::G = F'. (F' doesn't always
+    equal G, since the filenames being compared may be different.)
+    Also need to include proper extern statements for each of the
+    old variables.
+
+  - Add an extra indirection for values in the current module that are
+    exported.  Thus, we can use sharing for these global variables.  For
+    static variables, we cannot share, to preserve the invariant.  The
+    solution above then applies.
+
+    The advantage here would appear to be less memory consumed.  IN
+    principle, though, the old version should be immediately removed
+    from the symbol table, making it unreachable, and therefore it
+    should be collected.
+
+- Bugs
+  x Make sure that even though we might export a local function, it 
+    is still called directly by code in its file.
+  X In automatically generating the patches, it is not enough to
+    see if a value variable's type changed---in the case that a function
+    is static, if it changes then the caller needs to change as well.
+    Ugh ...
+  X Might run into the same GC problem that the Cyclone folks did---
+    need to add the addresses of all of the exported symbols at the bottom
+    of the buffer, on word boundaries.  I should be able to get these
+    from the object file symbol table.
+  - indirecting function pointers doesn't always work.  The problem is in
+    cases like
+
+      *(int (int)) bar = foo;
+
+    which will get translated to 
+
+      *(%(int (int,int))) foo = ^((:%(int (int,int)))^(fn__3));
+      void dyninit_foo (...) {
+        ...
+	foo = GOT__0.bar;
+      }
+      static int fn__3 (int a, int b) { ... }
+      static GOT_t__1 GOT__0 = ^GOT_t__1{bar=(:%(int (int,int)))^(&bar)};
+
+    The problem here is in the dyninit function; the code
+
+      foo = GOT__0.bar;
+
+    should be
+
+      foo.1 = GOT__0.bar;
+
+    This is because while we would like to do
+
+      *(%(int (int,int))) foo = ^(GOT__0.bar);
+
+    we can't because GOT__0.bar is a non-constant expression (in general,
+    though it is essentially constant in this case).  Instead we have to put
+    in a dummy initial value and then assign GOT value in the init function.
+    To do this right, we have to track the location in the expression where
+    the default value gets placed.  Somehow we'll have to note the nesting
+    elements (i.e. arrays, tuples, structures, unions, and exncons) that
+    lead to that spot so we can properly assign to it.
+
+- Improvements
+  - In popdyntrans, make default_initializer cache the values
+    that is has created declarations for functions so that we can re-use 
+    them.
+  - Add variable UPDATE_SYMBOL to stub environment.  If present, a global
+    variable is created that is bound to update_symbol, as passed into
+    init.  This can be used by the stub code to make further updates to the
+    table, such as by replacing a stub at some particular time.k
+  - change dlpop so that the lookup function returns a read-only tuple
+    instead?
+
+- Change dlpop to manage the value namespace
+  - need some way to identify "object files" by name.
+    - updater will specify the object file that it is updating so that
+      - calls to update change the symbol table that corresponds with the
+        updated module.  This way, the handle that points into that table
+        (for use by dlsym) would still be accurate.
+      - calls to lookup will reveal local symbols for that module
+      - the implementation of abstract types is revealed
+  - change type of lookup/add/update to indicate whether the symbol is local.
+  - will need to keep track of symbol information in the symbol table
+    differently. Each file will have
+    - a name associated with it
+    - a hashtable for global symbols
+    - a hashtable for local symbols
+    - some information pertaining to types (see below)
+  - we then customize, based on this information
+    - the lookup function's available table, consisting of
+      - all the modules' global tables
+      - the updated module's local table
+    - the add/update function's table is the old table for this module
+      (local and global)
+  - when does this customization based on object file name (or other
+    arbitrary credentials) occur?  Three timescales:
+    - before loading the file
+      - the file is accompanied at load time with its name.  The name
+        is used to customize the functions, and after the file is
+        loaded, these functions are passed to init.  For statically
+        linked files, we change dlinit to take the string argument
+        naming the file as well.
+
+        In this case, the file name passed to dlopen (i.e. dlopen("foo"))
+        is also used for this purpose.  For updates, we'd have to have
+        a new version of dlopen that takes an alternative filename
+        to indicate the file you are patching
+        (i.e. dlopen_upd("foo_patch","foo")). For dlinit, we also use the 
+	file name, known statically.
+ 
+    - during the loading of the file
+      - files can export two, rather than one symbol: the name of the file
+        and the init function.  After acquiring both, the procedure is as
+	above.  For dlinit, we can extern this variable just as we do
+        the init function.
+
+    - during file linking/initialization
+      - the init function should take two functions, a regular lookup
+        function, and an authorize function.  The authorize function would
+        take as arguments some credentials and return new lookup/add/update
+        functions.  The initial lookup function is used to get access to
+        public global symbols, and then the new functions have the improved
+        authority merited by the credentials.
+      - we can achieve something similar by side-effect; add one function to
+        the standard suite that "registers" the file's name, which changes
+        the tables bound to the current functions in init.    
+
+- Change load to allow managing the type interface outside of the TCB.
+  - dynlink.ml should keep track of the most general interface in terms of
+    - abstract types
+      either derive the actual implementation of abstract types or
+      change compilation to not make them abstract.  The problem with
+      the latter is that we want static link checking to enforce
+      abstraction.
+    - locally types
+  - load should take as an argument some parameters for thinning this
+    interface.  One possibility is that
+    
+
+  - change dlpop to manage type information relative to some criteria
+    - dlopen will query this information before calling load
+    - it will construct the thinning argument based on the results
+      to pass to load
+
+- Change load to allow mutually recursive type definitions.  We would like
+  to be able to pass a list of buffers and their types and then get a list
+  of functions having those types.  The current type of init is:
+
+  init: \forall a. string * rep(a) -> a option
+
+  but we'd change it to
+
+  init: \forall a. string list * rep(a) -> a option
+
+  Rather than constrain 'a to be a tuple, we constrain it (by convention) to
+  be a tuple of tuples, where each element of the outer tuple refers to the
+  equivalent element in the list.  It may be simpler to make the list an
+  array, since that's a base TAL type (I think).
+
+  The change to the internals of load would be to disassemble each buffer
+  and then link check them all together, creating the final interface.
+
+- how to deal with Unresolved exception symbol
+  - right now we are just making a slot for it and then not looking it up.
+    If we look it up before the updates, then we have the problems
+    - we must link with the dlpop library statically, or it will never
+      be found.
+    - Furthermore, we need to call dlinit on dlpop first, or any
+      mutually recursive dependencies won't get resolved.
+    Alternatively, we could look it up, but then allow it to fail if
+    it wasn't there, proceeding on to the updates.
+  - don't have the symbol at all, since it's aberrant behavior.  Just define
+    some exception locally to the file.  With stack tracing on, we'll know 
+    what the problem was.  In effect, this is what we have now.
+
+- Translation stuff
+  - if both the interface and the implementation define an init function
+    (seems unlikely), change the name of the implementation one, and
+    have the interface call the impl one when done.
+  - how can I make it so that it's easier to detect errors in the interface
+    file?  Right now, reported errors are at potentially bogus locations.
+
+- Problems to deal with
+  - how to update abstract types?  That is, how to transition between old
+    and new definitions?  We want to be able to remove the old definition
+    from the "implicit" symbol table.  Look at Steph's proposals in the old
+    theory section that would allow pruning of this space during loading.
+
+    The updating version should be able to see the contents of the type.  We
+    could store the program interface differently to allow access to the
+    full type for the updating code.  How to do this effectively?
+    Preferably, we expose everything, then limit certain types at load time,
+    as per steph's proposal.
+
+    This implies we have to manage the visibility of types outside the
+    TCB. How can we feasibly do this?  First, even though the interface
+    (.to file) will say that it's abstract, we have to ignore that and get
+    its real type.
+
+- Experiment with 
+  - local functions are not "updateable" in the current strategy.  Force
+    calls to them to be indirected as well?
+  - Look at SPIN.  Think about reimplementing their dynamic binder for my
+    purposes.  Find out where/how they used RTCG.
+
+

@@ -1,0 +1,29 @@
+SPTC version 0.1
+January 2000
+Fred Smith
+Based on PTC available at http://www.gaffer.org/ptc
+
+SPTC (simple ptc) provides a minimal graphics interface to Popcorn
+code on Windows NT.  To see how minimal read the documentation in
+sptc.h.
+
+This library is a wrapper around the more general ptc library.
+Therefore for your code to run, ptc.dll must be in your path.  Linux
+versions of ptc are also available, so it should be easy to get all
+this working under Linux if anybody wants to take a stab at it.
+
+To use sptc, you must first build the popcorn-in-popcorn compiler,
+since that is the only compiler we have that adheres to C's calling
+convention.  You must then "make all" in the sptc directory. This
+builds the tal interface file sptc.tali, and sptc.obj.
+
+After writing your program, foo.pop, using the interface in sptc.h,
+simply call "make foo.exe" to generate an executable.  The makefile is
+convenient because it automatically links in sptc.obj and ptc.lib.
+
+You can try the demo fire.pop to make sure everything is working by
+trying "make fire.exe".
+
+Good luck, and have fun.
+
+

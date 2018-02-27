@@ -1,0 +1,76 @@
+Files -------------------------------------------------------------------------
+
+     bench.pop: benchmark popcorn, Cyclone, and C (opt and no_opt)
+  test_pop.pop: tests/benchmarks compiled with Popcorn and Cyclone 
+      test_c.c: tests/benchmarks compiled with MS cl or GCC
+
+        interp.pop: popcorn byte-code interpreter (includes JEQ)
+    interp_gen.pop: Cyclone byte-code interpreter run-time specializer (no JEQ)
+         pprog.pop: popcorn byte-code programs to be intepreted
+
+    interp_nopt.c: C byte-code interpreter (w/o optimizations, includes JEQ)
+     interp_opt.c: C byte-code interpreter (w/ optimizations, includes JEQ)
+         c_prog.c: C byte-code programs to be interpreted
+
+Make / Execute -------------------------------------------------------------
+
+  1. make
+  2. bench TEST    (to test)
+     or bench 1000 (to benchmark 1000 iterations) 
+
+Output ------------------------------------------------------------------------
+
+ Four different byte-code interpreters are benchmarked
+ 
+   1. Popcorn     (w/ JEQ)
+   2. Cyclone     (w/o JEQ)
+   3. C normal    (w/ JEQ)
+   4. C optimized (w/ JEQ)
+ 
+ The following five programs are tested:
+ 
+Program #1
+Program size: 60
+Memory: 0 Memory: 10 Memory: 20 Memory: 30 
+Memory: 333 Memory: 111 Memory: 222 Memory: 333 
+    :
+    mem[0] = mem[1]
+    mem[1] = mem[2]
+    mem[2] = mem[3]
+    mem[3] = mem[0]
+    :
+ 
+Program #2
+Program size: 63
+Memory: 0 Memory: 10 Memory: 20 Memory: 30 
+Memory: 0 Memory: 10 Memory: 20 Memory: 1234 
+
+   1234 +  5678 * 4 * 3 * 21 - 1740590  +  5678 * 4 * 3 * 21 - 1740590  + ...
+   
+Program #3
+Program size: 54
+Memory: 0 Memory: 10 Memory: 20 Memory: 30 
+Memory: 8 Memory: 0 Memory: 0 Memory: 0 
+
+   for i = 1 to 2
+     for j = 1 to 2
+       for k = 1 to 2
+         mem[0] = mem[0] + 1;
+ 
+Program #4
+Program size: 66
+Memory: 0 Memory: 10 Memory: 20 Memory: 30 
+
+   for i = 1 to 5
+     mem[0] = mem[0] + 1;
+   for j = 1 to 5
+     mem[0] = mem[0] + 1;
+   for k = 1 to 5
+     mem[0] = mem[0] + 1;
+ 
+Program #5
+Program size: 22
+Memory: 0 Memory: 10 Memory: 20 Memory: 30 
+Memory: 3628800 Memory: 0 Memory: 20 Memory: 30 
+
+   factorial function

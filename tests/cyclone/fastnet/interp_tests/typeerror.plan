@@ -1,0 +1,25 @@
+(* raises a type error: expecting bool, found 7 *)
+fun test1() : unit = 
+  let val b:bool = false
+      val i:int = 1
+      val c:char = '5'
+      val m:string = "hello"
+      val x:((int*int)*int) = ((1,2),4)
+      val m:int list = [1;2;3]
+      exception Head
+  in
+      ((~(snd x) / 17) :: i :: [];
+       2 * 3 / 4 + 6 and fst x)
+  end 
+
+fun test2() : int = 
+ 2 + "hello"
+
+fun test3() : unit =
+  #5 (1,2)
+
+fun test4() : unit =
+  (1,2,3) = (1,2)
+
+fun test5() : unit =
+  (1,2,false) = (1,2,3)

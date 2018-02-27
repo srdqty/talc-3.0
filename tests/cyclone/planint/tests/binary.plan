@@ -1,0 +1,32 @@
+(*
+ *        op  done?
+ *       ---  ----
+ *      PLUS  x
+ *     MINUS  x
+ *     TIMES  x
+ *       DIV  x
+ *       MOD  x
+ *      LESS  x
+ *    LESSEQ  x
+ *   GREATER  x
+ * GREATEREQ  x
+ *        EQ  x
+ *     NOTEQ  x
+ *       AND  x
+ *        OR  x
+ *      CONS  x
+ *    CONCAT  x
+ *    LSHIFT  x
+ *    RSHIFT  x
+ *      XORI  x
+ *      ANDI  x
+ *       ORI  x
+ *)
+
+fun a() : unit = ((8 + 4), (8 - 4), (8 * 4), (8 / 4), (8 % 5))
+fun b() : unit = ((1 < 2), (2 <= 1), (4 > 4), (4 >= 4), (1 = 1), (1 <> 1))
+fun c() : unit = (true, false, (true and false), (true or false))
+fun d() : unit = ([], 1::[], 1::2::3::[], "this" ^ "that")
+fun e() : unit = (6 << 2, 6 >> 1, 10 xori 3, 10 andi 3, 10 ori 3)
+
+fun main() : unit = (a(), b(), c(), d(), e())

@@ -1,0 +1,86 @@
+// Simple program to test exceptions.
+// Should check:
+//	Value carrying and non-value carrying exceptions.
+//	Raise, handle, and exception switch.
+//	Successful switch/ failed switch.
+//	Raise at top-level and nested raise.
+//	
+
+#include "core.h"
+open Core;
+
+exception void_exn;
+exception value_exn(bool);
+
+exn void_e = new void_exn();
+exn val_e = new value_exn(true);
+
+void test_raise_void()
+{
+  raise(new void_exn());
+  print_string("This is never executed.");
+}
+
+void test_raise_value(bool b)
+{
+  raise(new value_exn(b));
+}
+
+void test_handle(bool b)
+{
+  int x=5;
+  try
+    {
+      if(b) test_raise_void();
+      else test_raise_value(b);
+    }
+  handle y
+    {
+      print_string("x=");
+      print_int(x);
+      switch y
+	{
+	case value_exn(b2): 
+	  { print_string("\nCaught value_exn. Reraising.");
+	    raise(y);
+	  }
+	case void_exn: print_string("\nCaught void exn.");
+        default: print_string("\nError: default?");
+	}	
+    }
+  print_string("\nEnd of test_handle.\n");
+}
+
+void test_nested_handle()
+{
+ try
+   test_handle(false);
+ handle z
+   {
+     switch z 
+       {
+       case value_exn(b2): print_string("\ntest_nested_handle: caught value_exn\n");
+       default: print_string("\nError: default?\n"); 
+       }
+   }
+
+}
+
+void f(int depth) {
+
+  if(depth==0) raise void_exn();
+
+  f(depth - 1);
+}
+
+int pop_main()
+{
+  test_handle(true);
+  test_nested_handle();
+
+  //Test outermost default exception handler.
+
+  f(5);
+
+  return 1;	
+}

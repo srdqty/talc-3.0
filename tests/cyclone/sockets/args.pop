@@ -1,0 +1,80 @@
+/*
+ *  This program demonstrates how the arg library can be used to 
+ *  parse command line arguments, e.g.
+ * 
+ *  ./args.exe
+ *  ./args.exe -int 1
+ *  ./args.exe -int 1 -true
+ *  ./args.exe -true -string "hello world"
+ *
+ */
+
+#include "arg.h"
+#include "core.h"
+
+#define list List::list
+
+int unit_val = 0;
+Arg::bool_ref bool_val = ^Arg::bool_ref(false);
+string string_val = "";
+int int_val = 0;
+string rest_val = "";
+
+void unit_fun()
+{
+  unit_val = 1;
+  printf("Setting unit_val to 1\n");
+  return;
+}
+
+void string_fun(string s)
+{
+  string_val = s;
+  printf("Setting string_val to %s\n", s);
+  return;
+}
+
+void int_fun(int i)
+{
+  int_val = i;
+  printf("Setting int_val to %d\n", i);
+  return;
+}
+
+void rest_fun(string s)
+{
+  rest_val = s;
+  printf("Setting rest_val to %s\n", s);
+  return;
+}
+
+void anon_func(string s)
+{
+  printf("PROG This is the anon func.\n");
+  return;
+}
+
+void pop_main()
+{
+  <*(string,Arg::spec,string)>list options =
+     ^list(^("-unit",   ^Arg::spec.Unit(unit_fun),     "just a unit"),
+     ^list(^("-true",   ^Arg::spec.Set(bool_val),      "set to true"),
+     ^list(^("-false",  ^Arg::spec.Clear(bool_val),    "set to false"),
+     ^list(^("-string", ^Arg::spec.String(string_fun), "set string"),
+     ^list(^("-int",    ^Arg::spec.Int(int_fun),       "set int"),
+     ^list(^("-rest",   ^Arg::spec.Rest(rest_fun),     "set rest"),
+     null))))));
+
+  try
+    Arg::parse(options, anon_func, "args: usage: <options> file ...");
+    handle y switch y {
+  case Arg::Error:
+    printf("ERROR Arg::Error\n");
+    return;
+  }
+
+  printf("Here's the program\n");
+  printf("PROG unit:%d bool:%s string:%s int:%d: rest:%s\n",
+	 unit_val, bool_val.v ? "T" : "F", string_val, int_val, rest_val);
+
+}

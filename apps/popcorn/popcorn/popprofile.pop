@@ -1,0 +1,198 @@
+// Popcorn file for instrumenting the code for profiling information.
+
+#include "arg.h"
+#include "core.h"
+#include "list.h"
+#include "string.h"
+#include "xarray.h"
+
+#include "popil.h"
+#include "poptalenv.h"
+#include "poptaltypes.h"
+#include "popiltal.h"
+
+#include "tal.h"
+
+#define xarray Xarray::xarray
+#define list   List::list
+
+#define EMIT(x) Xarray::add(env.current_instrs, ^instruction.x)
+#define EMIT_FPS(X,A) EMIT(FPsomeargs(^(^fpsomeargs.X,A)))
+#define EMIT_FP(X)   EMIT(FPnoargs(^fpnoargs.X))
+#define ST(I) ^.FPstack(I)
+#define ST2(B,I) ^.FPstack2(^(B,I))
+#define FP32(X) ^.FPgenop(^(^scale.Byte4,X))
+#define FP64(X) ^.FPgenop(^(^scale.Byte8,X))
+
+open Core;
+extern Arg::bool_ref Popcorn::profile;
+
+prefix Popprofile;
+open Popprofile;
+open Popil;
+open Poptalenv;
+open Tal;
+
+genop geax = ^genop.Reg(^.Eax);
+genop gesp = ^genop.Reg(^.Esp);
+genop pesp0 = ^genop.Prjr(^(^coerce(^.Esp,null),0,null));
+genop pesp4 = ^genop.Prjr(^(^coerce(^.Esp,null),4,null));
+genop pesp8 = ^genop.Prjr(^(^coerce(^.Esp,null),8,null));
+
+/* Produce the name of the structure we are to use. */
+string rewrite_name(string s) {
+  _ s_len = size(s);
+  _ s2 = new_string(s_len);
+  for(_ i = 0; i < s_len; i++) {
+    _ c = s[i];
+    if(c=='?') s2[i] = '$'; 
+    else s2[i] = c;
+  }
+
+  // This must generate valid C names, as exported by the C compiler!
+  return strconcat("_prof_",strconcat(s2,"_t"));
+}
+
+// Imported type information that is generic for any file using profiling.
+void add_generic_imports(dg_env d_ev, tg_env t_ev) {
+  if(!Popcorn::profile.v) return;
+
+  // Import type
+  Poptaltypes::trans_abstract(t_ev,"prof_t",^cf_absdecl(null,false));
+
+  _ prof_fun = ^cf_typ.Fn(^(^cf_convention.Cdecl,
+                            null,null,^list(^.Named(^("prof_t",null)),null)));
+  Popiltal::trans_extern(d_ev,Id::id_of_string("_prof_enter"),prof_fun);
+  Popiltal::trans_extern(d_ev,Id::id_of_string("_prof_leave"),prof_fun);
+  Popiltal::trans_extern(d_ev,Id::id_of_string("_prof_handler"),prof_fun);
+  
+}
+
+// Add the required imports for this function.
+void init_fun(cf_function fn, dg_env env) {
+  if(!Popcorn::profile.v) return;
+  
+  _ fn_name = Id::id_of_string(rewrite_name(fn.name));
+  _ prof_typ = ^cf_typ.Named(^("prof_t",null));
+  _ c = Poptaltypes::typ2con_roll(prof_typ);
+  Xarray::add(env.imports, ^(fn_name,c));
+}
+
+// Generate profiling code to emit on entry to the function
+// This code relies on placement in prologue!
+void enter_fun(cg_env env) {
+  if(!Popcorn::profile.v) return;
+
+  _ fn_name = rewrite_name(env.fn.name);
+  _ fn_gop = ^genop.Addr(Id::id_of_string(fn_name));
+  _ enter_gop = ^genop.Addr(Id::id_of_string("_prof_enter"));
+
+  // XXX - this messes up the stack alignment. We should be careful.
+  // Push the stack.
+  EMIT(Push(^coerce(fn_gop,null)));
+  
+  if(env.current_template != null) {
+    EMIT(Mov(^(geax,^coerce(enter_gop,null))));
+    enter_gop = geax;
+  }
+  _ frame_size = List::length(env.fn.params) + 1;
+  _ call_cs = Poptaltypes::env2call_inst_special(env,1,frame_size);
+  EMIT(Call(^coerce(enter_gop,call_cs)));
+  EMIT(ArithBin(^(^arithbin.Add,gesp,^genop.Immed(4))));
+}
+
+// Generate profiling code to emit when leaving a function (on return only).
+// We deal with handlers separately below.
+void leave_fun(cg_env env) {
+  if(!Popcorn::profile.v) return;
+  _ fn_name = rewrite_name(env.fn.name);
+  _ fn_gop = ^genop.Addr(Id::id_of_string(fn_name));
+  _ leave_gop = ^genop.Addr(Id::id_of_string("_prof_leave"));
+  _ stack_size = 0;
+  _ ret_con = false;
+  _ ret_fp  = false;
+
+  // If we're returning a result we have to push it.
+  if(env.fn.ret_typ != null) {
+    ret_con = true;
+    _ rt = env.fn.ret_typ.v;
+    switch rt {
+    case Float: ret_fp = true;
+    case Double: ret_fp = true;
+    default: ;
+    }
+
+    // XXX - We are screwing with the alignment of the stack.
+    // Perhaps we should always push a multiple of 8?
+    if(ret_fp) {
+      // Push the floating point stack
+      EMIT(ArithBin(^(^arithbin.Sub,gesp,^genop.Immed(8))));
+      EMIT_FPS(Fstp,FP64(pesp0));
+      stack_size +=8;
+    }
+    else {
+      EMIT(Push(^coerce(geax,null)));
+      stack_size+=4;
+    }
+  }
+  // Push the stack.
+  EMIT(Push(^coerce(fn_gop,null)));
+  stack_size += 4;
+
+  if(env.current_template != null) {
+    _ geax = ^genop.Reg(^.Eax);
+    EMIT(Mov(^(geax,^coerce(leave_gop,null))));
+    leave_gop = geax;
+  }
+  _ gesp = ^genop.Reg(^.Esp);
+
+  _ frame_size = (ret_con ? 1 : 0) + env.stack_desc.param_slots + 1;
+  _ call_cs = Poptaltypes::env2call_inst_special(env,1,frame_size);
+  EMIT(Call(^coerce(leave_gop,call_cs)));
+
+  if(ret_con) {
+    if(ret_fp) {
+      EMIT_FPS(Fld,FP64(pesp4));
+    } 
+    else {
+      EMIT(Mov(^(geax,^coerce(pesp4,null))));
+    }
+  }
+  EMIT(ArithBin(^(^arithbin.Add,gesp,^genop.Immed(stack_size))));
+}
+
+// Generate profiling code to execute on entry to the handler.  Must be 
+// executed first.  Will preserve EAX but not much else.
+void enter_handler(cg_env env) {
+  if(!Popcorn::profile.v) return;
+
+  _ fn_name = rewrite_name(env.fn.name);
+  _ fn_gop = ^genop.Addr(Id::id_of_string(fn_name));
+  _ handler_gop = ^genop.Addr(Id::id_of_string("_prof_handler"));
+  _ hvar_gop = null;
+  _ hvar_opnum = Xarray::get(env.fn.blocks,env.il_block).handler_var.v;
+
+  switch env.assignment_info.assignment[hvar_opnum] {
+  case Reg(r): hvar_gop = ^Opt(^genop.Reg(r));
+  default: ;
+  }
+
+  if(hvar_gop != null)
+    EMIT(Push(^coerce(hvar_gop.v,null)));
+
+  EMIT(Push(^coerce(fn_gop,null)));
+  
+  if(env.current_template != null) {
+    EMIT(Mov(^(geax,^coerce(handler_gop,null))));
+    handler_gop = geax;
+  }
+  _ call_cs = Poptaltypes::env2call_inst_handler(env,1,hvar_gop==null ? 0 : 1);
+  EMIT(Call(^coerce(handler_gop,call_cs)));
+
+  if(hvar_gop!=null) {
+    EMIT(Mov(^(hvar_gop.v,^coerce(pesp4,null))));
+  }
+  EMIT(ArithBin(^(^arithbin.Add,gesp,^genop.Immed(hvar_gop == null ? 4 : 8))));
+}
+
+

@@ -1,0 +1,94 @@
+#include "opcodes.h"
+#include "core.h"
+
+struct inst {
+  int opcode;
+  int val;
+}
+
+extern int p_mem[];
+extern int p_stack[];
+extern int p_prg_size;
+
+void pop_interpret(inst prg [])
+{
+  int pc = 0;
+  int sp = 0;
+  
+  for( ; pc < p_prg_size; )
+    if (prg[pc].opcode == PUSH)
+      {
+	sp = sp + 1;
+	p_stack[sp] = (prg[pc]).val;
+	pc = pc + 1;
+      }
+    else
+      if (prg[pc].opcode == POP) {
+	sp = sp - 1;
+	pc = pc + 1;
+      }
+      else
+	if (prg[pc].opcode == ADD)
+	  {
+	    p_stack[sp - 1] = p_stack[sp] + p_stack[sp - 1];
+	    sp = sp - 1;
+	    pc = pc + 1;
+	  } 
+	else
+	  if (prg[pc].opcode == SUB)
+	    {
+	      p_stack[sp - 1] = p_stack[sp - 1] - p_stack[sp];
+	      sp = sp - 1;
+	      pc = pc + 1;
+	    }
+	  else
+	    if (prg[pc].opcode == MUL)
+	      {
+		p_stack[sp - 1] = p_stack[sp] * p_stack[sp - 1];
+		sp = sp - 1;
+		pc = pc + 1;
+	      }
+	    else
+	      if (prg[pc].opcode == LD)
+		{
+		  p_stack[sp] = p_mem[p_stack[sp]];
+		  pc = pc + 1;
+		}
+	      else
+		if (prg[pc].opcode == ST)
+		  {
+		    p_mem[p_stack[sp]] = p_stack[sp - 1];
+		    sp = sp - 2;
+		    pc = pc + 1;
+		  }
+		else
+		  if (prg[pc].opcode == JMP)
+		    {
+		      pc = prg[pc].val;
+		    }
+		  else
+		    if (prg[pc].opcode == JEQ)
+		      if(p_stack[sp] == 1)
+			{
+			  pc = prg[pc].val;
+			  sp = sp - 1;
+			}
+		      else
+			{
+			  pc = pc + 1;
+			  sp = sp - 1;
+			}
+		    else
+		      if (prg[pc].opcode == CMP)
+			{
+			  p_stack[sp - 1] = (p_stack[sp] == p_stack[sp-1]) ? 1 : 0;
+			  sp = sp - 1;
+			  pc = pc + 1;
+			}
+		      else
+			{
+			  printf("\n Unrecognized instr: opcode->%d  pc->%d",
+				 prg[pc].opcode, pc);
+			  return;
+			}
+}

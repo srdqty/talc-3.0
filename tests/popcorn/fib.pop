@@ -1,0 +1,34 @@
+// fib.pop
+#pragma PIL
+#include "core.h"
+open Core;
+
+int auxfib(int n, int x, int y) 
+{
+  if (n == 0)
+    return(x);
+  return(auxfib(n-1,y,x+y));
+}
+
+int fib(int n) 
+{
+  return(auxfib(n,1,1));
+}
+
+void pop_main() 
+{
+  string tal_args[] = std_args();
+
+  if (size(tal_args)!=2) 
+    {
+      print_string(tal_args[0]);
+      print_string(": usage: <num>\n");
+    } 
+  else 
+    {
+      int i = int_of_string(tal_args[1]);
+      print_int(fib(i));     
+    }
+  return;
+}
+

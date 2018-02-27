@@ -1,0 +1,79 @@
+////////////////////////////////////////////////////////////////////////////
+// Popcorn library, file dllist.pop                                       //
+// Copyright Michael Hicks                                                //
+// November 2000, all rights reserved                                     //
+//                                                                        //
+////////////////////////////////////////////////////////////////////////////
+
+/* Only works with the old compiler, because of the use of & */
+
+#include "core.h"
+
+prefix DLList;
+open   DLList;
+
+/* dllist.pop: defines doubly-linked lists.  An empty list actually
+ *             contains a dummy head element so that an element can
+ *             be removed without knowing the head of the list.
+ */
+?struct <a>dllist { 
+  a hd; 		// the value at this list element
+  <a>dllist tl; 	// the next element
+  *(<a>dllist) prev; 	// pointer to the previous element's next pointer
+}
+
+/* given the current head of the list and a value, add a new
+   value to the front */
+void cons<a>(a val, *(<a>dllist) hd) {
+  <a>dllist dle = ^dllist(val,hd.1,hd);
+  if (hd.1 != null)
+    hd.1.prev = &(dle.tl);
+  hd.1 = dle;
+}
+
+/* raised when some function expects a non-empty list */
+exception DLList_empty;
+
+/* given a pointer to some element of a dllist, remove that element
+   from whatever list it's on */
+void excise<a>(<a>dllist x) {
+  if (x == null)
+    raise (^DLList_empty());
+  else {
+    if (x.tl != null)
+      x.tl.prev = x.prev;
+    x.prev.1 = x.tl;
+    x.tl = null;
+  }
+}
+
+/* Removes an element from the list.  Uses the provided
+ * function for comparison.
+ */
+void rm<a>(<a>dllist l,a x,int compare(a,a)) {
+  for ( ; l != null; l = l.tl) 
+    if (compare(l.hd,x) == 0) {
+      excise(l);
+      break;
+    }
+}
+
+/* Same as app but with void functions */
+void iter<a>(void f(a),<a>dllist x) {
+  while (x != null) {
+    f(x.hd);
+    x = x.tl;
+  }
+}
+
+/* Return the length of a dllist. */
+int length<a>(<a>dllist x) {
+  int i = 0;
+
+  while (x != null) {
+    ++i;
+    x = x.tl;
+  }
+  return(i);
+}
+

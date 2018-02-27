@@ -1,0 +1,14 @@
+(* tests fragmentation; we have a (presumably large) chunk c which we need
+   to get across the network *)
+
+fun sendem (c,x:int * host) =
+  (OnRemote(c,snd x,fst x,defaultRoute);x)
+
+svc fragment : ('a chunk,int) -> unit chunk list
+  
+fun fragment_deliver (dest, path_mtu, c) =
+  let val cs = fragment(c,path_mtu)
+      val l = length(cs) in
+   (foldr(sendem,cs,(getRB()/l,dest)); ())
+  end
+

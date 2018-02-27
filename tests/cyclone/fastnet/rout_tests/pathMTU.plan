@@ -1,0 +1,13 @@
+(* find out the maximum transmission unit (MTU) over a whole network path *)
+fun min(x,y) =
+  if x < y then x else y
+
+fun pathMTU(dest,MTU) =
+  if thisHostIs(dest) then
+    OnRemote(|print|(MTU),getSource(),getRB(),defaultRoute)
+  else
+    let val hop = defaultRoute(dest)
+        val hopMTU = getMTU(snd hop) in
+      OnNeighbor(|pathMTU|(dest,min(MTU,hopMTU)),(fst hop),getRB(),(snd hop))
+    end
+

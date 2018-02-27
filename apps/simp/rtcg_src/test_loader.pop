@@ -1,0 +1,15 @@
+// Test the loader.
+
+#include "core.h"
+#include "loader.h"
+
+void pop_main() {
+  _ args = std_args();
+
+  if(size(args) < 2) {
+    printf("Require at least one argument.\n");
+    return;
+  }
+  Loader::load({args[1]},{: string});
+
+}

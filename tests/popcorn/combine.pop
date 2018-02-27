@@ -1,0 +1,24 @@
+#include "core.h"
+#include "list.h"
+open Core;
+open List;
+
+void pop_main()
+{
+ <int>list x = ^list(5,^list(4,^list(3,^list(2,^list(1,^list(0,null))))));
+ <bool>list y= ^list(true,^list(false,null));
+
+ try { zip(x,y);
+ } handle w { 
+   switch w { 
+   case List_mismatch: { 
+     print_string("Successfully failed and caught exception.\n");
+     <*(int,int)>list z = zip(x,x);
+     print_string("And now succeeded.\n");
+   }
+   default: {return;}
+   }
+ }
+
+return;
+}

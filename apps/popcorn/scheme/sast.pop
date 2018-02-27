@@ -1,0 +1,173 @@
+
+////////////////////////////////////////////////////////////////////////////
+// scheme-- to TAL compiler written in popcorn, file sast.pop             //
+// Copyright Greg Morrisett, Dan Grossman                                 //
+// January 1999, all rights reserved                                      //
+// Ported from caml code Copyright June 1998, Morrisett, Glew, Weirich    //
+////////////////////////////////////////////////////////////////////////////
+
+#include "core.h"
+#include "list.h"
+open Core;
+open List;
+
+prefix Sast;
+open   Sast;
+
+// note: equal? (Structeq) is a library function
+// note: same with call-with-input-file, call-with-output-file
+union primop { 
+  void 
+    Plus, Minus, Times, Div,
+    Inteq, Ptreq, Not, Less, Greater, Lesseq, Greatereq,
+    Isint, Isbool, Isnil, Ispair, Isfn, Ischar, Isstring, Isindesc, Isoutdesc,
+    Cons, Car, Cdr, Setcar, Setcdr,
+    Openin, Openout, Closein, Closeout, Flushout, 
+    Getchar, Peekchar, Putchar, Write,
+    Currentin, Currentout, Winfile, Woutfile, Iseof, 
+    Newstring, Sizes, Subs, Sets,
+    Chr, Ord;
+}
+
+struct lambda {
+  <string>list args;
+  exp          body;
+}
+struct var {
+  string v;
+  int    l; // location (for unbound variable errors)
+}
+    
+union exp {
+  int    Int;
+  string String;
+  char   Char;
+  void   Nil; 
+  void   False;
+  void   True;
+  var    Var; // name, location (for unbound variable errors)
+  lambda Lambda;
+
+  *(var, exp)                     Set;
+  *(exp,    <exp>list)            App;
+  *(primop, <exp>list)            Op; 
+  *(<*(string, exp)   >list, exp) Let;
+  *(<*(string, lambda)>list, exp) Letrec;
+  *(exp, exp, exp)                If;
+  <exp>list                       Seq;
+}
+
+int primop_arity(primop p) { 
+  // if any  number,  returns -1          (eg. Plus)
+  // if some numbers, returns largest one (eg. Getchar)
+  switch p {
+  case Plus:        return -1;
+  case Minus:       return -1;
+  case Times:       return -1;
+  case Div:         return -1;
+  case Inteq:       return -1;
+  case Ptreq:       return 2;
+  case Not:         return 1;
+  case Less:        return -1;
+  case Greater:     return -1;
+  case Lesseq:      return -1;
+  case Greatereq:   return -1;
+  case Isint:       return 1;
+  case Isbool:      return 1;
+  case Isnil:       return 1;
+  case Ispair:      return 1;
+  case Isfn:        return 1;
+  case Ischar:      return 1;
+  case Isstring:    return 1;
+  case Isindesc:    return 1;
+  case Isoutdesc:   return 1;
+  case Cons:        return 2;
+  case Car:         return 1;
+  case Cdr:         return 1;
+  case Setcar:      return 2;
+  case Setcdr:      return 2;
+  case Openin:      return 1;
+  case Openout:     return 1;
+  case Closein:     return 1;
+  case Closeout:    return 1;
+  case Flushout:    return 1;
+  case Getchar:     return 2;
+  case Peekchar:    return 2;
+  case Putchar:     return 2;
+  case Write:       return 1; // change to 2 later (add output port)
+  case Currentin:   return 0;
+  case Currentout:  return 0;
+  case Winfile:     return 2;
+  case Woutfile:    return 2;
+  case Iseof:       return 1;
+  case Newstring:   return 2;
+  case Sizes:       return 1;
+  case Subs:        return 2;
+  case Sets:        return 3;
+  case Chr:         return 1;
+  case Ord:         return 1;
+  }
+}
+
+// For Error reporting
+// this is rather unscheme-like, but since we're not redefining primops,
+// may as well give compile-time errors.  
+
+exception num_args(*(primop,int));
+void print_arg_msg(*(primop,int) op_loc) {
+  print_string("\nWrong number of arguments to prim op: ");
+  print_string(string_of_op(op_loc.1));
+  print_string("\tline: ");
+  print_int(op_loc.2);
+  print_newline();
+}
+string string_of_op(primop p) {
+  switch p {
+  case Plus:        return "+";
+  case Minus:       return "-";
+  case Times:       return "*";
+  case Div:         return "/";
+  case Inteq:       return "=";
+  case Ptreq:       return "eq?";
+  case Not:         return "not";
+  case Less:        return "<";
+  case Greater:     return ">";
+  case Lesseq:      return "<=";
+  case Greatereq:   return ">=";
+  case Isint:       return "integer?";
+  case Isbool:      return "boolean?";
+  case Isnil:       return "null?";
+  case Ispair:      return "pair?";
+  case Isfn:        return "procedure?";
+  case Ischar:      return "char?";
+  case Isstring:    return "string?";
+  case Isindesc:    return "input-port?";
+  case Isoutdesc:   return "output-port?";
+  case Cons:        return "cons";
+  case Car:         return "car";
+  case Cdr:         return "cdr";
+  case Setcar:      return "set-car!";
+  case Setcdr:      return "set-cdr!";
+  case Openin:      return "open-input-file";
+  case Openout:     return "open-output-file";
+  case Closein:     return "close-input-port";
+  case Closeout:    return "close-output-port";
+  case Flushout:    return "flush-out";
+  case Getchar:     return "read-char";
+  case Peekchar:    return "peek-char";
+  case Putchar:     return "write-char";
+  case Write:       return "write";
+  case Currentin:   return "current-input-port";
+  case Currentout:  return "current-output-port";
+  case Winfile:     return "with-input-from-file";
+  case Woutfile:    return "with-output-to-file";
+  case Iseof:       return "eof-object?";
+  case Newstring:   return "string";
+  case Sizes:       return "string-length";
+  case Subs:        return "string-ref";
+  case Sets:        return "string-set!";
+  case Chr:         return "integer->char";
+  case Ord:         return "char->integer";
+  }
+}
+

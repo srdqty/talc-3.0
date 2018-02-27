@@ -1,0 +1,15 @@
+fun ack() : unit =
+  print ("Success")
+
+fun ping (source:host, destination:host) : unit =
+  if (thisHostIs (destination)) then
+    OnRemote (|ack|(), source, getRB(), defaultRoute)
+  else 
+    OnRemote (|ping|(source, destination), destination, getRB(), defaultRoute)
+
+val entry_fun  : unit = "ping"
+val entry_args : unit = ["cyclone.cis.upenn.edu:4000";
+		         "cyclone.cis.upenn.edu:4003"]
+val entry_src  : unit = "cyclone.cis.upenn.edu:4000"
+val entry_eval : unit = "cyclone.cis.upenn.edu:4000"
+val entry_rb   : unit = 7890

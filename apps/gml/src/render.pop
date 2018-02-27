@@ -1,0 +1,1419 @@
+
+#include "gmlsyntax.h"
+#include "math.h"
+#include "core.h"
+#include "matrix.h"
+#include "eval.h"
+#include "ppm.h"
+
+#define matrix Matrix::matrix
+#define vector Matrix::vector
+
+#define ERR(X) { printf(X); raise(^GMLFailure(X)); }
+
+/*
+#define DEBUG(X) X
+#define DEBUG_PR(X) { printf("%s\n",(X)); fflush(tal_stdout); }
+*/
+#define DEBUG(X)
+#define DEBUG_PR(X)
+
+// Put these one and expect lots of output.
+// #define DEBUG_VERBOSE(X) DEBUG_PR(X)
+#define DEBUG_VERBOSE(X) 
+
+FILE out_file = null;
+
+open Core;
+open Math;
+
+prefix Render;
+open Render;
+
+FP epsilon = FP_CONST(1e-5);
+FP color_step = FP_CONST(0.00390625); // 1.0 / 256.0;
+
+//..............................................................................
+// Globals used to cut allocation
+vector vec1,vec2,vec3,vec4,vec5,vec6,vec7;
+vector vec_l1,vec_l2,vec_l3;
+//..............................................................................
+// Types for the optimized scene.
+
+// Scene description
+union kind {
+  *(vector, FP) SSphere;  // center * radius squared
+  void                  SEllipsoid;
+  *(vector,vector,vector) SCube; // normal x=0, normal y=0, normal z=0
+  vector SCylinder; // normal
+  vector SCone;     // normal
+  *(vector,vector) SPlane; // equation * normal
+}
+
+union scene {
+  *(kind, Eval::closure,matrix) SObj; // kind * surface function * transform
+  *(scene,vector,FP) SBound; // scene * center * radius squared
+  *(scene,scene) SUnion;
+  *(scene,scene) SInter;
+  *(scene,scene) SDiff;
+}
+
+union light {
+  *(vector,color) Light; // vector negated and normalized?
+  *(vector,color) PtLight;
+  *(vector,vector,color,FP,FP) StLight; // pos, dir, cos cutoff, exp
+}
+
+struct desc {
+  color amb;
+  light lights[];
+  scene sc;
+}
+//..............................................................................
+void dump_scene(FILE f, scene sc) {
+  switch sc {
+  case SObj *(kind,_,_):
+    switch kind {
+    case SSphere *(x,r): fprintf(f,"sphere");
+    case SEllipsoid: fprintf(f,"ellipsoid");
+    case SCube(_): fprintf(f,"cube");
+    case SCylinder(_): fprintf(f,"cylinder");
+    case SCone(_): fprintf(f,"cone");
+    case SPlane(_): fprintf(f,"plane");
+    }
+  case SBound *(sc1,x,r):
+    fprintf(f,"(bound ");
+    Matrix::vprint(f,x);
+    fprintf(f,", ");
+    fprint_fp(f,r);
+    fprintf(f," ");
+    dump_scene(f,sc1);
+    fprintf(f,")");
+  case SUnion *(sc1,sc2):
+    fprintf(f,"(union ");
+    dump_scene(f,sc1);
+    fprintf(f,", ");
+    dump_scene(f,sc2);
+    fprintf(f,") ");
+  case SInter *(sc1,sc2):
+    fprintf(f,"(inter ");
+    dump_scene(f,sc1);
+    fprintf(f,", ");
+    dump_scene(f,sc2);
+    fprintf(f,") ");
+  case SDiff *(sc1,sc2):
+    fprintf(f,"(diff ");
+    dump_scene(f,sc1);
+    fprintf(f,", ");
+    dump_scene(f,sc2);
+    fprintf(f,") ");
+  }
+}
+
+//..............................................................................
+// Scene Translation
+
+*(vector,vector) plane_eqn(matrix m, vector v) {
+  
+  _ n = ^vector(0.0,0.0,0.0,0.0);
+  Matrix::vmul(n,Matrix::transpose(m),v);
+  _ n2 = ^vector(n.x0,n.x1,n.x2,0.0);
+
+  return ^(n,Matrix::normalize(n2,n2));
+}
+
+// Fold these in as constants later.
+static vector origin          = ^vector(0.0f,0.0f,0.0f,1.0f);
+static vector cube_center     = ^vector(0.5f,0.5f,0.5f,1.0f);
+static vector cylinder_center = ^vector(0.0f,0.5f,0.0f,1.0f);
+static vector cone_center     = ^vector(0.0f,1.0f,0.0f,1.0f);
+
+scene intern_obj(Affine::t a, Gmlsyntax::obj o) {
+  switch o {
+  case Base(b):
+    _ m = a.mat;
+    _ m1 = a.imat;
+    _ scale = a.factor;
+
+    _ clos = ^Eval::closure.Unopt(b.o_clos);
+    _ sol = b.o_solid;
+
+    _ center = ^vector(0,0,0,0); // Of the bounding volume.
+    _ radius;
+    _ kind;
+
+    switch sol {
+    case Sphere:
+      Matrix::vmul(center,m1,origin);
+      radius = scale * scale;
+      if(a.isometric) 
+	kind = ^kind.SSphere(^(center,radius));
+      else 
+	kind = ^kind.SEllipsoid;
+    case Cube:
+      _ nx = plane_eqn(m,^vector(1,0,0,0));
+      _ ny = plane_eqn(m,^vector(0,1,0,0));
+      _ nz = plane_eqn(m,^vector(0,0,1,0));
+      Matrix::vmul(center,m1,cube_center);
+      radius = scale * scale * 0.75;
+      kind = ^kind.SCube(^(nx.2,ny.2,nz.2));
+    case Cylinder:
+      Matrix::vmul(center,m1,cylinder_center);
+      radius = scale * scale * 1.25;
+      _ n = plane_eqn(m,^vector(0,1,0,0));
+      kind = ^kind.SCylinder(n.2);
+    case Cone:
+      Matrix::vmul(center,m1,cone_center);
+      radius = scale * scale;
+      _ n = plane_eqn(m,^vector(0,1,0,0));
+      kind = ^kind.SCone(n.2);
+    case Plane:
+      _ n = plane_eqn(m,^vector(0,1,0,0));
+      return ^scene.SObj(^(^kind.SPlane(n),clos,m));
+    }
+    _ o = ^scene.SObj(^(kind,clos,m));
+    if(optimize_scene)
+      return ^scene.SBound(^(o,center,(:FP)radius));
+    else return o;
+
+  case Union *(o1,o2):
+    return ^scene.SUnion(^(intern_obj(a,o1),intern_obj(a,o2)));
+  case Inter *(o1,o2):
+    return ^scene.SInter(^(intern_obj(a,o1),intern_obj(a,o2)));
+  case Diff *(o1,o2):
+    switch o1 {
+    case Diff *(o11,o12): return intern_obj(a,^.Diff(^(o11,^Gmlsyntax::obj.Union(^(o12,o2)))));
+    default: return ^.SDiff(^(intern_obj(a,o1),intern_obj(a,o2)));
+    }
+  case Trans *(a2,o):
+    return intern_obj(Affine::compose(a2,a),o);
+  }
+}
+
+light intern_lights(Gmlsyntax::light a[])[] {
+  _ len = size(a);
+  _ p = ^Point::point(0,0,0);
+  _ v = ^vector(0,0,0,0);
+  light b[] = new_array(len,^light.Light(^(v,p)));
+
+  for(_ i=0; i<len; ++i) {
+    switch a[i] {
+    case Ldir(l): // ld_dir, ld_color
+      _ d2 = l.ld_dir;
+      _ d = ^vector(d2.x,d2.y,d2.z,0);
+      _ dir = Matrix::neg(d);
+      Matrix::normalize(dir,dir);
+      b[i] = ^light.Light(^(dir,l.ld_color));
+    case Lpoint(p): // lp_pos, lp_color
+      _ pos = p.lp_pos;
+      _ d = ^vector(pos.x,pos.y,pos.z,1);
+      b[i] = ^light.PtLight(^(d,p.lp_color));
+    case Lspot(s): // ls_pos, ls_at, ls_color, ls_cutoff, ls_exp
+      _ pos = s.ls_pos;
+      _ vpos = ^vector(pos.x,pos.y,pos.z,1);
+      _ dir = s.ls_at;
+      _ vdir = ^vector(pos.x - dir.x,
+		       pos.y - dir.y,
+		       pos.z - dir.z,0);
+      Matrix::normalize(vdir,vdir);
+      _ cutoff = cos(s.ls_cutoff);
+     
+      b[i] = ^light.StLight(^(vpos,vdir,s.ls_color,(: FP )cutoff,s.ls_exp));
+    }
+  }
+
+  return b;
+}
+
+//..............................................................................
+// Scene optimization
+
+<scene>list flatten_rec(scene sc, <scene>list rem) {
+  switch sc {
+  case SUnion *(sc1,sc2): return flatten_rec(sc1,flatten_rec(sc2,rem));
+  default: return ^list(sc,rem);
+  }
+}
+
+int object_cost(kind k) {
+  switch k {
+  case SSphere(_)  : return 1;
+  case SEllipsoid  : return 2;
+  case SCube(_)    : return 4;
+  case SCylinder(_): return 2;
+  case SCone(_)    : return 2;
+  case SPlane(_)   : return 0;
+  }
+}
+
+struct sc_desc {
+  vector x;
+  FP r;
+  int cost;
+  scene sc;
+}
+
+*(int,scene) add_bound(FP r0,sc_desc d) {
+  _    x = d.x;
+  FP   r = d.r;
+  _ cost = d.cost;
+  _   sc = d.sc;
+ 
+  if(r0 < 0) {
+    if(r < 0 || cost <= 1) return ^(cost,sc);
+    else return ^(1, ^scene.SBound(^(sc,x,r)));
+  } else {
+    FP c0 = r0 + r * cost;
+    FP c1 = r0 * cost;
+    if(c0 < c1) return ^(1,^scene.SBound(^(sc,x,r)));
+    else return ^(cost,sc);
+  }
+}
+
+sc_desc union_bound(sc_desc dsc1, sc_desc dsc2) {
+  _    x1 = dsc1.x;
+  _    r1 = dsc1.r;
+  _ cost1 = dsc1.cost;
+  _   sc1 = dsc1.sc;
+
+  _    x2 = dsc2.x;
+  _    r2 = dsc2.r;
+  _ cost2 = dsc2.cost;
+  _   sc2 = dsc2.sc;
+
+  if(r1<0) {
+    _ cs = add_bound(r1,dsc2);
+    return ^sc_desc(x1,r1,cost1,^scene.SUnion(^(sc1,cs.2)));
+  } else if(r2<0) {
+    _ cs = add_bound(r2,dsc1);
+    return ^sc_desc(x2,r2,cost2,^scene.SUnion(^(cs.2,sc2)));
+  } else {
+    Matrix::sub(vec_l1,x2,x1);
+    _ d = sqrt(Matrix::square(vec_l1));
+    _ r1s = sqrt(r1);
+    _ r2s = sqrt(r2);
+    if(d + r2s < r1s) {
+      _ cs = add_bound(r1,dsc2);
+      return ^sc_desc(x1,r1,cost1 + cs.1, ^scene.SUnion(^(sc1,cs.2)));
+    } else if (d + r1s <= r2s) {
+      _ cs = add_bound(r2,dsc1);
+      return ^sc_desc(x2,r2,cs.1 + cost2, ^scene.SUnion(^(cs.2,sc2)));
+    } else {
+      _ rs = (r1s + r2s + d) * 0.5;
+      _ r = rs * rs;
+      Matrix::sub(vec_l1,x2,x1);
+      _ x = Matrix::add_scaled(x1,((rs - r1s)/d),vec_l1);
+      _ cs1 = add_bound(r,dsc1);
+      _ cs2 = add_bound(r,dsc2);
+      return ^sc_desc(x,r,cs1.1 + cs2.1, ^scene.SUnion(^(cs1.2, cs2.2)));
+    }
+  }
+}
+
+FP union_radius(sc_desc dsc1, sc_desc dsc2) {
+  _ r1 = dsc1.r;
+  _ r2 = dsc2.r;
+  _ x1 = dsc1.x;
+  _ x2 = dsc2.x;
+
+  Matrix::sub(vec_l1,x2,x1);
+  _ d = sqrt(Matrix::square(vec_l1));
+  _ r1s = sqrt(r1);
+  _ r2s = sqrt(r2);
+  if(d + r2s <= r1s) return r1;
+  if(d + r1s <= r2s) return r2;
+  _ r = (r1s + r2s + d) * 0.5;
+  return r*r;
+}
+
+sc_desc merge_union(<sc_desc>list l) {
+
+  if(l==null) ERR("merge_union");;
+
+  _ y = null;
+  while(l.tl!=null) {
+    y = null;
+    _ x = l;
+    while(x!=null && x.tl!=null) { // Collapse adjacent descriptions
+      _ d = union_bound(x.hd,x.tl.hd);
+      y = ^list(d,y);
+      x=x.tl.tl;
+    }
+    if(x!=null) y = ^list(x.hd,y);
+
+    l = List::imp_rev(y);
+  }
+
+ return l.hd;
+}
+
+<sc_desc>list opt_union(<sc_desc>list l) {
+  if(l==null || l.tl==null) return l;
+
+  if(l.tl.tl == null) return ^list(union_bound(l.hd,l.tl.hd),null);
+
+  _ c = List::to_array(l);
+  _ n = size(c);
+  _ m = new_array_fp(n*n);
+
+  for(_ i=0; i<n; ++i) {
+    for(_ j=0; j<n; ++j) {
+      _ ij = i*n + j;
+      if(i!=j) m[ij] = union_radius(c[i],c[j]);
+      else m[ij] = pos_inf;
+    }
+  }
+
+  _ remain = new_array(n,0);
+  for(_ i = 0; i<n; ++i)
+    remain[i]=i;
+
+  for(_ k = n-1; k>0; --k) {
+    _ gain = pos_inf;
+    _ i0 = 0;
+    _ j0 = 0;
+    for(_ i=0; i<=k; i++) {
+      for(_ j=0; j<=k; j++) {
+	_ ri = remain[i];
+	_ rj = remain[j];
+	_ mij = m[ri * n + rj];
+	if (mij < gain) { 
+	  gain = mij;
+	  i0 = i;
+	  j0 = j;
+	}
+      }
+    }
+    _ i = remain[i0];
+    _ j = remain[j0];
+    remain[j0] = remain[k];
+    c[i] = union_bound(c[i],c[j]);
+    for(_ j0 = 0; j0 < k; ++j0) {
+      _ j = remain[j0];
+      if(i!=j) {
+	m[i*n + j] = union_radius(c[i],c[j]);
+	m[j*n + i] = union_radius(c[i],c[j]);
+      }
+    }
+  }
+  return ^list(c[remain[0]],null);
+}
+
+sc_desc optimize_rec(scene sc) {
+  switch sc {
+  case SObj *(kind,_,_):
+    return ^sc_desc(origin,-1.0,object_cost(kind),sc);
+  case SUnion *(sc1,sc2):
+    _ l = List::map(optimize_rec,flatten_rec(sc,null));
+    _ unbounded=null, bounded=null;
+    for(_ x = l; x!=null; x=x.tl) {
+      _ h = x.hd;
+      if(h.r<0) unbounded = ^list(h,unbounded);
+      else bounded = ^list(h,bounded);
+    }
+    bounded = List::imp_rev(bounded);
+    unbounded = List::imp_rev(unbounded);
+    // XXX - not sure about precedence.  Append might be interior.
+    return merge_union(List::append(opt_union(bounded), unbounded));
+  case SInter *(sc1,sc2):
+    _ d1 = optimize_rec(sc1);
+    _ d2 = optimize_rec(sc2);
+
+    _    x1 = d1.x;
+    _    r1 = d1.r;
+    _ cost1 = d1.cost;
+    _   sc1 = d1.sc;
+    
+    _    x2 = d2.x;
+    _    r2 = d2.r;
+    _ cost2 = d2.cost;
+    _   sc2 = d2.sc;
+    // Bound could be better??
+    if(r2< 0) return ^sc_desc(x2,r2,cost2,^scene.SInter(^(sc1,sc2)));
+    if(r1< 0) return ^sc_desc(x1,r1,cost1,^scene.SInter(^(sc2,sc1)));
+    if(r1<r2) return ^sc_desc(x1,r1,cost1,^scene.SInter(^(sc1,sc2)));
+    // Why cost1 and not cost2 below?
+    return ^sc_desc(x2,r2,cost1,^scene.SInter(^(sc2,sc1)));
+
+  case SDiff *(sc1,sc2):
+    _    d1 = optimize_rec(sc1);
+    _    d2 = optimize_rec(sc2);    
+    _    x1 = d1.x;
+    _    r1 = d1.r;
+    _ cost1 = d1.cost;
+    _   sc1 = d1.sc;
+    _    cs = add_bound(r1,d2);
+
+    return ^sc_desc(x1,r1,cost1,^scene.SDiff(^(sc1,cs.2)));
+
+  case SBound *(sc1,x,r):
+    _ d = optimize_rec(sc1);
+    return ^sc_desc(x,r,d.cost,d.sc);
+  }
+}
+
+scene optimize(scene sc) {
+  _ cs = add_bound(-1.0,optimize_rec(sc));
+  return cs.2;
+}
+
+void check_bound(vector x0, FP r0, vector x, FP r) {
+  Matrix::sub(vec_l1,x,x0);
+  _ d = sqrt (Matrix::square(vec_l1));
+  if( d + sqrt(r) - sqrt(r0) > epsilon) {
+    printf("Bad bound.\n");
+    printf("x0 = "); 
+    Matrix::vprint(tal_stdout,x0);
+    printf("\nr0 = "); print_fp(sqrt(r0));
+    printf("x = ");
+    Matrix::vprint(tal_stdout,x);
+    printf("\nr = "); print_fp(sqrt(r));
+    printf("\nd = "); print_fp(d);
+    printf("\n d + r - r0 = ");
+    print_fp(d + sqrt(r) - sqrt(r0));
+  }
+}
+
+void check_bounds(vector x0, FP r0, scene sc) {
+  switch sc {
+  case SObj *(kind,_,_):
+    switch kind {
+    case SSphere *(x,r):
+      check_bound(x0,r0,x,r);
+      return;
+    default: return;
+    }
+  case SUnion *(sc1,sc2):
+    check_bounds(x0,r0,sc1);
+    check_bounds(x0,r0,sc2);
+  case SInter *(sc1,sc2):
+    check_bounds(x0,r0,sc1);
+    check_bounds(x0,r0,sc2);
+  case SDiff *(sc1,sc2):
+    check_bounds(x0,r0,sc1);
+    check_bounds(origin,1e5,sc2);
+  case SBound *(sc1,x,r):
+    check_bound(x0,r0,x,r);
+    check_bounds(x,r,sc1);
+  }
+}
+
+//..............................................................................
+// Attempt to get rid of even more allocation.
+
+?struct interval {
+  FP  left; FP right;
+  scene  left_sc; scene right_sc;
+  interval next;
+}
+
+interval all_intervals[] = {: interval };
+int free_interval = 0;
+
+interval new_interval(FP left, FP right, scene left_sc, scene right_sc, interval next) {
+  _ f = free_interval;
+  _ a = all_intervals;
+
+  if(f>=size(a)) return ^interval(left,right,left_sc,right_sc,next);
+  _ i = a[f];
+  free_interval = f + 1;
+  i.left = left;
+  i.right = right;
+  i.left_sc = left_sc;
+  i.right_sc = right_sc;
+  i.next = next;
+  return i;
+}
+
+int needed_intervals(scene sc) {
+  switch sc {
+  case SObj(_): return 2;
+  case SBound *(s,_,_): return needed_intervals(s);
+  case SUnion *(s1,s2): return needed_intervals(s1) + needed_intervals(s2);
+  case SInter *(s1,s2): return needed_intervals(s1) + needed_intervals(s2);
+  case SDiff *(s1,s2):  return needed_intervals(s1) + needed_intervals(s2);
+  }
+}
+
+void allocate_intervals(scene sc) {
+  _ num = needed_intervals(sc);
+
+  if(num > 1000) {
+    num = 1000;
+  }
+
+  all_intervals = new_array(num,^interval(0,0,sc,sc,null));
+
+  for(int i = 0; i < num; i++) {
+    all_intervals[i] = ^interval(0,0,sc,sc,null);
+  }
+}
+
+void reset_intervals() {
+  free_interval = 0;
+}
+
+static interval interval_imp_revappend(interval x,interval y) {
+  while (x != null) {
+    _ tmp = x.next;
+    x.next = y;
+    y = x;
+    x = tmp;
+  }
+  return(y);
+}
+
+static interval interval_imp_rev(interval x) {
+  if (x == null) return x;
+  else {
+    _ first = x;
+    _ second = x.next;
+    x.next = null;
+    while (second != null) {
+      _ temp = second.next;
+      second.next = first;
+      first = second;
+      second = temp;
+    } 
+    return first;
+  }
+}
+
+
+//..............................................................................
+// Rendering
+
+static interval union_i(interval l1, interval l2) {
+  _ un = null;
+
+  while(l1!=null && l2 != null) {
+    _ t1_r = l1.right;
+    _ t2_l = l2.left;
+
+    if(t1_r < t2_l) {
+      _ tmp = l1.next;
+      l1.next = un;
+      un = l1;
+      l1 = tmp;
+      continue;
+    }
+
+    _ t2_r = l2.right;
+    _ t1_l = l1.left;
+
+    if(t2_r < t1_l) {
+      _ tmp = l2.next;
+      l2.next = un;
+      un = l2;
+      l2 = tmp;
+      continue;
+    }
+
+    if(t1_l<t2_l) {
+      if(t1_r < t2_r) {
+	l2.left = t1_l; l2.left_sc = l1.left_sc; 
+	l1 = l1.next;
+      }
+      else 
+	l2 = l2.next;
+    } else {
+      if(t1_r < t2_r) l1 = l1.next;
+      else {
+	l1.left = t2_l; l1.left_sc = l2.left_sc; 
+	l2 = l2.next;
+      }
+    }
+  }
+
+  _ l = (l1 != null) ? l1 : l2;
+  return interval_imp_revappend(un,l);
+}
+
+static interval inter_i(interval l1, interval l2) {
+  _ in = null;
+  while(l1!=null && l2!=null) {
+    _ t1_r = l1.right;
+    _ t2_l = l2.left;
+
+    if(t1_r <= t2_l) {
+      l1 = l1.next;
+      continue;
+    }
+    
+    _ t1_l = l1.left;
+    _ t2_r = l2.right;
+
+    if(t2_r <= t1_l) {
+      l2 = l2.next;
+      continue;
+    }
+
+    if(t1_l < t2_l) {
+      if(t1_r < t2_r) {
+	_ tmp = l1.next;
+	l1.left = t2_l; 
+	l1.left_sc = l2.left_sc;
+	l1.next = in;
+	in = l1;
+	l1 = tmp;
+      } else {
+	_ tmp = l2.next;
+	l2.next = in;
+	in = l2;
+	l2 = tmp;
+      }
+    } else {
+      if (t1_r < t2_r) {
+	_ tmp = l1.next;
+	l1.next = in;
+	in = l1;
+	l1 = tmp;
+      } else {
+	_ tmp = l2.next;
+	l2.left = t1_l;
+	l2.left_sc = l1.left_sc;
+	l2.next = in;
+	in = l2;
+	l2 = tmp;
+      }
+    }
+  }
+  return interval_imp_rev(in);
+}
+
+interval diff_i(interval l1,interval l2) {
+  _ df = null;
+
+  while(l1!=null && l2!=null) {
+    _ t1_r = l1.right;
+    
+    _ t2_l = l2.left;
+
+    if(t1_r <= t2_l) {
+      _ tmp = l1.next;
+      l1.next = df;
+      df = l1;
+      l1 = tmp;
+      continue;
+    }
+
+    _ t1_l = l1.left;
+    _ t2_r = l2.right;
+
+    if(t2_r <= t1_l) {
+      l2 = l2.next;
+      continue;
+    }
+
+    if(t1_l < t2_l) {
+      df = new_interval(t1_l,t2_l,l1.left_sc,l2.left_sc,df);
+      if(t1_r <= t2_r) {
+	l1 = l1.next;
+      } else {
+	l1.left = t2_r; 
+	l1.left_sc = l2.right_sc;
+	l2 = l2.next;
+      }
+    } else {
+      if(t1_r <= t2_r) {
+	l1 = l1.next;
+      } else {
+	l1.left = t2_r;
+	l1.left_sc = l2.right_sc;
+	l2 = l2.next;
+      }
+    }
+  }
+
+  return interval_imp_revappend(df,l1);
+}
+
+//..............................................................................
+// Intersection of ray and object
+
+// XXX needs to be checked. 
+static interval plane(vector orig, vector dir, scene sc,vector eq) {
+  _ porig = Matrix::dot(eq,orig);
+  _ pdir  = Matrix::dot(eq,dir);
+  _ t     = -porig/pdir;
+
+  if(porig < 0.0) {
+    if(t>0.0) return new_interval(0.0,t,sc,sc,null);
+    return new_interval(0.0,pos_inf,sc,sc,null);
+  } else {
+    if(t>0.0) return new_interval(t,pos_inf,sc,sc,null);
+    return null;
+  }
+}
+
+static interval band(scene obj, FP xi, FP vi) {
+  _ t1 = - xi / vi;                                      
+  _ t2 = (1.0 - xi) / vi;                              
+  _ t2s = (t1 >= t2) ? t1 : t2;                          
+  if(t2s < 0.0) return null;                               
+  _ t1s = (t1 <= t2) ? t1 : t2;                          
+  if(t1s<0.0) return new_interval(0.0,t2s,obj,obj,null); 
+  return new_interval(t1s,t2s,obj,obj,null);         
+}
+
+interval cube(vector orig, vector dir, scene sc, matrix m) {
+  Matrix::vmul(vec_l1,m,orig);
+  Matrix::vmul(vec_l2,m,dir);
+  _ x = vec_l1;
+  _ v = vec_l2;
+  _ l0 = band(sc,x.x0,v.x0);
+  if(l0==null) return null;
+
+  _ l1 = inter_i(l0,band(sc,x.x1,v.x1));
+  if(l1==null) return null;
+
+  return inter_i(l1,band(sc,x.x2,v.x2));  
+}
+
+interval sphere(vector orig, vector dir, scene sc, vector x, FP r2) {
+  Matrix::sub(vec_l1,x,orig);
+  _ v = vec_l1;
+  _ v2 = Matrix::square(v);
+  _ dir2 = Matrix::square(dir);
+  _ p = Matrix::dot(v,dir);
+
+  _ d2 = v2 - p * p / dir2;
+  _ delta = r2 - d2;
+
+  if(delta<=0.0) return null;
+
+  _ sq = sqrt(delta/dir2);
+  _ t1 = p/dir2 - sq;
+  _ t2 = p/dir2 + sq;
+
+  if(t2<0.0) return null;
+
+  _ in = new_interval(0.0,t2,sc,sc,null);
+  if(t1>0.0) in.left = t1;
+
+  return in;
+}
+
+interval ellipsoid(vector orig, vector dir, scene sc, matrix m) {
+  Matrix::vmul(vec_l1,m,orig);
+  Matrix::vmul(vec_l2,m,dir);
+  _ x = vec_l1;
+  _ v = vec_l2;
+  _ x2 = Matrix::square(x);
+  _ v2 = Matrix::square(v);
+  _ xv = Matrix::dot(x,v);
+  _ delta =  xv * xv - v2 * (x2 - 2.0);
+
+  if(delta<=0.0) return null;
+
+  _ sq = sqrt(delta);
+  _ t1 = (-xv - sq) / v2;
+  _ t2 = (-xv + sq) / v2;
+  if(t2<0.0) return null;
+  
+  _ in = new_interval(0.0,t2,sc,sc,null);
+  if(t1>0.0) in.left = t1;
+
+  return in;
+}
+
+interval cylinder(vector orig, vector dir, scene sc, matrix m) {
+  Matrix::vmul(vec_l1,m,orig);
+  Matrix::vmul(vec_l2,m,dir);
+  _ x = vec_l1;
+  _ v = vec_l2;
+  _ x2 = x.x0 * x.x0 + x.x2 * x.x2 - 1;
+  _ v2 = v.x0 * v.x0 + v.x2 * v.x2;
+  _ xv = x.x0 * v.x0 + x.x2 * v.x2;
+  _ delta = xv * xv - v2 * x2;
+  if(delta<=0.0) return null;
+  _ sq = sqrt(delta);
+  _ t1 = (- xv - sq)/ v2; 
+  _ t2 = (- xv + sq)/ v2;
+  if(t2<0.0) return null;
+  
+  _ in = new_interval(0.0,t2,sc,sc,null);
+  if(t1>0.0) in.left = t1;
+  return inter_i(in, band(sc,x.x1,v.x1));
+}
+
+interval cone(vector orig, vector dir, scene sc, matrix m) {
+  Matrix::vmul(vec_l1,m,orig);
+  Matrix::vmul(vec_l2,m,dir);
+  _ x = vec_l1;
+  _ v = vec_l2;
+
+  _ x2 = x.x0 * x.x0 + x.x2 * x.x2 - x.x1 * x.x1;
+  _ v2 = v.x0 * v.x0 + v.x2 * v.x2 - v.x1 * v.x1;
+  _ xv = x.x0 * v.x0 + x.x2 * v.x2 - x.x1 * v.x1;
+
+  _ delta = xv * xv - v2 * x2;
+
+  if(delta <= 0.0) return null;
+
+  _ sq = sqrt(delta);
+  _ t1 = (- xv - sq) / v2;
+  _ t2 = (- xv + sq) / v2;
+
+  if(t1<=t2) {
+    if(t2<0.0) return null;
+    _ in = new_interval(0.0,t2,sc,sc,null);
+    if(t1>0.0) in.left = t1;
+    return inter_i(in, band(sc,x.x1,v.x1));
+  } else {
+    _ ins;
+    if(t1<=0.0)  ins = new_interval(0.0,pos_inf,sc,sc,null);
+    else if(t2<=0.0) ins = new_interval(t1,pos_inf,sc,sc,null);
+    else ins = new_interval(0.0,t2,sc,sc,
+			 new_interval(t1,pos_inf,sc,sc,
+				   null));
+
+    return inter_i(ins,band(sc,x.x1,v.x1));
+  }
+}
+
+// Does the ray intersect this bounding sphere.
+// Center of sphere is x, radius squared is r2
+static bool intersect(vector orig, vector dir, vector x, FP r2) {
+#ifdef SLOW_INTERSECT
+  Matrix::sub(vec3,x,orig);
+  _ v = vec3;
+  // Square of the distance between the origin and the center of the sphere. 
+  _ vx = v.x0;
+  _ vy = v.x1;
+  _ vz = v.x2;
+  _ vt = v.x3;
+
+  _ v2 = vx * vx + vy * vy + vz * vz + vt * vt;
+
+  _ dx = dir.x0;
+  _ dy = dir.x1;
+  _ dz = dir.x2;
+  _ dt = dir.x3;
+  
+  _ dir2 = dx * dx + dy * dy + dz * dz + dt * dt;
+
+  _ p = vx * dx + vy * dy + vz * dz + vt * dt;
+
+  // Square of the distance between the ray and the center
+  _ d2 = v2 - p * p / dir2;
+
+  return (r2 > d2);
+#else
+  /* I imagine this might be significantly faster? */
+  _ vx = x.x0 - orig.x0;
+  _ dx = dir.x0;
+
+  _  p = vx * dx;
+  _ v2 = vx * vx;
+  _ d2 = dx * dx;
+
+  _ vy = x.x1 - orig.x1;
+  _ dy = dir.x1;
+  p  += vy * dy;
+  v2 += vy * vy;
+  d2 += dy * dy;
+
+  _ vz = x.x2 - orig.x2;
+  _ dz = dir.x2;
+  p  += vz * dz;
+  v2 += vz * vz;
+  d2 += dz * dz;
+
+  _ vt = x.x3 - orig.x3;
+  _ dt = dir.x3;
+  p  += vt * dt;
+  v2 += vt * vt;
+  d2 += dt * dt;
+
+  return (r2 > (v2 - p * p / d2));
+#endif
+}
+
+interval find_all(vector orig, vector dir, scene sc) {
+  while(true) {
+    switch sc {
+    case SObj *(k,_,m):
+      switch k {
+      case SSphere *(x,r2): return sphere   (orig,dir,sc,x,r2);
+      case SEllipsoid     : return ellipsoid(orig,dir,sc,m);
+      case SCube(_)       : return cube     (orig,dir,sc,m);
+      case SCylinder(_)   : return cylinder (orig,dir,sc,m);
+      case SCone(_)       : return cone     (orig,dir,sc,m);
+      case SPlane *(eq,_) : return plane    (orig,dir,sc,eq);
+      }
+    case SBound *(sc1,x,r2):
+      if(!intersect(orig,dir,x,r2)) return null;
+      sc = sc1;
+    case SUnion *(sc1,sc2):
+      return union_i(find_all(orig,dir,sc1),find_all(orig,dir,sc2));
+    case SInter *(sc1,sc2):
+      _ l1 = find_all(orig,dir,sc1);
+      if(l1==null) return null;
+      return inter_i(l1,find_all(orig,dir,sc2));
+    case SDiff *(sc1,sc2):
+      _ l1 = find_all(orig,dir,sc1);
+      if(l1==null) return null;
+      return diff_i(l1,find_all(orig,dir,sc2));
+    }
+  }
+
+  return null; // Should never get here!!
+}
+
+// This change in structure was important for RTCG, does it pay off here as well?
+// I doubt it but to be sure.
+interval find_all2(vector orig, vector dir, scene sc) {
+  _ scs = ^list(sc,null);
+  _ l = null;
+  while(scs!=null) {
+    sc = scs.hd;
+    scs = scs.tl;
+
+    switch sc {
+    case SObj *(k,_,m):
+      _ l1;
+      switch k {
+      case SSphere *(x,r2): l1 = sphere   (orig,dir,sc,x,r2);
+      case SEllipsoid     : l1 = ellipsoid(orig,dir,sc,m);
+      case SCube(_)       : l1 = cube     (orig,dir,sc,m);
+      case SCylinder(_)   : l1 = cylinder (orig,dir,sc,m);
+      case SCone(_)       : l1 = cone     (orig,dir,sc,m);
+      case SPlane *(eq,_) : l1 = plane    (orig,dir,sc,eq);
+      }
+      l = union_i(l,l1);
+    case SBound *(sc1,x,r2):
+      if(intersect(orig,dir,x,r2)) { l = union_i(l,find_all2(orig,dir,sc1)); }
+    case SUnion *(sc1,sc2):
+      scs = ^list(sc1, ^list(sc2,scs));
+    case SInter *(sc1,sc2):
+      _ l1 = find_all2(orig,dir,sc1);
+      if(l1!=null) {
+       l = union_i(l,inter_i(l1,find_all2(orig,dir,sc2)));
+      }
+    case SDiff *(sc1,sc2):
+      _ l1 = find_all2(orig,dir,sc1);
+      if(l1!=null) {
+	l = union_i(l,diff_i(l1,find_all2(orig,dir,sc2)));
+      }
+    }
+  }
+  return l;
+}
+
+interval filter_inter_list(interval l) {
+  for(;l!=null; l=l.next) {
+    if(l.left >= epsilon) break;
+  }
+  return l;
+}
+
+bool hit_from_inter(bool bounded,interval l0) {
+  _ l = filter_inter_list(l0);
+  if(l==null) return false;
+  if(!bounded) return true;
+  if(l.left > 1.0) return false;
+  return true;
+}
+
+bool hit(vector orig, vector dir, scene sc, bool bounded) {
+  switch sc {
+  case SObj *(k,_,m):
+    _ l;
+    switch k {
+    case SSphere *(x,r2): l = sphere(orig,dir,sc,x,r2);
+    case SEllipsoid     : l = ellipsoid(orig,dir,sc,m);
+    case SCube(_)       : l = cube(orig,dir,sc,m);
+    case SCylinder(_)   : l = cylinder(orig,dir,sc,m);
+    case SCone(_)       : l = cone(orig,dir,sc,m);
+    case SPlane *(eq,_) : l = plane(orig,dir,sc,eq);
+    }
+    if(l==null) return false;
+    _ left = l.left;
+    if(l.next == null && ((left>1.0 && bounded) || left < epsilon)) return false;
+    return true;
+  case SBound *(sc2,x,r2): 
+    return intersect(orig,dir,x,r2) && hit(orig,dir,sc2,bounded);
+  case SUnion *(sc1,sc2): return (hit(orig,dir,sc1,bounded) || 
+				  hit(orig,dir,sc2,bounded));
+  case SInter *(sc1,sc2): 
+    _ l1 = find_all(orig,dir,sc1);
+    if(l1 == null) return false;
+    return hit_from_inter(bounded,inter_i(l1,find_all(orig,dir,sc2)));
+  case SDiff *(sc1,sc2):
+    _ l1 = find_all(orig,dir,sc1);
+    if(l1 == null) return false;
+    return hit_from_inter(bounded,diff_i(l1,find_all(orig,dir,sc2)));
+  }
+}
+
+static bool visible(desc d,vector orig,vector dir,bool bounded) {
+  return !(hit(orig,dir,d.sc,bounded));
+}
+
+color black = ^color(0.0f,0.0f,0.0f);
+
+FP angle(FP si, FP co) {
+  _ u = (co >= 1.0) ? 0 : (co <= -1.0 ? 0.5 : (arc_cos(co) / (2.0 * pi)));
+
+  if(si > 0.0) return u;
+  else return (1.0 - u);
+}
+
+Eval::surf_prop apply_surface_fun(Eval::closure f, kind k,vector x) {
+  _ u, v;
+  _ face;
+
+  switch k {
+  case SSphere(_):
+    _ y = x.x1;
+    v = (y+1.0) * 0.5;
+    if(v<epsilon) {
+      u = 0.0;
+      face = 0;
+    } else {
+      u = angle(x.x0, x.x2 / sqrt(1.0 - y*y));
+      face = 0;
+    }
+  case SEllipsoid:
+    _ y = x.x1;
+    v = (y+1.0) * 0.5;
+    if(v<epsilon) {
+      u = 0.0;
+      face = 0;
+    } else {
+      u = angle(x.x0, x.x2 / sqrt(1.0 - y*y));
+      face = 0;
+    }
+  case SCube(_):
+    if(fabs(x.x2) < epsilon) 
+      { v = x.x1; u = x.x0; face = 0; }
+    else if(fabs(x.x2 - 1.0) < epsilon) 
+      { v = x.x1; u = x.x0; face = 1; }
+    else if(fabs(x.x0) < epsilon) 
+      { v = x.x1; u = x.x2; face = 2; }
+    else if(fabs(x.x0 - 1.0) < epsilon)
+      { v = x.x1; u = x.x2; face = 3; }
+    else if(fabs(x.x1 - 1.0) < epsilon)
+      { v = x.x2; u = x.x0; face = 4; }
+    else // if(fabs(x.x1) < epsilon)
+      { v = x.x2; u = x.x0; face = 5; }
+  case SCylinder(_):
+    if(fabs(x.x1) < epsilon) {
+      v = (x.x2 + 1.0) * 0.5;
+      u = (x.x0 + 1.0) * 0.5;
+      face = 2;
+    } else if (fabs(x.x1 -1) < epsilon) {
+      v = (x.x2 + 1.0) * 0.5;
+      u = (x.x0 + 1.0) * 0.5;
+      face = 1;
+    } else {
+      v = x.x1;
+      u = angle(x.x0,x.x2);
+      face = 0;
+    }
+  case SCone(_):
+    v = x.x1;
+    if(fabs(v) < epsilon) {
+      u = 0.0; face = 0;
+    } else if (fabs(x.x1 - 1.0) < epsilon) {
+      v = (x.x2 + 1.0) * 0.5;
+      u = (x.x0 + 1.0) * 0.5;
+      face = 1;
+    } else {
+      u = angle(x.x0,x.x2/v);
+      face = 0;
+    }
+
+  case SPlane(_):
+    v = x.x2;
+    u = x.x0;
+    face = 0;
+  }
+
+  return Eval::eval_surface_fun(f,u,v,face);
+}
+
+vector normal(vector nm, kind k, matrix m, vector x1, vector x2) {
+  switch k {
+  case SSphere *(x0,_):
+    Matrix::sub(vec_l1,x2,x0);
+    return Matrix::normalize(nm,vec_l1);
+
+  case SEllipsoid:
+    Matrix::vmul(vec_l1,Matrix::transpose(m),x1);
+    _ n = vec_l1;
+    n.x3 = 0;
+    return Matrix::normalize(nm,n);
+  case SCylinder(n):
+    if(fabs(x1.x1) < epsilon || fabs(x1.x1 - 1.0) < epsilon)
+      return n;
+
+    _ n = vec_l1;
+    n.x0 = x1.x0; n.x1 = 0.0; n.x2 = x1.x2; n.x3 = 0.0;
+    Matrix::vmul(n,Matrix::transpose(m),n);
+    n.x3 = 0;
+    return Matrix::normalize(nm,n);
+  case SCone(n):
+    if(fabs(x1.x1 - 1.0) < epsilon) return n;
+    _ n = vec_l1;
+    n.x0 = x1.x0; n.x1 = -x1.x1; n.x2 = x1.x2; n.x3 = 0.0;
+    Matrix::vmul(n,Matrix::transpose(m),n);
+    n.x3 = 0;
+    return Matrix::normalize(nm,n);
+  case SCube *(nx,ny,nz):
+    if((fabs(x1.x2) < epsilon) || (fabs(x1.x2 - 1.0) < epsilon))
+      return nz;
+    if(fabs(x1.x0) < epsilon || (fabs(x1.x0 - 1.0) < epsilon))
+      return nx;
+    return ny;
+  case SPlane *(_,n): return n;
+  }
+}
+
+void trace(color co, desc d, int depth, vector orig, vector dir) {
+
+  _ cr = 1.0;
+  _ cg = 1.0;
+  _ cb = 1.0;
+
+  co.x = 0.0;
+  co.y = 0.0;
+  co.z = 0.0;
+
+  _ amb = d.amb;
+  _ amb_r = amb.x;
+  _ amb_g = amb.y;
+  _ amb_b = amb.z;
+
+  _ lights = d.lights;
+
+  _ x = vec6;
+  x.x0 = orig.x0; x.x1 = orig.x1; x.x2 = orig.x2; x.x3 = orig.x3;
+
+  while(true) {
+
+    Matrix::normalize(dir,dir);
+    reset_intervals();
+    _ l = filter_inter_list(find_all(x,dir,d.sc));
+    
+    if(l==null) break;
+    
+    _ t = l.left;
+    _ obj = l.left_sc;
+    
+    Matrix::imp_add_scaled(x,t,dir);
+    // _ x = Matrix::add_scaled(orig,t,dir);
+    
+    switch obj {
+    case SObj *(k,f,m):
+      _ mx = vec4;
+      Matrix::vmul(mx,m,x);
+      _ sp = apply_surface_fun(f,k,mx);
+      _ n = sp.n;
+      _ ks = sp.ks;
+      _ kd = sp.kd;
+      cr *= sp.red;
+      cg *= sp.green;
+      cb *= sp.blue;
+      
+      /* We evaluate the surface function before optimizing to ensure that
+	 it is well-formed. */
+      switch f {
+      case Unopt(_): obj.SObj.2 = Eval::optimize_surface_fun(f);
+      default: ;
+      }
+      
+      _ nm = vec7;
+      _ nm = normal(nm,k,m,mx,x); // normal may return a different vector or use nm.
+      _ p  = Matrix::dot(dir,nm);
+      nm = (p > 0) ? Matrix::neg(nm) : nm;
+      p  = - fabs(p);
+      
+      _ r = kd * amb_r;
+      _ g = kd * amb_g;
+      _ b = kd * amb_b;
+      
+      for(_ i = 0; i<size(lights); ++i) {
+	switch lights[i] {
+	case Light *(ldir,lc):
+	  _ ln = Matrix::dot(ldir,nm);
+	  if(ln>0.0 && visible(d,x,ldir,false)) {
+	    _ inter = kd * ln; 
+	    if (ks > epsilon) {
+	      Matrix::sub(vec_l2,ldir,dir);
+	      _ t1 = Matrix::normalize(vec_l2,vec_l2);
+	      inter += ks * power(Matrix::dot(t1, nm),n);
+	    }
+
+	    r += inter * lc.x;
+	    g += inter * lc.y;
+	    b += inter * lc.z;
+	  }
+	case PtLight *(src,lc):
+	  Matrix::sub(vec1,src,x);
+	  Matrix::normalize(vec5,vec1);
+	  _ ldir = vec1;
+	  _ ldir2 = vec5;
+	  _ ln = Matrix::dot(ldir2,nm);
+
+	  if(ln > 0.0 && visible(d,x,ldir,true)) {
+	    _ inter = kd * ln;;
+	    if (ks > epsilon) {
+	      Matrix::sub(vec2,ldir2,dir);
+	      _ t1 = Matrix::normalize(vec2,vec2);
+	      inter += ks * power(Matrix::dot(t1,nm),n);
+	    }
+	    inter = 100.0 * inter / (99.0 + Matrix::square(ldir));
+
+	    r += inter * lc.x;
+	    g += inter * lc.y;
+	    b += inter * lc.z;
+	  }
+	case StLight *(src,maindir,lc,cutoff,exp):
+	  Matrix::sub(vec1,src,x);
+	  Matrix::normalize(vec5,vec1);
+	  _ ldir = vec1;
+	  _ ldir2 = vec5; 
+	  _ ln = Matrix::dot(ldir2,nm);
+	  _ ln2 = Matrix::dot(ldir2,maindir);
+
+	  if(ln>0.0 && ln2 > cutoff && visible(d,x,ldir,true)) {
+	    _ inter = kd * ln;
+	    if(ks > epsilon) {
+	      Matrix::sub(vec2,ldir2,dir);
+	      _ t1 = Matrix::normalize(vec2,vec2);
+	      inter += ks * power(Matrix::dot(t1,nm),n);
+	    }
+	    
+	    inter = (((100.0f * 
+		     inter) / (99.0f + Matrix::square(ldir))) * 
+		     power(ln2,exp));
+
+	    r += inter * lc.x;
+	    g += inter * lc.y;
+	    b += inter * lc.z;	   	    
+	  
+	  }
+	}
+      }
+
+      co.x += r * cr;
+      co.y += g * cg;
+      co.z += b * cb;
+
+      cr *= ks; // Attenuate by the specular coefficient.
+      cg *= ks;
+      cb *= ks;
+
+      // The maximum color value of r,g, or b that the next iteration
+      // might add is cr,cg, and cb respectively.  If conv(co.x) =
+      // conv (co.x + r) then don't need to iterate.
+      if(ks <= epsilon || depth <= 0 ||
+	 (frem(co.x,color_step) + 0.5 * color_step > cr &&
+	  frem(co.y,color_step) + 0.5 * color_step > cg &&
+	  frem(co.z,color_step) + 0.5 * color_step > cb)) break;
+
+	 //	 (cr < epsilon && cg < epsilon && cb < epsilon)) break;
+
+      
+     // Reflection. 
+      Matrix::imp_add_scaled(dir,-2.0 * p, nm);
+      depth--;
+    default: ERR("trace : endpoint not a primitive object.");
+    }
+  }
+}
+
+int conv(FP c) {
+  int i = floor(c * 256.0f);
+  if(i<0) return 0;
+  if(i>=256) return 255;
+  return i;
+}
+
+bool close(FP r1,FP g1, FP b1, FP r2, FP g2, FP b2) {
+  if(fabs(r1 - r2) > 2.0) return false;
+  if(fabs(g1 - g2) > 2.0) return false;
+  if(fabs(b1 - b2) > 2.0) return false;
+  return true;
+}
+
+//..............................................................................
+// Entry point
+
+bool optimize_scene = true;
+
+void render(string filename, 
+	    int wid, 
+	    int ht, 
+	    FP fov, 
+	    int depth, 
+	    Gmlsyntax::obj obj, 
+	    Gmlsyntax::light lights[], 
+	    color amb) {
+
+  out_file = file_open("gml.log","w");
+
+  _ a = ^Affine::t(Matrix::identity,Matrix::identity,true,1.0);
+  _ sc = intern_obj(a,obj);
+
+  //DEBUG(dump_scene(tal_stdout,sc));
+  //DEBUG(fflush(tal_stdout));
+
+  if(optimize_scene)
+    sc = optimize(sc); // Optimize the scene
+
+  allocate_intervals(sc);
+  //DEBUG_PR("\nscene optimized.\n");
+  //DEBUG(dump_scene(tal_stdout,sc));
+  //DEBUG(fflush(tal_stdout));
+
+  _ img = Ppm::init(wid,ht);
+  _ orig = ^vector(0.0,0.0,-1.0f,1.0);
+  _ width = 2.0 * tan(0.5 * fov);
+  _ delta = width / wid;
+  _ x0 = - width / 2.0;
+  _ y0 = delta * ht / 2.0;
+  _ d = ^desc(amb,intern_lights(lights),sc);
+
+  //DEBUG_PR("lights internalized.");
+
+  DEBUG(_ white_count = 0);
+  DEBUG(_ black_count = 0);
+
+  _ dir = ^vector(0,0,0,0);
+  _ co  = ^color(0,0,0);
+  _ pixel_count = 0;
+  _ period = (wid * ht) / 80;
+  for(_ j = 0; j < ht; j++) {
+    for(_ i = 0; i < wid; i++) {
+      pixel_count++;
+      if(pixel_count % period == 0) { printf("."); fflush(tal_stdout); }
+
+      dir.x0 = x0 + (i + 0.5) * delta;
+      dir.x1 = y0 - (j + 0.5) * delta;
+      dir.x2 = 1.0;
+      dir.x3 = 0.0;
+      trace(co,d,depth,orig,dir);
+
+      _ r = conv(co.x);
+      _ g = conv(co.y);
+      _ b = conv(co.z);
+
+      DEBUG(if(r==0 && g == 0 && b ==0) black_count++);
+      DEBUG(if(r==255 && g == 255 && b == 255) white_count++);
+      Ppm::setp(img,i,j,r,g,b);
+    }
+  }
+
+  DEBUG_PR("Image computed.");
+  DEBUG(printf("blacks = %d, whites = %d, total = %d\n",
+	       black_count, white_count,pixel_count));
+
+  Ppm::dump(filename,img);
+
+  file_close(out_file);
+
+}
+

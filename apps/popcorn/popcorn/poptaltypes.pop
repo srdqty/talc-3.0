@@ -1,0 +1,2121 @@
+// Poptaltypes
+
+#include "popconfig.h"
+
+#include "core.h"
+#include "list.h"
+#include "id.h"
+#include "bitvec.h"
+open Core;
+
+#include "poperr.h"
+#include "popil.h"
+#include "poptalenv.h"
+#include "tal.h"
+#include "popilprint.h"
+
+open Popil;
+open Poptalenv;
+open Tal;
+open Id;
+#define list List::list
+// #define id   Id::id
+#define varName int
+
+prefix Poptaltypes;
+open   Poptaltypes;
+
+
+
+union fun_kind {
+  void VoidFun, NormFun, FpFun;
+}
+
+
+fun_kind ret_typ2kind (<cf_typ>Opt to) {
+  if(to == null) return ^.VoidFun;
+  switch to.v {
+  case Float: return ^.FpFun;
+  case Double: return ^.FpFun;
+  default: return ^.NormFun;
+  }
+}
+
+// Convert to TAL identifiers
+id tid_val(string p) { return Id::id_of_string(strconcat("_",p));    }
+
+id tid_fun(string p, cf_convention c, <cf_typ>list args) {
+  switch c {
+  case Cdecl: return Id::id_of_string(strconcat("_",p));
+  case Stdcall:
+    int param_sz = 0;
+    for(_ x=args; x!=null;x=x.tl) {
+      param_sz += sizeof_typ(x.hd);
+    }
+    _ s = strconcat("_",strconcat(p,strconcat("@",string_of_int(param_sz))));
+    return Id::id_of_string(s);
+  }
+}
+
+id tid_mem(string p) { return Id::id_of_string(strconcat(p,"?mem")); }
+id tid_typ(string p) { return Id::id_of_string(strconcat(p,"?"));    }
+id tid_tyv(string p) { return Id::id_of_string(strconcat("v",p));    }
+id tid_exn(string p) { return Id::id_of_string(p);                   } 
+id tid_pkt(string p) { return Id::id_of_string(strconcat(p,"?pkt")); } 
+id tid_nam(int n)    { return Id::id_make("nm?",n);                  }
+id tid_region(int n) { return Id::id_make("cg",n);                   }
+id tid_tptr(int n)   { return Id::id_make("tp",n);                   }
+id tid_name_unroll(string p) { return Id::id_of_string(strconcat(p,"A")); }
+
+id op2cname(cg_env env, cf_operand op) {
+  switch op {
+  case Local(i): return tid_nam(env.assignment_info.names[i]);
+  default: BUG("named objects must be Local");
+  }
+}
+
+#define GLOBAL_ID(g,s,f1,f2) <id>Opt g = null; \
+  id  f1() { if (g==null) g = ^Opt(Id::id_of_string(s)); return g.v; }\
+  con f2() { return cvar(f1()); }\
+
+  // universals and existentials
+GLOBAL_ID(g1,  "s1",  stack1_var,       stack1_con)
+GLOBAL_ID(g2,  "s2",  stack2_var,       stack2_con)
+GLOBAL_ID(g3,  "?sz", array_size_var,   array_size_con)
+GLOBAL_ID(g6,  "c",   exnname_arg_var,  exnname_arg_con)
+GLOBAL_ID(g7,  "e1",  cap1_var,         cap1_con)
+GLOBAL_ID(g8,  "e2",  cap2_var,         cap2_con)
+GLOBAL_ID(g9,  "a1",  callee_save1_var, callee_save1_con)
+GLOBAL_ID(g10, "a2",  callee_save2_var, callee_save2_con)
+GLOBAL_ID(g11, "a3",  callee_save3_var, callee_save3_con)
+
+    // abbreviations
+GLOBAL_ID(g15, "exn",  exn_abbrev_var,      exn_abbrev_con)
+GLOBAL_ID(g16, "str",  str_abbrev_var,      str_abbrev_con)
+GLOBAL_ID(g17, "arr",  arr_abbrev_var,      arr_abbrev_con)
+GLOBAL_ID(g18, "H",    outside_handler_abbrev_var, outside_handler_abbrev_con)
+GLOBAL_ID(g21, "ret",  ret_abbrev_var,      ret_abbrev_con)
+GLOBAL_ID(g22, "args", args_abbrev_var,     args_abbrev_con) 
+GLOBAL_ID(g23, "rargs", retargs_abbrev_var,  retargs_abbrev_con) 
+GLOBAL_ID(g24, "spill",spill_abbrev_var,    spill_abbrev_con)
+GLOBAL_ID(g19, "F",    fun_abbrev_var,      fun_abbrev_con)
+GLOBAL_ID(g20, "Fv",   fun_void_abbrev_var, fun_void_abbrev_con)
+
+GLOBAL_ID(g25, "LS",   LS_var,  LS_con)
+GLOBAL_ID(g26, "LSv",  LSv_var, LSv_con)
+GLOBAL_ID(g27, "L3",   L3_var,  L3_con)
+GLOBAL_ID(g28, "L3v",  L3v_var, L3v_con)
+GLOBAL_ID(g29, "L2",   L2_var,  L2_con)
+GLOBAL_ID(g30, "L2v",  L2v_var, L2v_con)
+GLOBAL_ID(g31, "L1",   L1_var,  L1_con)
+GLOBAL_ID(g32, "L1v",  L1v_var, L1v_con)
+GLOBAL_ID(g33, "L0",   L0_var,  L0_con)
+GLOBAL_ID(g34, "L0v",  L0v_var, L0v_con)
+
+GLOBAL_ID(g35, "LSf",  LSf_var, LSf_con)
+GLOBAL_ID(g36, "L3f",  L3f_var, L3f_con)
+GLOBAL_ID(g37, "L2f",  L2f_var, L2f_con)
+GLOBAL_ID(g38, "L1f",  L1f_var, L1f_con)
+GLOBAL_ID(g39, "L0f",  L0f_var, L0f_con)
+GLOBAL_ID(g40, "Ff",   fun_fp_abbrev_var, fun_fp_abbrev_con)
+
+#undef GLOBAL_ID
+
+///// meta-utilities /////
+con  tyvar2con  (string v)        { return cvar(tid_tyv(v)); }
+con  tyvarkind2con (*(string, bool) v) { return cvar(tid_tyv(v.1)); }
+con  tyvar2lam  (string v, con c) { return clam(tid_tyv(v), k4byte, c); }
+con  id2lam     (id i,     con c) { return clam(i, k4byte, c); }
+con  tyvar2exist(string v, con c) { return cexist(tid_tyv(v), k4byte, c); }
+con  id2exist   (id i,     con c) { return cexist(i, k4byte, c); }
+con  tyvars2lam (<string>list tyvars, con c) {
+  return List::fold_right(tyvar2lam, tyvars, c);
+}
+con ids2lam(<id>list tyvars, con c) {
+  return List::fold_right(id2lam, tyvars, c);
+}
+con tyvars2exists(<string>list tyvars, con c) {
+  return List::fold_right(tyvar2exist, tyvars, c);
+}
+con ids2exists(<id>list tyvars, con c) {
+  return List::fold_right(id2exist, tyvars, c);
+}
+
+kind tyvar2kind (string v, kind k) { return ^kind.Karrow(^(k4byte,k)); }
+kind tyvars2kind(<string>list tyvars, kind k) {
+  return List::fold_right(tyvar2kind, tyvars, k);
+}
+coercion tapp_f(con c) { return ^coercion.Tapp(^annotate.Con(c)); }
+con app_cons (con c, <con>list cs) { 
+  return List::fold_left(capp, c, cs); 
+}
+con raw_name_con(id name, <con>list cs) {
+  return app_cons(clab(name), cs);
+}
+con name_con(string name, <con>list cs) {
+  return raw_name_con(tid_typ(name), cs);
+}
+con mem_name_con(string name, <con>list cs) {
+  return raw_name_con(tid_mem(name),cs);
+}
+con unroll_name_con(string name, <con>list cs) {
+  return app_cons(cvar(tid_name_unroll(name)), cs);
+}
+con opt_con(con c) {
+  return chptr(^list(0,null), ^Opt(c), null);
+}
+con smart_cjoin(<con>list caps) {
+  // like cjoin, but takes out empty capabilities (better for type size)
+  <con>list filtered = null;
+  for(; caps!=null; caps=caps.tl)
+    switch caps.hd.rcon {
+    case Ccap(d): if (!Dict::is_empty(d)) filtered = ^list(caps.hd,filtered);
+    default:      filtered = ^list(caps.hd,filtered);
+  }
+  if(filtered == null)
+    return cempty_cap();
+  else if (filtered.tl == null)
+    return filtered.hd;
+  else
+    return cjoin(filtered);
+}
+
+// Calls f on the free variables in a type.
+static void free_vars<a>(a env, void f(a,string), 
+			 <string>Set::set bound_vars, cf_typ t) {
+  switch t {
+  case Var(v): if(!Set::member(bound_vars,v)) f(env,v);
+  case Fn *(_,bvs,topt,ts):
+    _ bv2 = Set::union_two(bound_vars,Set::from_list(strcmp,bvs));
+    for(; ts!=null; ts=ts.tl) {
+      free_vars(env,f,bv2,ts.hd);
+    }
+    if(topt!=null) 
+      free_vars(env,f,bv2,topt.v);
+  case Array *(_,t): free_vars(env,f,bound_vars,t);
+  case UnpackedArray *(s,t): 
+    free_vars(env,f,bound_vars,t);
+    switch s {
+    case Var(v):if(!Set::member(bound_vars,v)) f(env,v);
+    default: ;
+    }
+  case Sing(s): 
+    switch s {
+    case Var(v): if(!Set::member(bound_vars,v)) f(env,v);
+    default: ;
+    }
+  case Named *(_,ts):
+    for(; ts!=null;ts=ts.tl) {
+      free_vars(env,f,bound_vars,ts.hd);
+    }
+  case Tuple(fs):
+    for(int i = 0; i < size(fs); i++) {
+      free_vars(env,f,bound_vars,fs[i].typ);
+    }
+  default: ;
+  }
+}
+
+static void fv_set(*(BITVEC free_vars,<string,int>Dict::dict) x, string s) {
+  _ i = Dict::lookup_opt(x.2,s);
+
+  if(i==null) return;
+
+  Bitvec::set(x.1,i.v);
+}
+
+// blk_sets represents a set of rooted trees.
+// Undefined elements in blk_sets are -1
+// Roots are elements with the property blk_sets[i]=i.
+// We are starting a new tree rooted at b
+// If b is already in a nother tree, we instead use the root of that
+// other tree. 
+static int new_rooted_tree(int blk_sets[], int b) {
+
+  if(blk_sets[b] < 0) { // If b isn't rooted.
+    blk_sets[b]=b;
+    return b;
+  }
+
+  _ c = b, d = blk_sets[b];
+  while(d != c) { // Find the root.
+    c = d;
+    d = blk_sets[c];
+  }
+
+  blk_sets[b] = c;
+  return c;
+}
+
+static void root_block(int blk_sets[], int root, int b) {
+  if(blk_sets[b] < 0) {
+    blk_sets[b] = root;
+    return;
+  }
+
+  // b is already rooted in some tree.
+  if(blk_sets[b] == root) return; // Rooted in this tree actually.
+  
+  // Now we make one root point to the other.
+  // To get optimal bounds roots should track their sizes, but we're
+  // not that performance sensitive.
+
+  _ c = b, d=blk_sets[b];
+  while(c != d) {
+    c = d;
+    d = blk_sets[c];
+  }
+
+  blk_sets[c] = root;
+  blk_sets[b] = root;
+}
+
+// We write down all the type variables in a fixed order.
+void memoize_tyvars(cg_env env, cf_function fn) {
+  int num = (List::length(fn.tyvars) + 
+	     List::length(fn.exist_tyvars) +
+	     List::length(fn.sing_tyvars));
+  _ tyvars = new_array(num,^("",false));
+  int i = 0;
+  for(_ x = fn.tyvars; x!=null; x=x.tl,i++)
+    tyvars[i] = ^(x.hd,true);
+  for(_ x = fn.exist_tyvars; x!=null; x=x.tl, i++) 
+    tyvars[i] = ^(x.hd,true);
+  for(_ x = fn.sing_tyvars; x!=null; x=x.tl, i++) 
+    tyvars[i] = ^(x.hd,false);
+
+  // Now build the reverse mapping
+  _ d = Dict::empty(strcmp);
+  for(i=0; i<num;i++) {
+    d = Dict::insert(d,tyvars[i].1, i);
+  }
+
+  _ bv = Bitvec::new_empty(num);
+
+  _ fv_env = ^(bv,d);
+
+  _ num_ops = Xarray::length(fn.all_operands);
+  _ local2tyvars = new_array(num_ops,bv);
+  
+  for(int i=0; i<num_ops; i++) {
+    _ t = Xarray::get(fn.all_operands,i).typ;
+    _ bv = Bitvec::new_empty(num);
+    fv_env.1 = bv;
+
+    free_vars(fv_env,fv_set,Set::empty(strcmp),t);
+    local2tyvars[i] = fv_env.1;
+  }
+
+  // For RTCG local2tyvars is not enough.
+  // Labels that may be destinations from the same hole have to agree on
+  // the type variables they abstract so that one instantiation suffices.
+  //
+  // This leads to a union-find-like problem.  If label l is 
+  // targeted by two holes it is easy to see that all labels targeted by
+  // either hole must agree on the type variables to instantiate.
+
+  // First we construct a representation of the sets of blocks that must 
+  // agree.
+
+  _ fn        = env.fn;
+  _ num_blks  = Xarray::length(fn.blocks);
+  _ num_holes = Xarray::length(fn.all_holes);
+
+  // One bitvector per block indicating the type variables to instantiate.
+  // Don't generate the bv if we won't emit a label for that block.
+  _ tyvar_bvs = new_array(num_blks,Bitvec::new_empty(0)); 
+
+  _ blk_sets = new_array(num_blks,-1);
+  
+  if(num_holes != 0) {
+    for(int i = 0; i<num_holes; i++) {
+      _ h = Xarray::get(fn.all_holes,i);
+      switch h {
+      case Value(_): ;
+      case Jmp(bs):
+	if(bs!=null) {
+	  _ root = new_rooted_tree(blk_sets,bs.hd.num);
+	  for(; bs!=null; bs=bs.tl) {
+	    root_block(blk_sets,root,bs.hd.num);
+	  }
+	}
+      case Terminal(ts): 
+	if(ts!=null) {
+	  _ root = new_rooted_tree(blk_sets,ts.hd.entry.num);
+	  for(; ts!=null; ts=ts.tl) {
+	    root_block(blk_sets,root,ts.hd.entry.num);
+	  }
+	}
+      }
+    }
+    
+    // The blk_sets have been computed -- the root parent of each block
+    // uniquely identifies the set of blocks that must agree on the type
+    // variables they abstract.
+  }
+
+  // Allocate bitvectors for the roots.
+  // Make all elements point directly to their root.
+  for(int i = 0; i < num_blks; i++) {
+    if(blk_sets[i]<0) {
+      if(Bitvec::get(env.label_types,i)) { // If it needs a type generate a bv.
+	_ bv = Bitvec::new_empty(size(tyvars));
+	tyvar_bvs[i] = bv;
+	blk_sets[i] = i; // Make this a root.
+      } 
+    }
+    else if(blk_sets[i]==i) { // If this is a root allocate a bitvector for it.
+      _ bv = Bitvec::new_empty(size(tyvars));
+      tyvar_bvs[i] = bv;
+    }
+    else { // Otherwise make it point to the root.
+      _ c = i, d = blk_sets[i];
+      while(c != d) {
+	c = d;
+	d = blk_sets[c];
+      }
+      blk_sets[i] = c; // Make i point to its root.
+    }
+  }
+    
+  for(int i=0; i < num_blks; i++) {
+    if(blk_sets[i]>=0) {
+      _ bv = tyvar_bvs[blk_sets[i]]; // root bitvector.
+      tyvar_bvs[i] = bv;
+      _ lives = env.assignment_info.all_live[i][0];
+      for(_ ls = Set::elements(lives); ls!=null; ls=ls.tl) {
+	  Bitvec::union_two(bv,bv,local2tyvars[ls.hd]);
+      }
+
+      if(blk_sets[i] == i) {
+	// parameters are always available because of the stack
+	// Only add them once for the root.
+	_ params = fn.params;
+	for(; params!=null; params=params.tl) {
+	  Bitvec::union_two(bv,bv,local2tyvars[params.hd]);
+	}
+      }
+    }
+  }
+
+  env.tyvars       = tyvars;  
+  env.local2tyvars = local2tyvars;
+  env.tyvar_bvs    = tyvar_bvs;
+}
+
+static <*(string,bool)>list env2quantifiers(cg_env env,int blk_num, int inst) {
+  _ bv = env.tyvar_bvs[blk_num];
+  _ tyvars = env.tyvars;
+  _ ans = null;
+  int v = Bitvec::next(bv,0);
+  while(v>=0) {
+    ans = ^list(tyvars[v],ans);
+    v = Bitvec::next(bv,v+1);
+  }
+
+  return ans;
+}
+
+// This code assumes env.il_block is the source of the transfer and that
+// env.il_inst points to the transfer (not beyond it!!!!)
+static <con>list env2instantiation(cg_env env, int dest_num) {
+  // I am perhaps foolishly assuming that we only generate instantiations
+  // for blocks that have labels.  If this assumption is false the following
+  // will fail because the bitvector may be empty.
+
+  _ tyvars = env.tyvars;
+
+  _ dest_bv = env.tyvar_bvs[dest_num];
+  _ src_bv = Bitvec::new_empty(size(tyvars));
+  _ local2tyvars = env.local2tyvars;
+  _ lives = env.assignment_info.all_live[env.il_block][env.il_inst];
+  for(_ ls = Set::elements(lives); ls!=null; ls=ls.tl) {
+    Bitvec::union_two(src_bv,src_bv,local2tyvars[ls.hd]);
+  }
+
+  // Note: The parameters even though they are dead show up in the type.
+  for(_ ls = env.fn.params; ls!=null; ls=ls.tl) {
+    Bitvec::union_two(src_bv,src_bv,local2tyvars[ls.hd]);
+  } 
+
+  _ ans = null;
+  int v = Bitvec::next(dest_bv,0);
+  con b4 = cbyte4();
+  con s0 = csing(pcint(0));
+
+  while(v>=0) {
+    _ tv = tyvars[v];
+    if(Bitvec::get(src_bv,v)) 
+      ans = ^list(tyvarkind2con(tv),ans);
+    else
+      ans = ^list((tv.2 ? b4 : s0 ), ans);
+
+    v = Bitvec::next(dest_bv,v+1);
+  }
+
+  return (List::imp_rev(ans));
+}
+
+
+// a better order might promote more sharing in the future.  This shall do
+// for now. (Notice ridiculous amounts of allocation, though.)
+// we really want to use my hack here, but alas Fallthru doesn't support it!
+<con>list bottom_g = null;
+
+<con>list fallthru_arg(cg_env env, cf_block dest) {
+  if(bottom_g==null)
+    if(USE_CALLEE_SAVE)
+      bottom_g = ^list(callee_save1_con(),
+		 ^list(callee_save2_con(),
+                 ^list(callee_save3_con(),
+	         ^list(stack1_con(), 
+	         ^list(stack2_con(),
+	         ^list(cap1_con(),
+	         ^list(cap2_con(), null)))))));
+    else 
+      bottom_g = ^list(stack1_con(), 
+	         ^list(stack2_con(),
+	         ^list(cap1_con(),
+	         ^list(cap2_con(), null))));
+
+  if(!Bitvec::get(env.label_types,dest.num))
+    return null;
+  // ridiculous amounts of allocation ensues
+
+  <id>list names = 
+     List::rev(specials2idlist(env, dest.partial_inits));
+
+  // Cyclone
+  <id>list cg_names = 
+     List::rev(code_region_names(env));
+
+  return List::append(env2instantiation(env, dest.num),
+         List::append(List::map(cvar,      names),
+	 List::append(List::map(cvar,cg_names),
+		      bottom_g)));
+}
+<coercion>list branch_tapp(cg_env env, cf_block dest) {
+  if(!Bitvec::get(env.label_types,dest.num))
+    return null;
+  <con>list cs = List::rev(fallthru_arg(env, dest));
+  return List::map(tapp_f, cs);
+}
+
+<id>list specials2idlist(cg_env env, <int,*(int[],int)>Dict::dict partial) {
+  <id>list ps = Dict::fold_c(partial2id, env, partial, null);
+  return Set::elements(Set::from_list(Id::id_compare, ps));
+}
+<id>list partial2id(cg_env env, int local, *(int[],int)codomain, <id>list accum) {
+  return ^list(op2cname(env, ^cf_operand.Local(local)), accum);
+}
+
+//////// arrays and strings //////////
+con array_packed_real() {
+
+  id v = array_size_var();
+  con cv = cvar(v);
+  id e = Id::id_of_string("?e");
+  con ce = cvar(e);
+  
+  return clam(e, ^.Kmem , cexist(v,^kind.Kint,
+		cprod_b(^list(cfield(csing(cv),^variance.Read),
+			^list(cfield(array_unpacked(cv,ce),^variance.Read),
+			      null)))));    
+}
+
+con array_unpacked (con sz, con elt) {
+  return cprod_b(^list(carray(sz,elt),
+		       null));
+}
+
+con array_packed(con c) { 
+  return capp(arr_abbrev_con(), cfield(c,^variance.ReadWrite));
+}
+
+con string_packed_real() {
+  return array_packed(cbyte1());
+}
+con string_packed() {
+  return str_abbrev_con();
+}
+
+/////// exceptions /////////
+// an exnname is the name of a particular exception, e.g. Not_found
+// an exn is a particular exception packet
+// a handler is code that expects an exn. 
+con exnname_con (con c) {
+  // type of an exception name:
+  // *[...]
+  return chptr(null, ^Opt(cprod(^list(cfield(cbyte4(),^variance.ReadWrite),
+				      null))),
+	       ^Opt(^(c, ^variance.ReadWrite)));
+  
+}
+con exn_unpacked(con c) {
+  // type of an unpacked exn packet tagged with c
+  // *[(exnname_con c)^r, c]
+  return cprod_b(^list(cfield(exnname_con(c), ^variance.Read),
+		 ^list(c,
+		 null)));
+}
+con exn_packed_real() {
+  // type of a packed exn packet
+  // Exist[c:Tm].*[(exnname_con c)^r, c]
+  // since this is closed, there's really no excuse for not using an abbrev
+  return cexist(exnname_arg_var(), ^kind.Kmem, exn_unpacked(exnname_arg_con()));
+}
+
+// add some configuration to decide whether to use this abbrev or not!
+con exn_packed() {
+  return exn_abbrev_con();
+}
+
+//////// labels /////////
+// on entry to a function, the stack looks like (stack growing downwards):
+//         s2 (expecting capability e2)
+//         outside_handler (expects exn in EAX, stack is s2)
+//         s1 (expecting capability e1)
+//         input parameters (leftmost parameter is shallowest)
+//         return address (expects value in EAX, 
+//                         stack is params::s1@outside_handler::s2
+//                         EBP has outside_handler::s2)
+// then in the prologue we create
+//         room for callee-save (if using callee-save)
+//         room for spilled variables
+//         saved value of pointer to outside handler (if a local handler exists)
+//         current local exception handler (if there is one)
+// then EBP points to top of stack when in a handler and outside_handler when
+// not.
+// a function without handlers does not have the last two words allocated
+
+// the type of the handler a function is given by its caller
+// {cap: e2, EAX: exn, ESP: sptr s2}
+// plus gunk for callee-save
+con outside_handler_real() {
+  machine_state ms = ms_empty();
+  ms = ms_set_reg(ms, ^reg.Eax, exn_packed());
+  ms = ms_set_reg(ms, ^reg.Esp, csptr(stack2_con()));
+  ms = ms_set_cap(ms, cap2_con());
+  if(USE_CALLEE_SAVE) {
+    ms = ms_set_reg(ms, ^reg.Ebx, pcjunk4());
+    ms = ms_set_reg(ms, ^reg.Esi, pcjunk4());
+    ms = ms_set_reg(ms, ^reg.Edi, pcjunk4());
+  }
+  return clam(cap2_var(), ^kind.Kcap,
+	      clam(stack2_var(), ^kind.Kstack,
+		   ccode_ms(ms)));
+}
+<con>Opt outside_handler_opt = null;
+con outside_handler() {
+  if(outside_handler_opt == null) 
+    outside_handler_opt = 
+      ^Opt(capp(capp(outside_handler_abbrev_con(), cap2_con()), stack2_con()));
+  return outside_handler_opt.v;
+}
+
+// the type of the portion of the stack including the handler and deeper
+// outside_handler()::s2
+<con>Opt handler_and_below_opt = null;
+con handler_and_below() {
+  if(handler_and_below_opt == null)
+    handler_and_below_opt = ^Opt(ccons(outside_handler(), stack2_con()));
+  return handler_and_below_opt.v;
+}
+
+con return_address_con(cf_convention conv,
+	    <cf_typ>Opt ret_typ, <cf_typ>list arg_typs) {
+  machine_state ms = ms_empty();
+  if(USE_CALLEE_SAVE) {
+    ms = ms_set_reg(ms, ^reg.Ebx, callee_save1_con());
+    ms = ms_set_reg(ms, ^reg.Esi, callee_save2_con());
+    ms = ms_set_reg(ms, ^reg.Edi, callee_save3_con());
+  }
+  _ fk = ret_typ2kind(ret_typ);
+  switch fk {
+  case VoidFun: ;
+  case FpFun: ms = ms_set_fpstack(ms,fpstack_st0);
+  case NormFun:
+    _ ret_con = typ2con_roll(ret_typ.v);
+    ms = ms_set_reg(ms,^.Eax,ret_con);
+  }
+
+  ms = ms_set_reg(ms, ^reg.Ebp, csptr(handler_and_below()));
+  con       on_ret    = cappend(stack_retargs(conv,arg_typs),stack1_con());
+  ms = ms_set_reg(ms, ^reg.Esp, csptr(cappend(on_ret,handler_and_below())));
+  ms = ms_set_cap(ms, cjoin(^list(cap1_con(), ^list(cap2_con(), null))));
+  return ccode_ms(ms);
+}
+
+// the stack including return address and below. 
+// notice we do not close over the tyvars here
+// NOT including the handler on down
+con stack_on_entry(cf_convention conv,
+		   <cf_typ>Opt ret_typ, <cf_typ>list arg_typs) {
+  
+  machine_state ms = ms_empty();
+  if(USE_CALLEE_SAVE) {
+    ms = ms_set_reg(ms, ^reg.Ebx, callee_save1_con());
+    ms = ms_set_reg(ms, ^reg.Esi, callee_save2_con());
+    ms = ms_set_reg(ms, ^reg.Edi, callee_save3_con());
+  }
+  _ fk = ret_typ2kind(ret_typ);
+  switch fk {
+  case VoidFun: ;
+  case FpFun: ms = ms_set_fpstack(ms,fpstack_st0);
+  case NormFun:
+    _ ret_con = typ2con_roll(ret_typ.v);
+    ms = ms_set_reg(ms,^.Eax,ret_con);
+  }
+
+  ms = ms_set_reg(ms, ^reg.Ebp, csptr(handler_and_below()));
+  <con>list arg_cons  = List::map(typ2con_roll, arg_typs);
+  con       below_ret = cappend(stack_args(arg_typs),stack1_con());
+  con       on_ret    = cappend(stack_retargs(conv,arg_typs),stack1_con());
+  ms = ms_set_reg(ms, ^reg.Esp, csptr(cappend(on_ret,handler_and_below())));
+  ms = ms_set_cap(ms, cjoin(^list(cap1_con(), ^list(cap2_con(), null))));
+  return 
+    ccons(ccode_ms(ms), below_ret);
+}
+
+// Type of arguments in return continuation. 
+static con stack_retargs(cf_convention c, <cf_typ>list args) {
+
+  switch c {
+  case Cdecl:
+    _ arg_sz = 0;
+    for(_ x=args; x!=null; x=x.tl) {
+      arg_sz += sizeof_typ(x.hd);
+    }
+    if(arg_sz!=0) return ccons(pcjunk(arg_sz),cempty()) ;
+    else return cempty();
+
+  case Stdcall: 
+    return cempty(); 
+  }
+
+}
+
+static con stack_args(<cf_typ>list args) {
+  return List::fold_right(ccons,List::map(typ2con_roll, args),cempty());
+}
+
+// the type of a function.  We do not share with internal labels because
+// in the presence of register allocation and callee-save, the differences
+// suggest separate tricks for each.
+// This is only implemented for callee-save, fun_con will not use it when
+// USE_CALLEE_SAVE is false.
+con function_type_real(fun_kind fk) {
+  machine_state ms_entry = ms_empty();
+  ms_entry = ms_set_reg(ms_entry, ^reg.Ebx, callee_save1_con());
+  ms_entry = ms_set_reg(ms_entry, ^reg.Esi, callee_save2_con());
+  ms_entry = ms_set_reg(ms_entry, ^reg.Edi, callee_save3_con());
+  ms_entry = ms_set_reg(ms_entry, ^reg.Ebp, csptr(handler_and_below()));
+  ms_entry = ms_set_cap(ms_entry, 
+			cjoin(^list(cap1_con(),^list(cap2_con(),null))));
+  con below_args = cappend(stack1_con(), handler_and_below());
+  con below_retn = cappend(args_abbrev_con()   ,below_args);
+  con on_retn    = cappend(retargs_abbrev_con(),below_args);
+
+  machine_state ms_return = ms_set_reg(ms_entry, ^reg.Esp, csptr(on_retn));
+  switch fk {
+  case VoidFun: ;
+  case NormFun: ms_return = ms_set_reg(ms_return, ^reg.Eax, ret_abbrev_con());
+  case FpFun: ms_return = ms_set_fpstack(ms_return,fpstack_st0);
+  }
+
+  ms_entry = ms_set_reg(ms_entry, ^reg.Esp, 
+			csptr(ccons(ccode_ms(ms_return), below_retn)));
+  con ans = cforall(callee_save1_var(), k4byte,
+	    cforall(callee_save2_var(), k4byte,
+            cforall(callee_save3_var(), k4byte,
+	    cforall(stack1_var(), ^kind.Kstack,
+	    cforall(stack2_var(), ^kind.Kstack, 
+            cforall(cap1_var(),   ^kind.Kcap,
+	    cforall(cap2_var(),   ^kind.Kcap,
+		    ccode_ms(ms_entry))))))));
+
+  ans = clam(args_abbrev_var(), ^.Kstack,
+	     clam (retargs_abbrev_var(), ^.Kstack, ans)); 
+
+  if(fk == ^.NormFun)
+    ans = clam(ret_abbrev_var(), k4byte, ans);
+
+  return ans;
+}
+
+// wrap a forall for everything we're polymorphic over
+con close_code(con code, <*(string,bool)>list tyvars,<id>list names) {
+  con ans = cforall(stack1_var(), ^kind.Kstack,
+	    cforall(stack2_var(), ^kind.Kstack, 
+            cforall(cap1_var(),   ^kind.Kcap,
+	    cforall(cap2_var(),   ^kind.Kcap,
+		    code))));
+  if(USE_CALLEE_SAVE)
+    ans = cforall(callee_save1_var(), k4byte,
+	  cforall(callee_save2_var(), k4byte,
+          cforall(callee_save3_var(), k4byte,
+		  ans)));
+  for(; names!=null; names=names.tl)
+    ans = cforall(names.hd, ^kind.Kname, ans);
+
+  for(; tyvars!=null; tyvars=tyvars.tl) {
+    _ hd = tyvars.hd;
+    _ kind = (hd.2 ? k4byte : ^kind.Kint);
+    ans = cforall(tid_tyv(hd.1), kind, ans);
+  }
+  return ans;
+}
+
+
+fpstack env2fpstack(cg_env env, int inst) {
+  // Setup the floating point registers.
+  fpstack fps = fpstack_empty();
+
+  _ fp_env;
+  if(env.il_inst == inst) fp_env = env.fp_env;
+  else if(env.il_inst == 0) fp_env = env.fp_envs[env.il_block];
+  else BUG("Cannot generate FP stack type for arbitrary program location");
+
+  _ r2a = fp_env.real_to_alloc;
+  _ st0 = fp_env.st0;
+
+  for(_ i = 0; i < NUM_REAL_FP_REGS; i++) {
+    _ rval;
+    switch r2a[i] {
+    case -1: rval = ^.FPempty;
+    case -2: rval = ^.FPany;
+    default: rval = ^.FPfull;
+    }
+    _ st = (i + NUM_REAL_FP_REGS - st0) % NUM_REAL_FP_REGS;
+    fpstack_set(fps,st,rval);
+  }
+
+  return fps;
+}
+
+// use liveness, refinement info, register assignment, etc. 
+// to build a label con.  
+// note the type for handlers is different.
+machine_state env2open_code_type(cg_env env) {
+  return env2open_code_type_specific(env,0);
+}
+
+machine_state env2open_code_type_specific(cg_env env,int inst) {
+  // INEFFICIENT -- should memoize types of callee-save for each function
+  // do the live registers, don't put handler var in
+  machine_state ms = ms_empty();
+  if(USE_CALLEE_SAVE) {
+    if(env.ebx_used) ms = ms_set_reg(ms, ^reg.Ebx, pcjunk4());
+    else             ms = ms_set_reg(ms, ^reg.Ebx, callee_save1_con());
+    if(env.esi_used) ms = ms_set_reg(ms, ^reg.Esi, pcjunk4());
+    else             ms = ms_set_reg(ms, ^reg.Esi, callee_save2_con());
+    if(env.edi_used) ms = ms_set_reg(ms, ^reg.Edi, pcjunk4());
+    else             ms = ms_set_reg(ms, ^reg.Edi, callee_save3_con());
+  } else {
+    ms = ms_set_reg(ms, ^reg.Ebx, pcjunk4());
+    ms = ms_set_reg(ms, ^reg.Esi, pcjunk4());
+    ms = ms_set_reg(ms, ^reg.Edi, pcjunk4());
+  }
+  <varName>Set::set live = env.assignment_info.all_live[env.il_block][inst];
+  for(<varName>list ls = Set::elements(live); ls != null; ls = ls.tl) {
+    <int>Opt hvar = Xarray::get(env.fn.blocks, env.il_block).handler_var;
+    if(hvar == null || ls.hd != hvar.v)
+      switch env.assignment_info.assignment[ls.hd] {
+      case Reg(r): ms = ms_set_reg(ms, r, var2con(env, ls.hd));
+      case Fpreg(i): ;
+      default:     ;
+    }
+  }
+
+  // setup the floating point registers.
+  ms_set_fpstack(ms,env2fpstack(env,inst));
+
+  // do the stack, notice we assume that when in handler Esp and Ebp
+  // must be kept in lock-step 
+  con stack = env2stack_con(env,is_handler(env, env.il_block));
+  ms = ms_set_reg(ms, ^reg.Esp, stack);
+  if (!handler_changes(env,env.il_block)) {
+    ms = ms_set_reg(ms,^.Ebp, 
+		    in_handler(env) ? stack : csptr(handler_and_below())); 
+  }
+  // handlers expect an exception in EAX, but liveness doesn't say this:
+  if(is_handler(env, env.il_block)) 
+    ms = ms_set_reg(ms, ^reg.Eax, exn_packed());
+    
+  // do the alias tracking, special-casing no refinement case to save space
+  ms = ms_set_cap(ms, smart_cjoin(^list(env2capability(env),
+			          ^list(cap1_con(),
+			          ^list(cap2_con(), null)))));
+  return ms;
+}
+con env2code_type(cg_env env) {
+  return env2code_type_specific(env,0,null);
+}
+con env2code_type_hole(cg_env env, int hole) {
+  return env2code_type_specific(env,env.il_inst,^Opt(hole));
+}
+
+static con choose_code_abbrev(fun_kind fk, int callee_used) {
+
+  int abbrev_num = callee_used;
+
+  if(callee_used>3 || callee_used<0) BUG("Bad callee_used");
+
+  switch fk {
+  case VoidFun:                ;
+  case NormFun: abbrev_num += 8;
+  case FpFun:   abbrev_num += 4;
+  }
+
+  switch abbrev_num {
+    // The void abbrevs.
+  case 0: return L0v_con();
+  case 1: return L1v_con();
+  case 2: return L2v_con();
+  case 3: return L3v_con();
+    // The FP abbrevs
+  case 4: return L0f_con();
+  case 5: return L1f_con();
+  case 6: return L2f_con();
+  case 7: return L3f_con();
+    // The normal abbrevs.
+  case  8: return L0_con();
+  case  9: return L1_con();
+  case 10: return L2_con();
+  case 11: return L3_con();
+  default: BUG("Bad abbrev.");
+  }
+}
+
+// If hole == null then returns code_type here.
+// If hole is not null uses hole number to generate quantifiers!
+static con env2code_type_specific(cg_env env, int inst, <int>Opt hole) {
+
+  _ q_blk = env.il_block; // Use this block to generate quantifiers.
+  if(hole != null) {
+    switch hole_info(env.fn,hole.v) {
+    case Value(_): BUG("env2code_type_specific: confused!");
+    case Jmp(bs): if(bs!=null) q_blk = bs.hd.num;
+    case Terminal(ts): if(ts!=null) q_blk = ts.hd.entry.num;
+    }
+  }
+  _ tyvars = env2quantifiers(env,q_blk,inst);
+    
+  if(USE_CALLEE_SAVE && !env.fun_has_handler) {
+    // circumvent lots of gunk to use the new abbrevs:
+
+    con slots[] = env2slots(env); // We redo some work below. 
+
+    machine_state ms = ms_empty();
+    <varName>Set::set live = env.assignment_info.all_live[env.il_block][inst];
+    _ assignment = env.assignment_info.assignment;
+    for(<varName>list ls = Set::elements(live); ls != null; ls = ls.tl) {
+      switch assignment[ls.hd] {
+      case Reg(r):             
+	con c = var2con(env,ls.hd);
+	ms = ms_set_reg(ms, r, c);
+      case Stackslot(_): ;
+      case Fpreg(i): /* Do nothing here, see below. */;
+      }
+    }
+    
+    ms = ms_set_fpstack(ms,env2fpstack(env,inst));
+
+    <cf_typ>Opt ret_typ = env.fn.ret_typ;
+    <con>Opt ret        = opt_map(typ2con_roll, ret_typ);
+    fun_kind fk         = ret_typ2kind(ret_typ);
+
+    con      abbrev = choose_code_abbrev(fk, env.num_callee_used);
+    con      ans    = cempty(); // dummy init
+
+    ans = capp(abbrev, env2capability(env));
+    if(fk == ^.NormFun)
+      ans = capp(ans, ret.v);
+
+    _ stack_retargs = env.stack_desc.retargs;
+    _ stack_args    = env2stack_param_con(env,slots,cempty());
+    _ stack_slots   = env2stack_slots_con(env,slots,cempty());
+    ans = capp(capp(capp(capp(ans,stack_args),stack_retargs), 
+		    stack_slots), cms(ms));
+
+    <id>list names=specials2idlist(env,env.partial_inits);
+    for(; names!=null; names=names.tl)
+      ans = cforall(names.hd, ^kind.Kname, ans);
+    <id>list cg_names = code_region_names(env);
+    for(; cg_names!=null; cg_names = cg_names.tl)
+      ans = cforall(cg_names.hd,^kind.Kname, ans); // Cyclone
+
+    for(; tyvars!=null; tyvars = tyvars.tl) {
+      _ hd = tyvars.hd;
+      _ kind = (hd.2 ? k4byte : ^.Kint);
+      ans = cforall(tid_tyv(hd.1), kind, ans);
+    }
+
+    return ans;
+  } else {
+    // close the code and return
+    <id>list names = specials2idlist(env,env.partial_inits);
+    <id>list cg_names = code_region_names(env);
+    names = List::append(names,cg_names);
+    return close_code(ccode_ms(env2open_code_type_specific(env,0)), 
+		      tyvars,
+		      names);
+  }
+}
+// This version uses Dan's hack.
+// num_frame_cons is number of cons closer to the top than the return
+// address
+static *(annotate,annotate) env2stack_inst_opt(cg_env env, 
+					       int num_callee_params, 
+					       bool in_hndlr, 
+					       int num_frame_cons,
+					       int arg_cons, int extra_cons) {
+  // if in handler,     s1 is empty, s2 is saved handler on down
+  // if not in handler, s2 is down to old_handler, s2 is s2
+  annotate s1,s2;
+  if(in_hndlr) {
+    if(extra_cons == 0) s1 = ^annotate.Con(cempty());
+    else s1 = ^.StackSlice(^(^reg.Esp,arg_cons,arg_cons+extra_cons,cempty()));
+    s2 = ^.StackTail(^(^reg.Ebp,1));
+  }
+  else {
+    _ s1_offset = num_frame_cons + extra_cons;    
+    s1 = ^.StackSlice(
+		      ^(^reg.Esp, 
+		      num_callee_params, 
+		      num_callee_params + s1_offset,
+		      stack1_con()));
+    s2 = ^annotate.Con(stack2_con());
+  }
+  return ^(s1,s2);
+}
+
+// This is the explicit version.  env2stack_inst_opt produces smaller
+// instantiations.  frame gives the types for all the stack slots from
+// the return address to the top. Return address not included!
+static *(annotate,annotate) env2stack_inst(cg_env env, bool in_hndlr) {
+  // if in handler,     s1 is empty, s2 is saved handler on down
+  // if not in handler, s1 is down to old_handler, s2 is s2
+  con s1,s2;
+  if(in_hndlr) {
+    s1 = cempty();
+    s2 = env2stack_con(env,true);  // need to skip over the handler!
+  }
+  else {
+    s1 = csptr(env2stack_above_handler(env,false,cempty()));
+    s2 = stack2_con();    
+  }
+
+  return ^(^annotate.Con(s1),^annotate.Con(s2));
+}
+
+// this will do much like above, but return the cons to instantiate
+// a callee's vars 
+// note for the moment we always use Dan's hack for callee-save regs,
+// but we can use liveness to do the real thing later
+// For profiling we need to generate call instantiations before we
+// allocate space for the spills or the handler.
+static <coercion>list env2call_inst_generic(cg_env env, <cf_typ>list tyvars, 
+					    bool in_hndlr,
+					    annotate s1_a, annotate s2_a) {
+  <coercion>list ans = List::rev(List::map(tapp_f, 
+					   List::map(typ2con_roll, tyvars)));
+  if(USE_CALLEE_SAVE)
+    ans = ^list(^coercion.Tapp(^annotate.Reg(^reg.Edi)),
+          ^list(^coercion.Tapp(^annotate.Reg(^reg.Esi)),
+          ^list(^coercion.Tapp(^annotate.Reg(^reg.Ebx)), 
+	  ans)));
+
+  con dummy_con = cempty();
+  con e1 = dummy_con;
+  con e2 = dummy_con;
+  if(in_hndlr) {
+    e1 = cempty_cap();
+    e2 = smart_cjoin(^list(env2capability(env),
+		     ^list(cap1_con(),
+		     ^list(cap2_con(), null))));
+  } else {
+    e1 = smart_cjoin(^list(env2capability(env), ^list(cap1_con(), null)));
+    e2 = cap2_con();
+  }
+  return ^list(^coercion.Tapp(^annotate.Con(e2)),
+         ^list(^coercion.Tapp(^annotate.Con(e1)),
+         ^list(^coercion.Tapp(s2_a), 
+         ^list(^coercion.Tapp(s1_a), 
+	 ans))));
+}
+
+<coercion>list env2call_inst(cg_env env, <cf_typ>list tyvars, 
+			     int num_callee_params) {
+  _ in_hndlr = in_handler(env);
+
+  _ x;
+  if(USE_DANS_HACK) {
+    x = env2stack_inst_opt(env,num_callee_params,in_hndlr,
+			   env2num_frame_cons(env),0,0);
+    }
+  else {
+    x = env2stack_inst(env,in_hndlr);
+  }
+
+  _ s1_a = x.1;
+  _ s2_a = x.2;
+
+  return env2call_inst_generic(env,tyvars,in_hndlr,s1_a,s2_a);
+}
+
+// Always uses Dan's Hack.
+<coercion>list env2call_inst_special(cg_env env,int num_params,int frame_size) {
+  //  _ in_hndlr = in_handler(env);
+  // Using stack_desc.param_slots does not work because doubles may be
+  // overwritten with pairs of ints.
+  _ x = env2stack_inst_opt(env,num_params,false,frame_size,0,0);
+
+  return env2call_inst_generic(env,null,false,x.1,x.2);
+  
+}
+
+<coercion>list env2tailcall_inst(cg_env env, <cf_typ>list tyvars,
+				 int num_callee_params) {
+
+  _ in_hndlr = in_handler(env);
+
+  _ frame_size;
+  switch env.fn.convention {
+  case Stdcall: frame_size = 0;
+  case Cdecl  : frame_size = env.stack_desc.param_slots;
+  }
+
+  _ x = env2stack_inst_opt(env,num_callee_params,in_hndlr,
+			   frame_size,0,0);
+  
+  return env2call_inst_generic(env,tyvars,in_hndlr,x.1,x.2);
+
+}
+
+// Always use Dan's hack
+// Use by profiler to handle handlers.
+// We have the full frame plus one word at the bottom.
+<coercion>list env2call_inst_handler(cg_env env, 
+				   int num_callee_params, int extra_cons) {
+  _ in_hndlr = in_handler(env);
+
+  _ x = env2stack_inst_opt(env,num_callee_params,in_hndlr,
+			   env2num_frame_cons(env),1,extra_cons);
+  _ s1_a = x.1;
+  _ s2_a = x.2;
+
+  return env2call_inst_generic(env,null,in_hndlr,s1_a,s2_a);
+}
+
+
+con env2stack_above_handler(cg_env env, bool no_handler_slot, con below) {
+  _ slots = env2slots(env);
+  _ ret_con = env2return_address_con(env);
+  _ ans = cappend(stack1_con(),below);
+    ans = env2stack_param_con(env,slots,ans);
+    ans = ccons              (ret_con  ,ans);
+    ans = env2stack_save_con (env,      ans);
+    ans = env2stack_slots_con(env,slots,ans);
+
+  _ handler_words = env.stack_desc.handler_words;
+  if(handler_words > 0 && no_handler_slot) handler_words--;
+
+  if(handler_words > 0)
+    ans = ccons(csptr(handler_and_below()), ans);
+  if(handler_words==2) {
+    if(in_handler(env) &&
+       (!handler_changes(env,env.il_block) || env.il_inst != 0)) {
+      _ blk = Xarray::get(env.fn.blocks, env.il_block);
+      _ handler_num = blk.handler.v.num;
+      ans = ccons(Dict::lookup(env.handler_types,handler_num), ans);
+    }
+    else ans = ccons(pcjunk(4),ans);
+  }
+
+  if(handler_words < 0 || handler_words > 2) {
+    BUG("Unexpected number of handler words.");
+  }
+
+  return ans;
+}
+
+con env2stack_con(cg_env env, bool no_handler_slot) {
+  _ ans = env2stack_above_handler(env,no_handler_slot,handler_and_below());
+  return csptr(ans);
+}
+
+con env2return_address_con(cg_env env) {
+  _ rc = env.stack_desc.return_address_con;
+
+  if(rc==null) {
+    rc = ^Opt(return_address_con(env.fn.convention,
+				 env.fn.ret_typ,
+				 env.fn.arg_typs));
+    env.stack_desc.return_address_con = rc;
+  }
+
+  return rc.v;
+}
+
+con env2stack_param_con(cg_env env, con slots[], con below) {
+  _ min_param_slot = env.stack_desc.slot_slots;
+  _ ans = below;
+  for(int i = size(slots)-1; i >= min_param_slot; i--) {
+    ans = ccons(slots[i],ans);
+  }
+  return ans;
+}
+
+// Includes the callee-save registers.
+con env2stack_save_con(cg_env env, con below) {
+  _ ans = below;
+  
+  if(env.ebx_used) ans = ccons(callee_save1_con(),ans);
+  if(env.esi_used) ans = ccons(callee_save2_con(),ans);
+  if(env.edi_used) ans = ccons(callee_save3_con(),ans);
+  
+  _ sd = env.stack_desc;
+
+  return ans;
+}
+
+// Not include the type variable s1.  Assume we're not in a handler.
+int env2num_frame_cons(cg_env env) {
+  _ sd = env.stack_desc;
+
+  _ cons = 0;
+    cons += sd.param_slots;
+    cons += sd.slot_slots;
+    cons += sd.save_words; // Each one is a word.
+    cons += sd.handler_words;
+    
+    // Now must add space for padding.
+    _ padding = sd.save_start - (sd.slot_start + sd.slot_words);
+
+    if(padding != 1 && padding !=0) {
+      print_stack_desc(tal_stdout,sd);
+      Popilprint::suppress_output = false;
+      Popilprint::prn_fun(env.fn);
+      BUG("Unexpected padding.");
+    }
+    cons += padding;
+
+    return cons;
+}
+
+// Includes any padding between callee-save and slots.
+con env2stack_slots_con(cg_env env, con slots[], con below) {
+  _ sd = env.stack_desc;
+  _ num_slot_slots = sd.slot_slots;
+  _ ans = below;
+
+  _ padding = sd.save_start - (sd.slot_start + sd.slot_words);
+  if(padding!=0) {
+   if(padding != 1) BUG("Unexpected padding between callee_save and slots");
+   ans = ccons(pcjunk4(),ans);
+  }
+
+
+  for(int i = num_slot_slots-1; i >= 0; i--) {
+    ans = ccons(slots[i],ans);
+  }
+  return ans;
+}
+
+// Given an environment return a con for each stack slot assigned by the
+// register allocator. In other words not real stack offsets rather the
+// stack numbers assigned to variables.
+con env2slots(cg_env env) [] {
+  _ num_slots    = env.stack_desc.total_slots;
+  _ double_slots = env.stack_desc.double_slots;
+  _ slots        = new_array(num_slots,pcjunk4());
+  _ junk8        = pcjunk8();
+  for(int i = 0; i < double_slots; i++)
+    slots[i] = junk8;
+
+  _ assignment = env.assignment_info.assignment;
+  _ live = env.assignment_info.all_live[env.il_block][env.il_inst];
+  for(<varName>list ls = Set::elements(live); ls != null; ls = ls.tl) {
+    _ v = ls.hd;
+      switch assignment[v] {
+      case Stackslot(i):  
+	slots[i] = var2con(env, ls.hd);
+      default: ;
+      }
+  }
+
+  return slots;
+}
+
+// helpers for the above.
+con stack_slots(cg_env env, bool no_handler_slot) [] {
+  //  ans[i] is type of slot i from the top of the stack
+  // size of ans is number of slots down to but not including the return type
+  // (may change this if parameters use their entry slot and can be refined)
+  // top slot not junk exactly when in a try body
+  // top slot is not there exactly when at the beginning of a handler block
+  int  num_extra_slots = env.fun_has_handler ? (no_handler_slot ? 1 : 2) : 0;
+  _    stack_slots     = junk_stack_slots(env,num_extra_slots,0);
+  _    num_slots       = size(stack_slots);
+  _    assignment      = env.assignment_info.assignment;
+
+  <varName>Set::set live = 
+     env.assignment_info.all_live[env.il_block][env.il_inst];
+  <int>Opt          hvar = Xarray::get(env.fn.blocks, env.il_block).handler_var;
+  for(<varName>list ls = Set::elements(live); ls != null; ls = ls.tl) {
+    _ v = ls.hd;
+    if(!no_handler_slot || hvar == null || v != hvar.v) {
+      switch assignment[v] {
+      case Stackslot(i): {
+	stack_slots[i+num_extra_slots] = var2con(env, ls.hd);
+      }
+      default: ;
+      }
+    }
+  }
+  if(env.fun_has_handler) {
+    if(no_handler_slot)
+      stack_slots[0] = csptr(handler_and_below());
+    else {
+      stack_slots[1] = csptr(handler_and_below());
+      if(in_handler(env) && 
+	 (!handler_changes(env, env.il_block) || env.il_inst != 0)) {
+	stack_slots[0] = 
+	  Dict::lookup(env.handler_types,
+		       Xarray::get(env.fn.blocks,env.il_block).handler.v.num);
+      }
+    }
+  }
+  return stack_slots;
+}
+
+static con junk_stack_slots(cg_env env, int bottom_padding, int top_padding)[] {
+  con  stack_slots[]   = 
+    new_array(env.assignment_info.num_slots+bottom_padding+top_padding,
+	      pcjunk4());
+  
+  // Put in junk8 for all the double_slots
+  _ junk8 = pcjunk8();
+  for(_ i = env.assignment_info.double_slots + bottom_padding-1; 
+      i >= bottom_padding; 
+      --i)
+    stack_slots[i] = junk8;
+
+  return stack_slots;
+} 
+
+con env2capability(cg_env env) {
+  <id,*(alias_info,con)>Dict::dict d = Dict::empty(Id::id_compare);
+  d = Dict::fold_c(partial2cap, env, env.partial_inits,  d);
+
+  // Cyclone +
+  _ code_regions = Dict::to_list(env.regions);
+  for(;code_regions!=null;code_regions=code_regions.tl) {
+    _ regn = code_regions.hd; // (name,last template)
+    _ i = tid_region(regn.1);
+    _ c = code_region_con(env,regn.1,regn.2);
+
+    d = Dict::insert(d,i,^(^alias_info.Unique,c));
+  }
+  // Cyclone -
+
+  return ccap(d);
+}
+<id,*(alias_info,con)>Dict::dict 
+partial2cap(cg_env env, int v, *(BITVEC,int) init_info,
+	    <id,*(alias_info,con)>Dict::dict d) {
+  BITVEC bv         = init_info.1;
+  int    num_fields = init_info.2;
+  _      fields[]   = {:cf_field};
+  cf_typ typ = Xarray::get(env.fn.all_operands, v).typ;
+  // XXX - Why isn't EXN here?
+  switch typ {
+  case UnpackedArray *(sing,t):    
+    con init   = cfield(typ2con_roll(t), ^variance.ReadWrite);
+    con uninit = cfield(cbyte4(),   ^variance.ReadWrite);
+    <con>list fields = null;
+    for(int i=num_fields-1; i >= 0; --i)
+      fields = ^list(((Bitvec::get(bv,i)) ? init : uninit), fields);
+    con c = cprod_b(fields);
+    return Dict::insert(d, op2cname(env,^cf_operand.Local(v)),
+			^(^alias_info.Unique,c));
+  case Array *(szopt,t):
+    if (szopt==null) 
+      BUG("poptaltypes.pop:partial2cap - unknown size");
+    int sz = szopt.v;
+    cf_sing sz_sing = ^cf_sing.Int(sz);
+    con uninit = cfield(cbyte4(), ^variance.ReadWrite);
+    con tag_field = 
+      (Bitvec::get(bv,0) ?
+       cfield(typ2con(^cf_typ.Sing(sz_sing)),^variance.Read) :
+       uninit);
+    con value_field =
+      (Bitvec::get(bv,1) ?
+       cfield(typ2con(^cf_typ.UnpackedArray(^(sz_sing,t))),^variance.Read):
+       uninit);
+    con c = cprod_b(^list(tag_field,^list(value_field,null)));
+    return Dict::insert(d, op2cname(env,^cf_operand.Local(v)),
+			^(^alias_info.Unique,c));
+  case Tuple(fs): fields = fs;
+  case Named(n):  
+    // unions are never partially initialized
+    cf_structdecl sd = Dict::lookup(env.fn.file.structs,n.1);
+    <*(string,cf_typ)>list typ_inst = List::zip(sd.tyvars, n.2);
+    fields = new_array(num_fields, sd.fields[0]);
+    for(int i=0; i < num_fields; ++i) {
+      _ f = sd.fields[i];
+      fields[i] = ^cf_field(typ_subst(typ_inst,f.typ), f.cap, f.offset);
+    }
+  default: BUG("bad partially initialized type");
+  }
+
+  //  printf("size(fields) = %d, num_fields = %d, size(bv) = %d\n",
+  //	   size(fields),num_fields, size(bv));
+
+  // now build up the con
+  <con>list prod_fields = fields2cons(fields,^Opt(bv));
+
+  con c = cprod_b(prod_fields);
+  return Dict::insert(d, op2cname(env,^cf_operand.Local(v)),
+		      ^(^alias_info.Unique,c));
+}
+
+// Return the number of bytes occupied by this array of fields.
+static int fields2bytes(cf_field fields[]) {
+  _ num_last_field = size(fields)-1;
+  _ f = fields[num_last_field];
+  return f.offset + sizeof_typ(f.typ);
+}
+
+// Convert an array of fields into a list of cons with the appropriate padding!
+// If the bitvector is present only the elements that are set are included,
+// the remainder are B? of the appropriate size.
+static <con>list fields2cons(cf_field fields[], <BITVEC>Opt bv) {
+
+  _ num_fields = size(fields);
+  <con>list result = null;
+  if(num_fields!=0) {
+    _ last_field = fields[num_fields-1];
+    _ next_field = last_field.offset + sizeof_typ(last_field.typ);
+    for(int i = num_fields-1; i >= 0; --i) {
+      _ f = fields[i];
+      _ f_sz = sizeof_typ(f.typ);
+      
+      // Insert alignment!
+      _ padding = next_field - (f.offset + f_sz); 
+      
+      if(padding != 0)
+	result = ^list(pcjunk(padding),result);
+      /*      result = ^list(cfield(pcjunkbytes(int2scale(padding)),
+	      ^variance.Read),
+	      result);
+      */
+      if (bv==null || Bitvec::get(bv.v,i)) {
+	result = ^list(cfield(typ2con_roll(f.typ),cap2variance(f.cap)), 
+		       result);
+      } else {
+	_ con;
+	switch f_sz {
+	case 1: con = cbyte1();
+	case 2: con = cbyte2();
+	case 4: con = cbyte4();
+	case 8: con = cbyte8();
+	default: BUG("Unexpected size.");
+	}
+	result = ^list(cfield(con, ^variance.ReadWrite), 
+		       result);
+      }
+      next_field = f.offset;
+    }
+  } 
+  return result;
+}
+
+con slots2stack(con slots[], con stack_bottom) {
+  con stack = stack_bottom;
+  for(int i=size(slots)-1; i>=0; --i) 
+    stack = ccons(slots[i],stack);
+  return stack;
+}
+
+con var2con(cg_env env, varName v) {
+  // look up in fn unless in refined_locals or partial_inits
+  <cf_refinement>Opt topt = Dict::lookup_opt(env.refined_locals,   v);
+  cf_typ             t    = Xarray::get     (env.fn.all_operands, v).typ;
+  <*(int[],int)>Opt  popt = Dict::lookup_opt(env.partial_inits,    v);
+  if(popt!=null) 
+    return cname(cvar(op2cname(env,^cf_operand.Local(v)))); // partial init case
+  if (topt != null) 
+    return refined2con(env, v, topt.v);   // refined case
+  return typ2con(t);
+}
+
+con refined2con(cg_env env, varName v, cf_refinement r) {
+  cf_typ typ = operand_type(env.fn, ^cf_operand.Local(v));
+  switch r {
+  case NotNull:
+    switch typ {
+    case Named(n):
+	return chptr(null, 
+		     ^Opt(raw_name_con(tid_mem(n.1), List::map(typ2con_roll, n.2))),
+		     null);
+    case Option(t):
+      return typ2con(t);
+    default:
+      BUG("Unexpected non-null refined type.");
+    }
+  case VoidVariant(i):
+    return chptr(^list(i,null), null, null);
+  case ValueVariant(i):
+    *(string,<cf_typ>list) n      = typ.Named;
+    cf_uniondecl           ud     = Dict::lookup(env.fn.file.unions, n.1);
+    cf_typ                 poly_t = ^cf_typ.Bool; // dummy init
+    for(<*(int,cf_typ)>list l = ud.fields.2; l!=null; l=l.tl)
+      if(l.hd.1 == i) {
+	poly_t = l.hd.2;
+	break;
+      }
+    cf_typ t = typ_subst(List::zip(ud.tyvars,n.2), poly_t);
+    return chptr(null, ^Opt(csum(^list(toSumVariant(^(i,t)),null))), null);
+  case ExceptionVariant(i):
+    <cf_typ>Opt to = Dict::lookup(env.fn.file.exns, i).typOpt;
+    con          c = to==null ? cbyte4() : typ2con_roll(to.v);
+    return exn_unpacked(cfield(c, ^variance.ReadWrite));
+  default: 
+    BUG(
+    "Poptaltypes::refined2cond: unexpected refinement at capability site");
+  }
+}
+
+// Cyclone +
+
+// Given a list of operands making up a code region, return a list of 
+// the live template pointers (these are type variables).
+static <int>list code_region_ops2tptrs(cg_env env, <int>Xarray::xarray ops) {
+  _ fn = env.fn;
+  _ live = env.assignment_info.all_live[env.il_block][env.il_inst];
+  _ ops_length = Xarray::length(ops);
+  _ result = null;
+  for(_ i = 0; i<ops_length; i++) {
+    _ op = Xarray::get(ops,i);
+    if(Set::member(live,op)) {
+      _ tptr;
+      switch Xarray::get(fn.all_operands,op).typ {
+      case TemplPtr(x): tptr = x;
+      default: BUG("Expected template pointer");
+      }
+      result = ^list(tptr,result);
+    }
+  }
+  return result;
+}
+
+static <id>list code_region_id(cg_env env, 
+			       int num,int bvec[],<id>list accum) {
+  // Add all the live template pointers. 
+  _ result = ^list(tid_region(num),accum);
+
+  _ rgn_ops = Xarray::get(env.fn.code_regions,num).1;
+  _ tptrs = code_region_ops2tptrs(env,rgn_ops);
+
+  for(; tptrs!=null;tptrs=tptrs.tl)
+    result = ^list(tid_tptr(tptrs.hd),result);
+
+  return result;
+}
+ 
+static <id>list code_region_names(cg_env env) {
+  return Dict::fold_c(code_region_id,env,env.regions,null);
+}
+
+static *(con,<con>Opt,
+	 <*(id,con)>list,
+	 <*(id,con)>list) template2con_info(cg_env env, cf_template t) {
+
+  _ t_con = Dict::lookup(env.template_cons, t);
+  
+  switch t_con.rcon {
+  case Ctmpl(x): return x;
+  default: BUG("Template with non-template constructor.");
+  }
+}
+
+static con code_region_con(cg_env env,int rgn_var, int last_templates[]) {
+
+  _ fn = env.fn;
+  _ rgn_info = Xarray::get(fn.code_regions,rgn_var);
+  _ rgn_ops = rgn_info.1;
+  _ rgn_fun = rgn_info.2;
+
+  con pre_con = template2con_info(env,rgn_fun.entry.template).1;
+
+  <con>Opt post_con = null;
+
+  _ templs = Bitvec::to_sorted_list(last_templates,size(last_templates) * 32);
+  if(templs == null)  //If no templates could have been last dumped, 
+    // the code region is live then this is the start of the code region and 
+    // post_con == pre_con.
+    post_con = ^Opt(pre_con);
+  else {
+    _ templ_envs = null;
+    for(; templs!=null; templs=templs.tl) {
+      _ tptr = templs.hd;
+      _ t = Xarray::get(fn.template_pointers,tptr);
+      
+      _ post_con_op = template2con_info(env,t).2;
+      
+      if(post_con_op != null) {
+	templ_envs = ^list(Dict::lookup(env.template_post_envs, t), templ_envs);
+      }
+    }
+
+    if(templ_envs == null)  // If all templates have an empty post-condition.
+      post_con = null;
+    else { // Otherwise join the environments from all the templates with 
+      // post-conditions, and use that to compute the post-condition of the
+      // region.
+      cg_env env2 = templ_envs.hd;
+      templ_envs = templ_envs.tl;
+      for(;templ_envs!=null;templ_envs=templ_envs.tl) {
+	env2 = Poptalenv::join_cg_env(env2,templ_envs.hd);
+      }
+      
+      _ hole = env2.current_template.exit.v.2;
+      post_con = ^Opt(env2code_type_hole(env2,hole));
+    }
+  } 
+
+  // Compute the active (dumped) templates by looking at which ops in
+  // rgn_ops are live.  Active templates show up in the type of the
+  // code region.
+  // 
+  // XXX - we assume there is a one-to-one mapping between operands
+  // and template_pointers BRITTLE (possibly wrong after regalloc)
+  // We should filter duplicate template_pointers but I am too
+  // lazy right now.
+
+  _ active = null; // List of *(tptr_name,labels,unfilled holes)
+
+  _ tptrs = code_region_ops2tptrs(env,rgn_ops);
+  for(; tptrs!=null; tptrs = tptrs.tl) {
+    _ tptr = tptrs.hd;
+    _ templ = Xarray::get(fn.template_pointers,tptr);
+    _ templ_info = template2con_info(env,templ);
+    
+    _ labels = templ_info.3;
+    _ holes = templ_info.4;
+    
+    // Remove holes that have already been filled.
+    _ filled_holes = Dict::lookup(env.filled,tptr);
+    <*(id,con)>list unfilled_holes = null;
+
+
+    // Bad n^2 algorithm in the number of holes (usually <10)
+    for(_ x = holes; x!=null; x=x.tl) {
+      _ hid = x.hd.1;
+      _ y = filled_holes;
+
+      for(; y!=null; y=y.tl) {
+	_ fhid = hole2id(templ,y.hd);
+
+	if (Id::id_compare(fhid,hid)==0) // This hole has been filled.
+	  break;
+      }
+
+      if(y==null) { // We did not see the hole.
+	unfilled_holes = ^list(x.hd,unfilled_holes);
+      }
+    }
+
+    /*
+    for(;filled_holes!=null;filled_holes = filled_holes.tl) {
+      _ hid = hole2id(templ,filled_holes.hd);
+      
+      for(_ x = holes; x!=null;x=x.tl) {
+	if(Id::id_compare(x.hd.1,hid)!=0)
+	  unfilled_holes = ^list(x.hd,unfilled_holes);
+      }
+    }
+    */
+
+      active = ^list(^(tid_tptr(tptr),labels,unfilled_holes), active);      
+  }
+
+  return ctrgn(pre_con,post_con,active);
+}
+
+con env2template(cg_env env,cf_template templ, <code_block>Xarray::xarray blocks) {
+
+
+  // Should really only output cons for labels in label set of template
+  // but for now output them all.
+  <*(id,con)>list labels = null;
+  _ num_blocks = Xarray::length(blocks);
+  
+  // ASSERTION
+  if(num_blocks<=0) BUG("Template without any blocks.");
+
+  for(int i = 0; i < Xarray::length(blocks); ++i) {
+    code_block cb = Xarray::get(blocks,i);
+    if(cb.tipe==null) {
+      BUG("All blocks in a template must have types.");
+    }
+    labels = ^list(^(cb.id, cb.tipe.v),labels);
+  }
+
+  // XXX - this little trick doesn't quite work for conditional jumps
+  // since the refinement on the edges is lost.
+  _ hole_cons = env.hole_cons;
+  <*(id,con)>list holes = null;
+  _ templ_holes = templ.holes;
+  int num_holes = Xarray::length(templ_holes);
+  for(_ x = 0; x < num_holes; x++) {
+    _ h = Xarray::get(templ_holes,x).1;
+    _ c = hole_cons[h];
+    
+    holes = ^list(^(hole2id(templ,h),c),holes);
+  }
+
+  _ pre_con = Xarray::get(blocks,0).tipe.v;
+  _ post_con = (templ.exit == null) ? null : ^Opt(hole_cons[templ.exit.v.2]);
+
+  return Tal::ctmpl(pre_con,post_con,labels,holes);
+}
+// Cyclone -
+
+//////////////////////// typ2con and friends ///////////////
+con typ2con_b(cf_typ t, bool rolled) {
+  // notice everything is not 4 bytes anymore.
+  switch t {
+  case Exn:         return exn_packed();
+  case ExnName(i):  return exnname_con(cvar(i));
+  case Var(v):      return cvar(tid_tyv(v));
+  case Bool:        return chptr(^list(0,^list(1,null)),null,null);
+  case Num(n):      
+    switch n.s {
+    case B4: return cbyte4(); 
+    case B2: return cbyte2();
+    case B1: return cbyte1();
+    }
+  case Float: return pcfloat32();
+  case Double: return pcfloat64();
+  case Fn(f):       return fun_con(f.1, f.2, f.3,f.4);
+  case Array *(_,t):
+    switch t {
+    case Num(x): if (x.s == ^.B1) return string_packed();
+    default: ; 
+    }
+    return array_packed(typ2con_roll(t));//CHANGE TO USE ABBREV!
+  case UnpackedArray(x): 
+    return array_unpacked(sing2con(x.1), cfield(typ2con_roll(x.2),^variance.ReadWrite));
+  case Sing(s):     return csing(sing2con(s));
+  case Named(x):
+    con f(string,<con>list) = unroll_name_con;
+    if(rolled) f = name_con;
+    return f(x.1, List::map(typ2con_roll,x.2));
+  case Tuple(x):
+    <con>list l = fields2cons(x,null);
+    return cprod_b(l);
+  case Option(t):
+    _ c = typ2con_b(t,rolled);
+    switch c.rcon {
+    case Chptr(x):
+      if(x.1 != null) BUG("Cannot make an optional Chptr optional.");
+      x.1 = ^list(0,null);
+      return c;
+    default:
+      BUG("Cannot make a non-pointer type optional.");
+    }
+    
+  case CodeRgn(x):  return cname(cvar(tid_region(x))); // Cyclone
+  case TemplPtr(x): return ctptr(tid_tptr(x));       // Cyclone 
+  } 
+}
+con typ2con     (cf_typ t) { return typ2con_b(t,false); }
+con typ2con_roll(cf_typ t) { return typ2con_b(t,true); }
+
+con fun_con(cf_convention conv, 
+	    <string>list tyvars, <cf_typ>Opt ret_typ, <cf_typ>list arg_typs) {
+  if(USE_CALLEE_SAVE) {
+    con args = stack_args(arg_typs);
+    con retargs = stack_retargs(conv,arg_typs);
+    con ans;
+    switch ret_typ2kind(ret_typ) {
+    case VoidFun: ans = fun_void_abbrev_con();
+    case FpFun:   ans = fun_fp_abbrev_con();
+    case NormFun: ans = capp(fun_abbrev_con(),typ2con_roll(ret_typ.v));
+    }
+    ans = capp(capp(ans,args),retargs);
+    for(tyvars = List::rev(tyvars); tyvars!=null; tyvars=tyvars.tl)
+      ans = cforall(tid_tyv(tyvars.hd), k4byte, ans);
+    return ans;
+  }
+  // caller-save or void function:
+  con     stack    = stack_on_entry(conv,ret_typ, arg_typs);
+  machine_state ms = ms_empty();
+  ms = ms_set_reg(ms, ^reg.Esp, csptr(cappend(stack,handler_and_below())));
+  ms = ms_set_reg(ms, ^reg.Ebp, csptr(handler_and_below()));
+  if(USE_CALLEE_SAVE) {
+    ms = ms_set_reg(ms, ^reg.Ebx, callee_save1_con());
+    ms = ms_set_reg(ms, ^reg.Esi, callee_save2_con());
+    ms = ms_set_reg(ms, ^reg.Edi, callee_save3_con());
+  }
+  ms = ms_set_cap(ms, cjoin(^list(cap1_con(),^list(cap2_con(),null))));
+
+  _ tyvarkinds = null;
+  for(;tyvars!=null;tyvars=tyvars.tl) {
+    tyvarkinds = ^list(^(tyvars.hd,true),null);
+  }
+  return close_code(ccode_ms(ms), List::imp_rev(tyvarkinds), null);
+}
+
+variance cap2variance(cf_capability c) {
+  switch c {
+  case Read:      return ^variance.Read;
+  case ReadWrite: return ^variance.ReadWrite;
+  }
+}
+con sing2con(cf_sing s) { 
+  // notice does not wrap with csing
+  switch s {
+  case Var(v): return cvar(tid_tyv(v));
+  case Int(i): return pcint(i);
+  }
+}
+
+static scale int2scale(int sz) {
+  switch sz {
+  case 1: return ^.Byte1;
+  case 2: return ^.Byte2;
+  case 4: return ^scale.Byte4;
+  case 8: return ^.Byte8;
+  default: BUG("Unexpected size.");
+  }
+}
+
+con toSumVariant(*(int,cf_typ) x) {
+  return cprod(^list(cfield(csing(pcint(x.1)), ^variance.Read),
+	       ^list(cfield(typ2con_roll(x.2),      ^variance.Read),
+	       null)));
+}
+<coercion>list typ2constCoerce(cf_typ t) {
+  // returns coercions necessary to take a constant to the translation of a type
+  switch t {
+  case Named(x): return ^list(^coercion.Tosum  (typ2con(t)), null);
+  case Bool:     return ^list(^coercion.Tosum  (typ2con(t)), null);
+  case Num(x):   
+    _ con; 
+    switch x.s {
+    case B4: con = cbyte4();
+    case B2: con = cbyte2();
+    case B1: con = cbyte1();
+    } 
+    return ^list(^coercion.Subsume(con),   null);
+  default:       return null;
+  }
+}
+<coercion>list unrefineTyp(cg_env env, int operandName, cf_refinement r) {
+  // note we rely on TAL's implicit subtyping as much as possible
+  // now that refined locals aren't named, we save a lot of annotations
+
+  con c = typ2con(Xarray::get(env.fn.all_operands,operandName).typ);
+  switch r {
+  case NotNull:             ;
+  case VoidVariant(i):      ;
+  case ValueVariant(i):     ;
+  case ExceptionVariant(i): 
+    <cf_typ>Opt pkt_t = Dict::lookup(env.fn.file.exns,i).typOpt;
+    if(pkt_t == null) c = cfield(cbyte4(), ^variance.ReadWrite);
+    else              c = cfield(typ2con_roll(pkt_t.v), ^variance.ReadWrite);
+    return ^list(^coercion.Pack(^(c, exn_packed())), null);
+  case IsNull:              ;
+  case UnknownUnion:        ;
+  case UnknownException:
+    return ^list(^coercion.Pack(^(exnname_arg_con(), exn_packed())), null);
+  }
+  return ^list(^coercion.Tosum(c),null);
+}
+<coercion>list unrefineOperand(cg_env env, cf_operand op) {
+  switch op {
+  case Local(i):
+    if(Dict::member(env.refined_locals, i))
+      return unrefineTyp(env, i, Dict::lookup(env.refined_locals,i));
+    else
+      return null;
+  case Const(x): return typ2constCoerce(operand_type(env.fn, op));
+  default:       return null;
+  }
+}
+<coercion>list rollOperand(cg_env env, cf_operand op) {
+  // note this only rolls vars that should be unrolled, namely non-global
+  // struct and union vars.  For everything else, return null.
+  // We do unrefine an operand as necessary.
+  switch op {
+  case Global(x): return null;
+  default:        ;
+  }
+  <coercion>list cs = unrefineOperand(env,op);
+  cf_typ t = operand_type(env.fn, op);
+  switch t {
+  case Named(n): 
+    if((!Dict::member(env.fn.file.abstracts, n.1))
+       || Dict::lookup(env.fn.file.abstracts, n.1).possibly_null) 
+	cs = ^list(^coercion.Roll(typ2con_roll(t)), cs);
+  default: ;
+  }
+  return cs;
+}
+
+<coercion>list unrollOperand(cg_env env, cf_operand op) {
+  // note this only unrolls a named type that is not totally abstract
+  switch operand_type(env.fn, op) {
+  case Named(n):
+    if(!Dict::member(env.fn.file.abstracts, n.1)
+       || Dict::lookup(env.fn.file.abstracts, n.1).possibly_null)
+      return ^list(^coercion.Unroll, null);
+  default: ;
+  }
+  return null;
+}
+
+bool needs_indirect(cf_typ t) {
+  switch t {
+  case Fn(x):      return false;
+  case ExnName(i): return false;
+  default:         return true;
+  }
+}
+
+///////////////////// Named Type Translation //////////////////////
+void trans_abstract(tg_env env, string name, cf_absdecl decl) {
+  <string>list tyvars = decl.tyvars;
+  id           label  = tid_typ(name);
+  id           labelA = tid_name_unroll(name);
+  kind         k      = tyvars2kind(tyvars, k4byte);
+  if (decl.possibly_null) {
+    id        label_m = tid_mem(name);
+    <con>list tycons  = List::map(tyvar2con,tyvars);
+    kind      k_m     = tyvars2kind(tyvars, ^kind.Kmem);
+    con       c       = tyvars2lam(tyvars, opt_con(mem_name_con(name,tycons)));
+    Xarray::add(env.import_cons,  ^(label,   k,   ^int_con_def.ConcCon(c)));
+    Xarray::add(env.import_cons,  ^(label_m, k_m, ^int_con_def.AbsCon));
+    Xarray::add(env.file_abbrevs, ^(labelA,  c));
+  } else {
+    Xarray::add(env.import_cons,  ^(label, k, ^int_con_def.AbsCon));
+    Xarray::add(env.file_abbrevs, ^(labelA, clab(label)));
+  }
+}
+con struct2ptrtype(cf_structdecl decl) {
+  <id> list tids    = List::map(tid_tyv, decl.tyvars);
+  <con>list tycons  = List::map(cvar,    tids);
+  return 
+    tyvars2lam(decl.tyvars, 
+	       chptr(decl.possibly_null? ^list(0,null) : null,
+		     ^Opt(mem_name_con(decl.name,tycons)),
+		     null));
+}
+void trans_struct(tg_env env, string name, cf_structdecl decl) {
+  // notice as in old compiler, you can't hide that a nullable struct is 
+  // nullable
+  int num_fields = size(decl.fields);
+  int struct_size = fields2bytes(decl.fields);
+  <con>list prod_fields = fields2cons(decl.fields,null);
+
+  con       c       = struct2ptrtype(decl);
+  con       c_m     = tyvars2lam(decl.tyvars, cprod(prod_fields));
+  kind      k       = tyvars2kind(decl.tyvars, k4byte);
+  kind      k_m     = tyvars2kind(decl.tyvars, ^kind.Kmemi(struct_size));
+  id        label   = tid_typ(name);
+  id        label_m = tid_mem(name);
+  id        label_A = tid_name_unroll(name);
+  *(id,kind,con)         f_con     = ^(label,   k,   cvar(label_A));
+  *(id,kind,int_con_def) int_con   = ^(label,   k,   ^int_con_def.ConcCon(c));
+  *(id,kind,int_con_def) abs_con   = ^(label,   k,   ^int_con_def.AbsCon);
+  *(id,kind,con)         f_con_m   = ^(label_m, k_m, c_m);
+  *(id,kind,int_con_def) int_con_m = ^(label_m, k_m, ^int_con_def.ConcCon(c_m));
+  *(id,kind,int_con_def) abs_con_m = ^(label_m, k_m, ^int_con_def.AbsCon);
+  *(id,con)              abbrev    = ^(label_A, c);
+  Xarray::add(env.file_abbrevs, abbrev);
+  switch decl.scope {
+  case Public:     
+    Xarray::add(env.export_cons, int_con);
+    Xarray::add(env.export_cons, int_con_m);
+    Xarray::add(env.file_cons,   f_con);
+    Xarray::add(env.file_cons,   f_con_m);
+  case Abstract: 
+    if(decl.possibly_null) { // export null for all option types
+      Xarray::add(env.export_cons, int_con);
+      Xarray::add(env.export_cons, abs_con_m);
+    } else {
+      Xarray::add(env.export_cons, abs_con);
+    }
+    Xarray::add(env.file_cons,   f_con);
+    Xarray::add(env.file_cons,   f_con_m);
+  case Extern:
+    Xarray::add(env.import_cons, int_con);
+    Xarray::add(env.import_cons, int_con_m);
+  case Static:
+    Xarray::add(env.file_cons,   f_con);
+    Xarray::add(env.file_cons,   f_con_m);
+  }
+}
+void trans_union(tg_env env, string name, cf_uniondecl decl) {
+  id                  label   = tid_typ(name);
+  kind                k       = tyvars2kind(decl.tyvars, k4byte);
+  <int>list           tags    = decl.fields.1;
+  <*(int,cf_typ)>list vars    = decl.fields.2;
+  id                  label_A = tid_name_unroll(name);
+  <con>Opt sum   = 
+     (vars == null) ? null : ^Opt(csum(List::map(trans_variant,vars)));
+  con c = tyvars2lam(decl.tyvars, chptr(tags, sum, null));
+  *(id,kind,con)         f_con   = ^(label,   k, cvar(label_A));
+  *(id,kind,int_con_def) int_con = ^(label,   k, ^int_con_def.ConcCon(c));
+  *(id,kind,int_con_def) abs_con = ^(label,   k, ^int_con_def.AbsCon);
+  *(id,con)              abbrev  = ^(label_A, c);
+  Xarray::add(env.file_abbrevs, abbrev);
+  switch decl.scope {
+  case Public:   
+    Xarray::add(env.export_cons, int_con);
+    Xarray::add(env.file_cons,   f_con);
+  case Abstract: 
+    Xarray::add(env.export_cons, abs_con);
+    Xarray::add(env.file_cons,   f_con);
+  case Extern:   
+    Xarray::add(env.import_cons, int_con);
+  case Static:   
+    Xarray::add(env.file_cons,   f_con);
+  }
+}
+con trans_variant(*(int,cf_typ) v) {
+  return cprod(^list(cfield(csing(pcint(v.1)), ^variance.Read),
+	       ^list(cfield(typ2con_roll(v.2),      ^variance.Read),
+		     null)));
+}
+void trans_abstype(tg_env env, string name, cf_abstypedecl decl) {
+  // FMS: Just like the popcorn vesion of the compiler there is a
+  // list reverse problem.  I am reversing the list of type variables
+  // here though the "right" fix is to reverse the code in TypedCopy.
+  // I don't understand that code, and this will work.
+  id   label = tid_typ(name);
+  kind k     = tyvars2kind(decl.all_tyvars, k4byte);
+  con  c     = tyvars2lam(decl.all_tyvars, 
+			  tyvars2exists(List::rev(decl.exist_tyvars), 
+					typ2con_roll(decl.defn)));
+  id   label_A = tid_name_unroll(name); // not really unrolled though
+  *(id,kind,con)         f_con   = ^(label, k, c);
+  *(id,kind,int_con_def) int_con = ^(label, k, ^int_con_def.ConcCon(c));
+  *(id,kind,int_con_def) abs_con = ^(label, k, ^int_con_def.AbsCon);
+  *(id,con)              abbrev  = ^(label_A, c);
+  Xarray::add(env.file_abbrevs, abbrev);
+  switch decl.scope {
+  case Public:   
+    Xarray::add(env.export_cons, int_con);
+    Xarray::add(env.file_cons,   f_con);
+  case Abstract: 
+    Xarray::add(env.export_cons, abs_con);
+    Xarray::add(env.file_cons,   f_con);
+  case Extern:   
+    Xarray::add(env.import_cons, int_con);
+  case Static:   
+    Xarray::add(env.file_cons,   f_con);
+  }
+}
+
+// Produce a static exception packet for an exception of voidType,
+// or a built-in exception. This is just an optimization.
+void trans_exn_packet(dg_env env, string name, 
+		      Popsyntax::scope sc, 
+		      id label, con pkt_con) {
+  // add static actual packet without indirection. KLUDGE!
+  _ label_p = tid_pkt(strconcat("?",name));
+  _ con_p   = exn_packed();
+  _ data_p  = 
+    ^data_block(label_p, 4, ^Opt(con_p),
+		^coerce(^list(^data_item.Dlabel(^coerce(label,null)),
+		^list(^data_item.D4bytes(
+					 ^coerce(0,^list(^coercion.Subsume(cbyte4()), null))),
+		null)),
+		^list(^coercion.Pack(^(cfield(pkt_con,^variance.ReadWrite), 
+				       con_p)),
+		null)));
+    // add global variable which points to the packet
+  _ con_ptr     =
+    cprod_b(^list(cfield(con_p,^variance.ReadWrite),null)); 
+  _ label_ptr   = tid_pkt(name);
+  _ int_def_ptr = ^(label_ptr, con_ptr);
+  _ data_ptr    = 
+    ^data_block(label_ptr, 4, ^Opt(con_ptr),
+		^coerce(^list(^data_item.Dlabel(^coerce(label_p,null)),null),
+		null));
+  switch sc {
+  case Public:   
+    Xarray::add(env.blocks,  data_p);
+    Xarray::add(env.exports, int_def_ptr); 
+    Xarray::add(env.blocks,  data_ptr);
+  case Abstract: BUG("trans_exn: abstract exception");
+  case Extern:   Xarray::add(env.imports, int_def_ptr);
+  case Static:   
+    Xarray::add(env.blocks, data_p);
+    Xarray::add(env.blocks, data_ptr);
+  }   
+}
+
+void trans_exn(dg_env env, id name, cf_exndecl decl) {
+  // first make the exception name
+  con        pkt_con = decl.typOpt == null ? 
+                            cbyte4() : typ2con_roll(decl.typOpt.v);
+  con        exn_con = exnname_con(cfield(pkt_con, ^variance.ReadWrite));
+       // fix exns to be strings!!!
+  id         label   = tid_exn(Id::id_to_string(decl.name)); 
+  *(id,con)  int_def = ^(label,exn_con);
+  data_block data    = 
+    ^data_block(label, 4, ^Opt(exn_con),
+	 ^coerce(^list(^data_item.D4bytes(
+			^coerce(0,^list(^coercion.Subsume(cbyte4()), null))),
+	         null),
+	 null));
+  switch decl.scope {
+  case Public:   Xarray::add(env.exports, int_def); 
+                 Xarray::add(env.blocks,  data);
+  case Abstract: BUG("trans_exn: abstract exception");
+  case Extern:   Xarray::add(env.imports, int_def);
+  case Static:   Xarray::add(env.blocks,  data);
+  }
+  // for a void exception, make a global variable which is the packet
+  // (we use indirection for uniformity with mutable global exn variables,
+  // but probably shouldn't (modify Popil to reflect this like with strings)
+
+  if (decl.typOpt == null) {
+    trans_exn_packet(env,Id::id_to_string(decl.name),
+		     decl.scope,label,pkt_con);
+
+  }
+}
+
+////////// abbreviations ///////////
+
+*(id,con) std_abbrevs[] = {:*(id,con)};
+
+// these are the ones that must be included in the interface since interfaces
+// can't import pop_runtimenew.tali.  They need not be included in the
+// implementation.
+*(id,con) get_std_abbrevs()[] {
+  if(size(std_abbrevs) > 0)
+    return std_abbrevs;
+  *(id,con) exn_abbrev = ^(exn_abbrev_var(), exn_packed_real());
+  std_abbrevs = new_array(7, exn_abbrev);
+
+  std_abbrevs[0] = exn_abbrev;
+  std_abbrevs[1] = ^(arr_abbrev_var(), array_packed_real());
+  std_abbrevs[2] = ^(str_abbrev_var(), string_packed_real());
+  std_abbrevs[3] = ^(outside_handler_abbrev_var(),outside_handler_real());
+  std_abbrevs[4] = ^(fun_abbrev_var(), function_type_real(^.NormFun));
+  std_abbrevs[5] = ^(fun_void_abbrev_var(), function_type_real(^.VoidFun));
+  std_abbrevs[6] = ^(fun_fp_abbrev_var(), function_type_real(^.FpFun));
+  // add more here!
+  return std_abbrevs;
+}
+
+
+

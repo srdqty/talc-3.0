@@ -1,0 +1,16 @@
+
+#include "core.h"
+open Core;
+
+void register_program(Cstring name, char compiler, char kind, Cstring params) {
+  ;
+}
+
+void log_timer(char c, unsigned int start_hi, unsigned int start_lo,
+	       unsigned int end_hi, unsigned int end_lo) {
+;
+}
+
+void output_timers(Cstring filename) {
+;
+}

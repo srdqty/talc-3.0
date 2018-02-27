@@ -1,0 +1,276 @@
+#include "top.h"
+#include "core.h"
+#include "math.h"
+
+open Core;
+open Math;
+
+prefix Matrix;
+open Matrix;
+
+struct matrix {
+  FP x0,x1,x2,x3;
+  FP y0,y1,y2,y3;
+  FP z0,z1,z2,z3;
+  FP a0,a1,a2,a3;
+}
+
+struct vector {
+  FP x0,x1,x2,x3;
+}
+
+matrix identity = ^matrix(1.0f, 0.0f, 0.0f, 0.0f,
+			  0.0f, 1.0f, 0.0f, 0.0f,
+			  0.0f, 0.0f, 1.0f, 0.0f,
+			  0.0f, 0.0f, 0.0f, 1.0f);
+
+static matrix create_zero() {
+  return ^matrix(0,0,0,0,
+		 0,0,0,0,
+		 0,0,0,0,
+		 0,0,0,0);
+}
+
+matrix translate(FP x, FP y, FP z) {
+  return ^matrix(1,0,0,-x,
+		 0,1,0,-y,
+		 0,0,1,-z,
+		 0,0,0,1);
+}
+
+matrix unscale(FP x, FP y, FP z) {
+  return ^matrix(x,0,0,0,
+		 0,y,0,0,
+		 0,0,z,0,
+		 0,0,0,1);
+}
+
+matrix scale(FP x, FP y, FP z) {
+  return unscale(1.0/x,1.0/y,1.0/z);
+}
+
+matrix unuscale(FP s) {
+  return unscale(s,s,s);
+}
+
+matrix uscale(FP s) {
+  return scale(s,s,s);
+}
+
+matrix rotatex(FP t) {
+  _ co = cos(t);
+  _ si = sin(t);
+  return ^matrix( 1,  0,  0,  0,
+		  0, co, si,  0,
+		  0,-si, co,  0,
+		  0,  0,  0,  1);
+}
+
+matrix rotatey(FP t) {
+  _ co = cos(t);
+  _ si = sin(t);
+  return ^matrix( co,  0,-si,  0,
+		   0,  1,  0,  0,
+		  si,  0, co,  0,
+		   0,  0,  0,  1);
+}
+
+matrix rotatez(FP t) {
+  _ co = cos(t);
+  _ si = sin(t);
+  return ^matrix( co, si,  0,  0,
+		 -si, co,  0,  0,
+		   0,  0,  1,  0,
+		   0,  0,  0,  1);
+}
+
+static FP get(matrix m, int i, int j) {
+  switch i {
+  case 0:
+    switch j {
+    case 0: return m.x0;
+    case 1: return m.x1;
+    case 2: return m.x2;
+    case 3: return m.x3;
+    default: raise(^Failure("Matrix error."));
+    }
+  case 1:
+    switch j {
+    case 0: return m.y0;
+    case 1: return m.y1;
+    case 2: return m.y2;
+    case 3: return m.y3;
+    default: raise(^Failure("Matrix error."));
+    }
+  case 2:
+    switch j {
+    case 0: return m.z0;
+    case 1: return m.z1;
+    case 2: return m.z2;
+    case 3: return m.z3;
+    default: raise(^Failure("Matrix error."));
+    }
+  case 3:
+    switch j {
+    case 0: return m.a0;
+    case 1: return m.a1;
+    case 2: return m.a2;
+    case 3: return m.a3;
+    default: raise(^Failure("Matrix error."));
+    }
+  default: raise(^Failure("Matrix error."));
+  }
+}
+
+static void set(matrix m, int i, int j, FP v) {
+  switch i {
+  case 0:
+    switch j {
+    case 0: m.x0 = v;
+    case 1: m.x1 = v;
+    case 2: m.x2 = v;
+    case 3: m.x3 = v;
+    default: raise(^Failure("Matrix error."));
+    }
+  case 1:
+    switch j {
+    case 0: m.y0 = v;
+    case 1: m.y1 = v;
+    case 2: m.y2 = v;
+    case 3: m.y3 = v;
+    default: raise(^Failure("Matrix error."));
+    }
+  case 2:
+    switch j {
+    case 0: m.z0 = v;
+    case 1: m.z1 = v;
+    case 2: m.z2 = v;
+    case 3: m.z3 = v;
+    default: raise(^Failure("Matrix error."));
+    }
+  case 3:
+    switch j {
+    case 0: m.a0 = v;
+    case 1: m.a1 = v;
+    case 2: m.a2 = v;
+    case 3: m.a3 = v;
+    default: raise(^Failure("Matrix error."));
+    }
+  default: raise(^Failure("Matrix error."));
+  }
+}
+
+void print(FILE f,matrix m) {
+  for(_ i=0; i<4; i++) {
+    for(_ j = 0; j<4; j++) {
+      fprint_fp(f,get(m,i,j));
+      fprintf(f," ");
+    }
+    fprintf(f,"\n");
+  }
+}
+
+void vprint(FILE f,vector v) {
+  fprintf(f,"[");
+  fprint_fp(f,v.x0);
+  fprintf(f," ");
+  fprint_fp(f,v.x1);
+  fprintf(f," ");
+  fprint_fp(f,v.x2);
+  fprintf(f," ");
+  fprint_fp(f,v.x3);
+  fprintf(f,"]");
+}
+
+// XXX - Should unroll this loop in the future. 
+matrix mul(matrix m1, matrix m2) {
+  _ m3 = create_zero();
+
+  for(_ i=0; i<4; i++) {
+    for(_ j=0; j<4; j++) {
+      FP s = 0.0;
+      for(_ k=0; k<4; k++) {
+	s = s + get(m1,i,k) * get(m2,k,j);
+      }
+      set(m3,i,j,s);
+    }
+  }
+
+  return m3;
+}
+
+matrix transpose(matrix m) {
+  matrix m2 = create_zero();
+
+  for(_ i=0; i<4; i++) {
+    for(_ j=0; j<4; j++) {
+      set(m2,i,j,get(m,j,i));
+    }
+  }
+
+  return m2;
+}
+
+void vmul(vector r, matrix m, vector v) {
+  _ x0 = v.x0, x1 = v.x1, x2 = v.x2, x3 = v.x3;
+  r.x0 = x0 * m.x0 + x1 * m.x1 + x2 * m.x2 + x3 * m.x3;
+  r.x1 = x0 * m.y0 + x1 * m.y1 + x2 * m.y2 + x3 * m.y3;
+  r.x2 = x0 * m.z0 + x1 * m.z1 + x2 * m.z2 + x3 * m.z3;
+  r.x3 = x0 * m.a0 + x1 * m.a1 + x2 * m.a2 + x3 * m.a3;
+}
+
+vector add_scaled(vector x, FP t, vector v) {
+  return ^vector { x0 = x.x0 + t * v.x0,
+		   x1 = x.x1 + t * v.x1,
+		   x2 = x.x2 + t * v.x2,
+		   x3 = x.x3 + t * v.x3};
+}
+
+void imp_add_scaled(vector x, FP t, vector v) {
+  x.x0 += t * v.x0;
+  x.x1 += t * v.x1;
+  x.x2 += t * v.x2;
+  x.x3 += t * v.x3;
+}
+
+vector add(vector x, vector y) {
+  return ^vector { x0 = x.x0 + y.x0,
+		   x1 = x.x1 + y.x1,
+		   x2 = x.x2 + y.x2,
+		   x3 = x.x3 + y.x3};
+}
+
+void sub(vector r, vector x, vector y) {
+  r.x0 = x.x0 - y.x0;
+  r.x1 = x.x1 - y.x1;
+  r.x2 = x.x2 - y.x2;
+  r.x3 = x.x3 - y.x3;
+}
+
+FP dot(vector x, vector y) {
+  return (x.x0 * y.x0 + 
+	  x.x1 * y.x1 + 
+	  x.x2 * y.x2 + 
+	  x.x3 * y.x3);
+}
+
+FP square(vector x) {
+  return (x.x0 * x.x0 + 
+	  x.x1 * x.x1 +
+	  x.x2 * x.x2 +
+	  x.x3 * x.x3);
+}
+
+vector normalize(vector r, vector x) {
+  _ nx = sqrt(square(x));
+  r.x0 = x.x0 / nx;
+  r.x1 = x.x1 / nx;
+  r.x2 = x.x2 / nx;
+  r.x3 = x.x3 / nx;
+  return r;
+}
+
+
+vector neg(vector x) {
+  return ^vector(-x.x0, -x.x1, -x.x2, -x.x3);
+}

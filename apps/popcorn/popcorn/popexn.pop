@@ -1,0 +1,443 @@
+
+/*
+Simple transformation that rewrites exceptions as follows:
+
+raise Foo(e) ---> raise Foo(^(e,loc))  -- where loc = location of raise, and 
+                                          the name of the exception..
+case Foo(s): stmt ---> case Foo(newId): { _ s = newId.1; stmt}
+exception Foo(typ) --> exception Foo(*(typ,string))
+
+With this rewriting on, uncaught exceptions can now print out their own information.
+
+Second transformation: records a stack trace
+
+ Each function f emits a string containing its name f_name
+ In each file declare 
+      - extern list type (they might not include list.h)
+      - extern <string>list call_stack
+      - extern <string>list current_call_stack
+      - extern exn current_exn
+      - extern exn dummy_exn
+INVARIANT: call_stack is accurate except on entry to a handler.
+
+Use cstk to abbreviate call_stack
+ On entry to function f,
+    <string>list global_cstk = ^list(f_name,global_cstk);
+    local_cstk=global_cstk;
+    current_exn = dummy_exn; // Optional: skip for now
+
+ Function calls f(e1,...,en) become  
+   (x=f(e1,...,en), global_cstk=local_cstk,x)
+
+On entry to a try handle,
+   global_cstk = local_cstk;
+
+   raise e becomes 
+          x = e,
+	  (current_cstk= (current_exn==x) ? current_cstk : local_cstk, 
+	  current_exn = x,
+	  raise x;
+
+
+ */
+
+#include "core.h"
+#include "list.h"
+#include "popsyntax.h"
+#include "poptypeenv.h"
+
+prefix PopExn {
+open PopExn;
+open Popsyntax;
+open Core;
+open List;
+
+// Utility functions
+
+ static string gen_name(string base) {
+   return strconcat("__zzzz_",base); // reserve prefix __zzzz_ for internal use.
+ }
+ static exp varX(string name, <typ>Opt t,Gcdfec::seg loc) {
+   return ^exp(t,^raw_exp.Var(name),null,loc);
+ }
+
+ static exp assignX(string lhs_var, <typ>Opt t, exp rhs, Gcdfec::seg loc) {
+   _ r_e = ^raw_exp.AssignOp(^(varX(lhs_var,t,loc),null,rhs));
+   return  ^exp(rhs.typ,r_e,^list(lhs_var,rhs.assigned_to),loc);
+ }
+
+ static stmt assignS(string lhs_var, <typ>Opt t, exp rhs, Gcdfec::seg loc) {
+   _ e = assignX(lhs_var,t,rhs,loc);
+   return ^stmt(^raw_stmt.Exp(e),loc);
+ }
+
+ static exp equalX(exp lhs, exp rhs, Gcdfec::seg loc) {
+   return ^exp(^Opt(^typ.BooleanType),
+   ^raw_exp.Primop(^(^primop.Eq,^list(lhs,^list(rhs,null)))),
+   null,
+   loc);
+ }
+
+//Utilities for rewriting Exceptions
+ static <exp>Opt rewrite_carried_value(<exp>Opt v, exp info) {
+
+   _ e = ((v==null) ? ^exp(^Opt(^typ.IntType(^(true,^size_of.B4))),
+                           ^raw_exp.Const(^cnst.Int(0xFEED)),
+                           null,info.loc)  
+	  : v.v);
+   if(e.typ==null) raise Impossible("Unexpected null.");
+   if(info.typ==null) raise Impossible("Unexpected null2.");
+
+   _ to = ^Opt(^typ.TupleType(^List::list(e.typ.v,^List::list(info.typ.v,null))));
+   
+   _ new_raw = ^raw_exp.NewTuple(^List::list(e,^List::list(info,null)));
+
+   return ^Opt(^exp(to,new_raw,e.assigned_to,e.loc));
+ }
+
+ static typ rewrite_carried_typ(typ t) {
+   
+   _ t1;
+   switch t {
+   case Evar *(c,to,_): raise Impossible("Unexpected evar.");
+   case VoidType: t1 = ^typ.IntType(^(true,^size_of.B4));
+   default: t1 = t;
+   }
+   
+   return ^typ.TupleType(^List::list(t1,
+				     ^List::list(^typ.StringType,
+				     null)));
+ }
+
+ static exp extract_original_value(string v, typ t, Gcdfec::seg loc) {
+   // Assume t is not void!
+
+   _ t2 = rewrite_carried_typ(t);
+
+   _ v_exp = ^exp(^Opt(t2),^raw_exp.Var(v),null,loc);
+
+   _ raw = ^raw_exp.TupleMember(^(v_exp,1));
+   
+   return ^exp(^Opt(t),raw,null,loc);
+ }
+
+ static void rewrite_env_exn(string unused,*(typ,scope,bool) ex) {
+   ex.1 = rewrite_carried_typ(ex.1);
+ }
+
+ // Utilities for producing stack traces.
+
+ // Use cstk as an abbreviation for call_stack throughout.
+
+ //Variables the transformation uses. 
+ string global_cstk_var  = "__zzzz_cstk";  // extern string_list
+ string local_cstk_var   = "__zzzz_lcstk"; // local to function <string>list
+ string curr_exn_var     = "__zzzz_cexn";  // extern exn
+ string dummy_exn_var    = "__zzzz_dexn";  // extern exn
+ string curr_cstk_var    = "__zzzz_ccstk"; // extern string_list
+ string list_var         = "__zzzz_slist"; // extern type declaration.
+
+ static top_decl extern_decl(string name, typ t, Gcdfec::seg loc) {
+   return ^top_decl(^raw_top_decl.ExternVal(^(name,t)),loc);
+ }
+
+ static top_decl fn_name_decl(string var_name, string fn_name,Gcdfec::seg loc) {
+   _ raw_e = ^raw_exp.Const(^cnst.String(fn_name));
+   _ e = ^exp(^Opt(^typ.StringType),raw_e,null,loc);
+
+   _ raw_decl = ^raw_top_decl.GlobalDecl(^(^scope.Public,var_name,
+   ^typ.StringType, ^Opt(e)));
+
+   return ^top_decl(raw_decl, loc);
+ }
+
+ static <typ>Opt list_type;
+
+ static <top_decl>list init_global_vars(Poptypeenv::global_env genv) {
+
+   _ loc = Gcdfec::seg_of_abs(0,0);
+
+   list_type  = ^Opt(^typ.NamedType(^(list_var,null))); // string list.
+
+   genv.globals = Dict::insert(genv.globals,global_cstk_var,^(list_type.v,true));
+   _ d1 = ^top_decl(^raw_top_decl.ExternVal(^(global_cstk_var,list_type.v)),loc);
+   genv.globals = Dict::insert(genv.globals,curr_cstk_var,^(list_type.v,true));
+   _ d2 = ^top_decl(^raw_top_decl.ExternVal(^(curr_cstk_var,list_type.v)),loc);
+   genv.globals = Dict::insert(genv.globals,curr_exn_var ,^(^typ.ExnType,true));
+   _ d3 = ^top_decl(^raw_top_decl.ExternVal(^(curr_exn_var,^typ.ExnType)),loc);
+   genv.globals = Dict::insert(genv.globals,dummy_exn_var,^(^typ.ExnType,true));
+   _ d4 = ^top_decl(^raw_top_decl.ExternVal(^(dummy_exn_var,^typ.ExnType)),loc);
+
+   _ sd = ^structdecl(^scope.Extern,
+                      list_var,null,true,
+                      ^list(^("hd",^capability.ReadWrite,^typ.StringType),
+		      ^list(^("tl",^capability.ReadWrite,list_type.v),null)));
+
+   genv.structs = Dict::insert(genv.structs,list_var,
+			       ^(sd,^Poptypeenv::type_use.Destructed));
+   
+   return ^list(d1,^list(d2,^list(d3,^list(d4,null))));
+
+ }
+
+ static exp global_cstkX(Gcdfec::seg loc) {
+   return varX(global_cstk_var,list_type,loc);
+ }
+
+ static exp list_cons(string fn_name, exp tail,Gcdfec::seg loc) {
+   _ nm = varX(gen_name(fn_name),^Opt(^typ.StringType),loc);
+   _r_e = ^raw_exp.NewStruct(^(list_var,null,
+			       ^list(^(^Opt("hd"),nm),
+			       ^list(^(^Opt("tl"),tail),null))));
+   return ^exp(^Opt(list_type.v),r_e,null,loc); 
+ }
+
+
+ //Declaration of temporaries we float to the top.
+ static <*(var,typ)>list temporaries = null;
+
+ static string decl_temp(typ t) {
+   _ nm = gen_name("tmp");
+   temporaries = ^list(^(nm,t),temporaries);
+   return nm;
+ }
+
+ static void rewrite_fn_entry(fndecl fd, Gcdfec::seg loc) {
+   _ s1 = assignS(global_cstk_var,list_type,
+		  list_cons(fd.name,global_cstkX(loc),loc),loc);
+   _ s2 = ^stmt(^raw_stmt.Decl(^(local_cstk_var,
+				 list_type.v,
+				 ^Opt(global_cstkX(loc)),fd.body)),
+                 loc);
+
+   for(_ x = temporaries; x!=null; x=x.tl) { // float temporaries.
+     _ d = x.hd;
+     s2 = ^stmt(^raw_stmt.Decl(^(d.1,d.2,null,s2)),loc);
+   }
+
+   fd.body = ^stmt(^raw_stmt.Seq(^(s1,s2)),loc);
+ }
+
+ static void rewrite_fn_call(exp call) {
+   _ t = call.typ;
+   _ loc = call.loc;
+
+   _ copy_call = ^exp(call.typ,call.raw_exp,call.assigned_to,call.loc);
+
+   _ e2 = assignX(global_cstk_var,list_type,varX(local_cstk_var,list_type,loc),
+		  loc);
+ 
+   _ r_e;
+   switch t.v {
+   case VoidType: 
+     r_e = ^raw_exp.SeqExp(^list(copy_call,
+				 ^list(e2,null)));
+     call.typ = list_type;;
+
+   default:
+     _ temp_var = decl_temp(t.v);
+     _ e1 = assignX(temp_var,t,copy_call,loc);
+     _ e3 = varX(temp_var,t,loc);
+     r_e = ^raw_exp.SeqExp(^list(e1,^list(e2,^list(e3,null))));
+   }
+
+   call.raw_exp = r_e;
+   // XXX does assigned_to need to be updated?
+ }
+ 
+ static void rewrite_handler(stmt handler) {
+   _ raw_handler = handler.raw_stmt;
+   _ loc = handler.loc;
+   _ s = assignS(global_cstk_var,list_type,varX(local_cstk_var,list_type,loc),
+		 loc);
+
+   handler.raw_stmt = ^raw_stmt.Seq(^(s,^stmt(raw_handler,loc)));
+
+ }
+
+ static void rewrite_raise(exp rs) {
+
+   _ loc = rs.loc;
+   _ tmp = decl_temp(^typ.ExnType);
+   _ exn_exp = rs.raw_exp.Raise;
+
+   _ exn_type = ^Opt(^typ.ExnType);
+
+   _ e1 = assignX(tmp,exn_type,exn_exp,loc);
+   _ e2_test = equalX(varX(curr_exn_var,exn_type,loc),
+		      varX(tmp,exn_type,loc),loc);
+   _ e2_rhs = ^exp(list_type,
+		   ^raw_exp.Conditional(^(e2_test,
+					  varX(curr_cstk_var,list_type,loc),
+					  varX(local_cstk_var,list_type,loc))),
+		   null, // XXX - wrong!
+		   loc);
+   _ e2 = assignX(curr_cstk_var,list_type,e2_rhs,loc);
+   _ e3 = assignX(curr_exn_var,exn_type,varX(tmp,exn_type,loc),loc);
+   _ e4 = ^exp(rs.typ,^raw_exp.Raise(varX(tmp,exn_type,loc)),null,loc);
+
+   rs.raw_exp = ^raw_exp.SeqExp( ^list(e1,
+				       ^list(e2,
+					     ^list(e3,
+						   ^list(e4,null)))));
+ }
+
+// Actual Transformation functions
+ static <string>Opt r_top_decl(top_decl t) {
+   switch t.raw_top_decl {
+   case FunDecl(f): r_fndecl(f); return ^Opt(f.name); 
+   case ExceptionDecl(e): // var,scope,type
+     e.3 = rewrite_carried_typ(e.3);
+   case GlobalDecl(g):
+     if(g.4 != null) r_exp(g.4.v);
+   default: ; // Do nothing.
+   }
+
+   return null;
+ }
+
+ static void r_fndecl(fndecl f) {
+   r_stmt(f.body);
+   rewrite_fn_entry(f,f.body.loc);
+ }
+
+ static void r_stmt(stmt s) {
+   switch s.raw_stmt {
+   case Exp(e): r_exp(e);
+   case Seq *(s1,s2): r_stmt(s1); r_stmt(s2);
+   case Return(eo): if(eo!=null) r_exp(eo.v);
+   case IfThenElse *(e,s1,s2): r_exp(e); r_stmt(s1); r_stmt(s2);
+   case While *(e,s): r_exp(e); r_stmt(s);
+   case For *(e1,e2,e3,s): r_exp(e1); r_exp(e2); r_exp(e3); r_stmt(s);
+   case IntSwitch(sw): r_constswitch(sw);
+   case CharSwitch(sw): r_constswitch(sw);
+   case UnionSwitch *(e,arms,def):
+     r_exp(e);
+     for(_ x=arms; x!=null; x=x.tl) {
+       r_stmt(x.hd.body);
+     }
+     if(def!=null) r_stmt(def.v);
+   case ExnSwitch(sw): r_exnswitch(sw);
+   case Decl *(_,_,eo,s): 
+     if(eo!=null) r_exp(eo.v);
+     r_stmt(s);
+   case Cut(s): r_stmt(s);
+   case Splice(s): r_stmt(s);
+   case Label *(_,s): r_stmt(s);
+   case Do *(s,e): r_stmt(s); r_exp(e);
+   case TryHandle *(s1,_,s2): 
+     r_stmt(s1); r_stmt(s2);
+     rewrite_handler(s2);
+   case TryCatchFinally(_): raise Impossible("Unexpected finally clause.");
+   case With *(_,_,_,e,s): r_exp(e); r_stmt(s);
+   default: ; // Do nothing.
+   }
+ }
+
+ static void r_constswitch<a>( *(exp,<*(a,stmt)>List::list,stmt) sw) {
+   r_exp(sw.1);
+   r_stmt(sw.3);
+   for(_ x = sw.2; x!=null;x=x.tl)
+     r_stmt(x.hd.2);
+ }
+
+ static void r_exnswitch(*(exp,<switch_arm>List::list,<stmt>Opt) sw) {
+   r_exp(sw.1);
+   if(sw.3!=null) r_stmt(sw.3.v);
+
+   for(_ x = sw.2; x!=null; x=x.tl) {
+     _ arm = x.hd;
+     r_stmt(arm.body);
+
+     switch(arm.pat) {
+     case None: 
+       _ t = rewrite_carried_typ(^typ.VoidType);
+       arm.pat = ^pattern.Prim(^prim_pattern.Wild(^(t)));;
+     case Prim(pp): 
+       switch pp {
+       case Wild(t):
+	 _ p = ^prim_pattern.Wild(^(rewrite_carried_typ(t.1)));
+	 arm.pat = ^pattern.Prim(p);
+       case Var *(v,t):
+	 _ p = ^prim_pattern.Var(^(v,rewrite_carried_typ(t)));
+	 _ b = arm.body;
+	 _ e = extract_original_value(v,t,b.loc);
+	 arm.pat = ^pattern.Prim(p);
+	 arm.body = ^stmt(^raw_stmt.Decl(^(v,t,^Opt(e),b)), b.loc);
+       }
+     case Tuple(_): raise Impossible("Tuple pattern unimplemented.");
+     }
+   }
+ }
+
+ static void r_exp(exp e) {
+     switch e.raw_exp {
+     case ConstArray *(es,_): r_exps(es);
+     case Primop *(_,es): r_exps(es);
+     case Conditional *(e1,e2,e3): r_exp(e1); r_exp(e2); r_exp(e3);
+     case AssignOp *(e1,_,e2): r_exp(e1); r_exp(e2);
+     case FunCall *(e1,_,es): 
+       r_exp(e1); r_exps(es);
+       rewrite_fn_call(e);
+     case TypInst *(e1,_): r_exp(e1);
+     case NewStruct *(_,_,e2s):
+       for(_ x = e2s; x!=null; x=x.tl)
+	 r_exp(x.hd.2);
+     case StructMember *(e,_): r_exp(e);
+     case NewUnion *(_,_,_,eo):
+       if(eo!=null) r_exp(eo.v);
+     case UnionMember *(e,_): r_exp(e);
+     case NewTuple(es): r_exps(es);
+     case TupleMember *(e,_): r_exp(e);
+     case Subscript *(e1,e2): r_exp(e1); r_exp(e2);
+     case Codegen(f): r_fndecl(f);
+     case Fill(e): r_exp(e);
+     case NewExn *(v,eo): // All the work happens here.
+       if(eo!=null) r_exp(eo.v);
+
+       string loc = Gcdfec::string_of_seg(e.loc);
+
+       string info = sprintf("Exception %s from %s", var2string(v), loc);
+
+       _ info_raw_exp = ^raw_exp.Const(^cnst.String(info));
+       _ info_exp = ^exp(^Opt(^typ.StringType),info_raw_exp,null,e.loc);
+       
+       _ new_eo = rewrite_carried_value(eo,info_exp);
+       
+       e.raw_exp = ^raw_exp.NewExn(^(v,new_eo));
+     case Raise(e1): r_exp(e1); rewrite_raise(e);
+     case SeqExp(es): r_exps(es);
+     case Cast *(_,e): r_exp(e);
+     case NewAbstype *(_,_,_,e): r_exp(e);
+     case Fun(f): r_fndecl(f);
+     default: ;
+     }
+ }
+
+ static void r_exps(<exp>List::list es) {
+   for(_ x=es;x!=null;x=x.tl)
+     r_exp(x.hd);
+ }
+
+ // Entry Point
+ <top_decl>list rewrite(Poptypeenv::global_env genv, <top_decl>List::list prog) {
+
+   _ new_decls = init_global_vars(genv);
+
+   for(_ x = prog; x!=null;x=x.tl) {
+     _ nm = r_top_decl(x.hd);
+     if(nm!=null) {
+       _ nm_var = gen_name(nm.v);
+       new_decls = ^list(fn_name_decl(nm_var,nm.v,x.hd.loc),new_decls);
+
+       genv.globals = Dict::insert(genv.globals,nm_var,^(^typ.StringType,true));
+     }
+   }
+   
+   Dict::iter(rewrite_env_exn, genv.exceptions);
+
+   return List::append(new_decls,prog);
+ }
+
+} // Close PopExn
+

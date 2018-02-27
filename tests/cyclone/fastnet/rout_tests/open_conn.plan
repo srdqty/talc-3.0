@@ -1,0 +1,19 @@
+svc openPort : int -> port
+svc getImplicitPort : void -> port
+svc deliver : (port,'a) -> unit
+
+(* This should be evaluated remotely on some host.  The result is that the
+   port is delivered to the application at the sender on success, or
+   the delivery of the OpenFailed exception on failure *)
+
+fun open(num,srcPort) =
+  try 
+    OnRemote(|deliver|(srcPort,openPort(num)),
+             getSource(),getRB(),defaultRoute)
+  handle OpenFailed => 
+    OnRemote(|deliver|(srcPort,OpenFailed),
+             getSource(),getRB(),defaultRoute)
+
+(* Used to start things off locally, if necessary *)
+fun open_remote(dest,num) =
+  OnRemote(|open|(num,getImplicitPort()),dest,getRB(),defaultRoute)

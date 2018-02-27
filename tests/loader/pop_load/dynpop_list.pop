@@ -1,0 +1,181 @@
+#include "core.h"
+#include "filename.h"
+#include "buffer.h"
+#include "list.h"
+
+extern void exit(int);
+extern int tal_load (string, string, string);
+extern <int>Core::Opt cast (string t1, string t2, int x);
+extern void init (int lookup_symbol<a> (string, string), void add_symbol<a>(string, string, int));
+
+//
+// Doestn't really matter what this is:
+struct entry {
+   string name;
+   string rep;
+   int value;
+}
+<entry>List::list symbol_table;
+
+/* dlopen can raise Core::FileOpenError(string)         */
+exception FailsTypeCheck;		/* the file is not well formed */ 
+exception SymbolNotFound(string);        /* dlsym can't find the symbol in the module */
+exception WrongType(string);                     /* type of symbol is not the expected type */                  
+
+struct handle_t {
+  <entry>List::list start;
+  <entry>List::list stop;
+}
+
+void dlinit (int init(int l<a>(string,string), 
+	     void a<a>(string,string,int)))
+{
+  init(lookup_symbol, add_symbol);
+}
+
+/*
+  Invalidate the handle and remove the entries from the
+  symbol table. This is kind hacky as we have to find the
+  entry in the table before the one pointed to by start.   
+  */
+void dlclose(handle_t h)
+{
+  <entry>List::list here = symbol_table;
+  <entry>List::list next;
+  /* make sure its ok to close the same handle twice */
+  if (h.start == null) return;
+  
+  try {
+    if (here == h.start)
+      symbol_table = h.stop;
+    else {
+	next = List::tl(symbol_table);
+	while (next != h.start) {
+	  here = next;
+	  next = List::tl(next);
+	}
+	here.tl = h.stop;
+    }
+  } handle y {
+    Core::print_string ("Compiler bug detected in dlclose");
+    exit(1);
+  }
+  /* Cause future dlsyms to fail */
+  h.start = null;
+  h.stop = null;
+  return;
+}
+
+handle_t dlopen (string name) 
+{ 
+  int x;
+  handle_t h = ^handle_t(null,null);
+  /* use filesystem to find the files */
+  string talname = Core::strconcat(name, ".tal");
+  string toname = Core::strconcat(name, ".to");
+  FILE talfile = Core::file_open (talname, "rb");
+  FILE tofile = Core::file_open (toname, "rb");
+  /* read talfile */
+  int tallen = Core::file_length(talname);
+  string talbuf = Core::new_string(tallen);
+  int tolen = Core::file_length(toname);
+  string tobuf = Core::new_string(tolen);
+  
+  f_string_read(talfile, talbuf, 0, tallen);
+  f_string_read(tofile, tobuf, 0, tolen);
+  Core::file_close (talfile);
+  Core::file_close (tofile);
+  
+  h.stop = symbol_table;
+  x = tal_load (talbuf, tobuf, "inittype");
+  if (x == 0) {
+    raise FailsTypeCheck();
+  }
+  init(lookup_symbol, add_symbol);
+  h.start = symbol_table;
+  return h;
+}
+
+/* helper function for dlsym, lookup_symbol */
+int find <a> (<entry>List::list start,
+              <entry>List::list stop,
+              string name, string typ) 
+{
+  <entry>List::list here = start;
+  <int>Core::Opt ans;
+  while (here != stop) {
+    if (Core::strcmp (here.hd.name, name) == 0) {
+      ans = cast (here.hd.rep, typ, here.hd.value);
+      if (ans == null) 	
+	raise WrongType(name);
+      else
+	return ans.v;
+    } else {
+      here = here.tl;
+    }
+  }
+  raise SymbolNotFound(name);
+}
+
+/*
+int dlsym<a> (handle_t x, string name, string typ) {
+  return find (x.start, x.stop, name, typ);
+}
+*/
+
+/* to be called during init.... */ 
+void add_symbol<a> (string name, string typ, int val)
+{
+  symbol_table = List::cons(^entry(name, typ, val), symbol_table);
+  return;
+}
+
+int lookup_symbol<a> (string name, string typ) 
+{
+  return find (symbol_table, null, name, typ);
+}
+
+/*
+void update_symbol<a>(string name, string typ, int val){
+  entry ans = find (symbol_table, null, name, typ);
+  ans.3 = val;
+  return;
+}
+*/
+
+void print_table () 
+{
+  Core::print_string ("Symbol table contains\n");
+  <entry>List::list here = symbol_table;
+  try {
+    while (true) {
+      string s = List::hd(here).name;
+      Core::print_string (s); Core::print_string ("\n");
+      here = List::tl(here);
+    }
+  }
+  handle y {
+    return;
+  }
+  return;
+}
+
+
+void print_handle_table (handle_t t) 
+{
+  Core::print_string ("Handle symbol table contains:\n");
+  <entry>List::list here = t.start;
+  try {
+    while (here != t.stop) {
+      string s = List::hd(here).name;
+      Core::print_string (s); 
+      Core::print_string ("\n");
+      here = List::tl(here);
+    }
+  }
+  handle y {
+    return;
+  }
+  return;
+}
+

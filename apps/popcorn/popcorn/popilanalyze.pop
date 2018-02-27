@@ -1,0 +1,1870 @@
+// Popilanalyze
+// The recipes for dominators, liveness, null check elim, du-chains, etc.
+
+// Note: Unreachable code (such as handlers that can't possibly catch anything)
+// may be assigned strange values, but it shouldn't affect the loop information
+// for reachable blocks.
+
+#include "core.h"
+#include "xarray.h"
+#include "dict.h"
+#include "set.h"
+#include "id.h"
+#include "bitvec.h"
+#include "popil.h"
+#include "poptalenv.h"
+#include "poprtcg.h"
+#include "worklist.h"
+#include "popilprint.h"
+#include "arg.h"
+
+extern Arg::bool_ref Popcorn::unsafe_arrays;
+
+open Core;
+open Popil;
+open Poptalenv;
+
+prefix Popilanalyze;
+open   Popilanalyze;
+
+#define list   List::list
+#define dict   Dict::dict
+#define xarray Xarray::xarray
+
+#define blockName int
+#define instName  int
+#define varName   int
+#define placeName int
+#define webName   int
+
+
+FILE ilf = null; // set in Popcorn, used for debugging info
+
+////////////////////////// Utilities //////////////////////////////////
+struct <a>use_def_env {
+  a env;
+  cf_operand use(a,cf_operand);
+  cf_operand def(a,cf_operand);
+  bool def_first;
+}
+
+// For all instructions, pick out the operands and call use()/def()
+void instruction_use_def<a>(<a>use_def_env ude, cf_instruction inst) {
+  a env = ude.env;
+  cf_operand use(a, cf_operand) = ude.use;
+  cf_operand def(a, cf_operand) = ude.def;
+  bool def_first = ude.def_first;
+
+  switch inst {
+  case Nop: ;
+  case Nullop *(_,o): def(env,o);
+  case Copy(x):
+    if(def_first) x.1 = def(env, x.1);
+    x.2 = use(env, x.2);
+    if(!def_first) x.1 = def(env, x.1);
+  case Unop(x): 
+    if(def_first) x.2 = def(env, x.2);
+    x.3 = use(env, x.3);
+    if(!def_first) x.2 = def(env, x.2);
+  case Binop(x): 
+    if(def_first) x.2 = def(env, x.2);
+    x.3 = use(env, x.3); x.4 = use(env, x.4);
+    if(!def_first) x.2 = def(env, x.2);
+  case TypedCopy(x): 
+    if(def_first) x.1 = def(env, x.1);
+    x.2 = use(env, x.2);
+    if(!def_first) x.1 = def(env, x.1);
+  case SelectField(x): 
+    if(def_first) x.2 = def(env, x.2);
+    x.3 = use(env, x.3);
+    if(!def_first) x.2 = def(env, x.2);
+  case AssignField(x): 
+    x.2 = use(env, x.2); x.3 = use(env, x.3);
+  case ArrayCheck(x):
+    if(!Popcorn::unsafe_arrays.v) {
+      x.1 = use(env, x.1); x.2 = use(env,x.2);
+    }
+  case CArrayCheck(x):
+    if(!Popcorn::unsafe_arrays.v) {
+      x.1 = use(env,x.1);
+    }
+  case ArraySub(x): 
+    if(def_first) x.1 = def(env, x.1);
+    x.2 = use(env, x.2); x.3 = use(env, x.3); 
+    if(!def_first) x.1 = def(env, x.1);
+  case ArrayUpd(x):  
+    x.1 = use(env, x.1); x.2 = use(env, x.2); 
+    x.3 = use(env, x.3);
+  case New(x): x = def(env, x);
+  case Rdtsc(x): x.1 = def(env,x.1); x.2 = def(env,x.2);
+    // Cyclone +
+  case Start(x): x = def(env, x);
+  case Dump *(o1,o2,_):
+    if(def_first) o2 = def(env, o2);
+    o1 = use(env, o1);
+    if(!def_first) o2 = def(env, o2);
+  case Hole *(_,o):
+    o = def(env, o);
+  case Fill *(o1,o2,_,o3): 
+    o1 = use(env, o1); o2 = use(env, o2);
+    o3 = use(env, o3);
+  case FillJmp *(o1,o2,_,o3,_):
+    o1 = use(env, o1); o2 = use(env, o2); 
+    o3 = use(env, o3);
+  case End *(o1,o2):
+    if(def_first)  o1 = def(env, o1);
+    o2 = use(env, o2);
+    if(!def_first) o1 = def(env, o1);
+    // Cyclone -
+  }
+}
+ 
+//IMPORTANT NOTE: This will NOT call def on the result of the Call since
+// this is always odd in the presence of exceptions.  It's the CALLER'S
+// RESPONSIBILITY to handle the result of a Call correctly!
+// (Some day if we have a better grasp of exceptions we may abstract something
+//  useful.)
+void transfer_use_def<a>(<a>use_def_env ude, cf_transfer trans) {
+  a    env               = ude.env;
+  cf_operand use(a,cf_operand) = ude.use;
+  switch trans {
+  case Abort:         ;
+  case Uncond(x):     ;
+  case Raise(x):
+    x = use(env, x);
+  case Retn(x): 
+    if(x!=null) x.v = use(env, x.v);
+  case Call(x):       
+    x.2 = use(env, x.2); 
+    x.4 = List::map_c(use, env, x.4); // SEE NOTE!
+  case TailCall(x):
+    x.1 = use(env,x.1);
+    x.3 = List::map_c(use,env,x.3);
+  case Cond(x):       
+    x.3 = use(env, x.3); 
+    x.4 = use(env, x.4);
+  case NumSwitch(x):  
+    x.1 = use(env, x.1);
+  case SumSwitch(x):  
+    x.1 = use(env, x.1);
+  case ExnSwitch(x):  
+    x.1 = use(env, x.1);
+  case NullCheck(x):  
+    x.1 = use(env, x.1);
+  case UnionCheck(x): 
+    x.1 = use(env, x.1);
+  case NullBranch(x): 
+    x.1 = use(env, x.1);
+  }
+}
+
+static cf_operand ignore_use<a>(a env, cf_operand op) { return op; }
+static cf_operand ignore_def<a>(a env, cf_operand op) { return op; }
+
+
+////////////////////// Small transformations //////////////////////////////
+
+// block smashing -- an unconditional jump to a single-predecessor block is
+// replaced by one larger block.  This should have no effect on the target,
+// but should speed up the rest of compilation.
+// note that we make a new blocks field and invalidate df_order
+// note that it's important to go in reverse depth-first order
+// note also eliminates dead blocks, necessary due to renumbering
+void smash_blocks(cf_function fn) {
+  <cf_block>xarray old_blks      = fn.blocks;
+  int              df_order[]    = get_df_order(fn);
+  int              num_oldblks   = Xarray::length(old_blks);
+  int              num_dfblks    = size(df_order);
+  cf_block         entry         = fn.entry;
+  bool             any_removed   = num_dfblks < num_oldblks;
+  // -1 means no continuation, -2 means dead, -3 means already smashed
+  int              continue_with[] = new_array(num_oldblks,-2);
+  for(int i=0; i < num_dfblks; ++i) { 
+    int next_num = df_order[i];
+    cf_block next = Xarray::get(old_blks,next_num);
+    switch next.trans {
+    case Uncond(b_dest):
+      switch b_dest {
+      case Known(b):
+	if(b != entry && 
+	   Xarray::length(b.pred)==1 && 
+	   ((b.handler==null && next.handler==null)
+	    || (b.handler!=null && next.handler!=null 
+		&& b.handler.v==next.handler.v))) {
+	  if(b.template==null || !Set::member(b.template.labels,b)) {
+	    continue_with[next_num] = b.num;
+	    any_removed = true;
+	    continue;
+	  }
+	}
+      default: ; // Cyclone: Don't smash fallthrus or intra-template jumps.
+      }
+    default: ;
+    }
+    continue_with[next_num] = -1;
+  }
+
+  if(any_removed) {
+    <cf_block>xarray new_blks = Xarray::create(num_dfblks, entry);
+    <cf_block,cf_block>dict now_from = Dict::empty(cf_block_cmp);
+    for(int i=0; i < num_dfblks; ++i) {
+      int next = df_order[i];
+      int cw = continue_with[next];
+      cf_block i_blk = Xarray::get(old_blks,next);
+      if(cw <= -2) {
+	if(cw==-2) Poprtcg::remove_block(i_blk); // dead;
+	continue;
+      }
+
+      Xarray::add(new_blks,i_blk);
+      if(cw >= 0) {
+	<cf_instruction>xarray i_inst = i_blk.insts;
+	cf_block               cw_blk = entry;
+	while(cw >= 0) {
+	  cw_blk = Xarray::get(old_blks,cw);
+	  Xarray::imp_append(i_inst,cw_blk.insts);
+	  i_blk.succ  = cw_blk.succ;
+	  i_blk.trans = cw_blk.trans;
+	  int old_cw = cw;
+	  cw = continue_with[cw];
+	  continue_with[old_cw] = -3;
+	  Poprtcg::merge_block(i_blk,cw_blk);
+	}
+	now_from = Dict::insert(now_from, cw_blk, i_blk);
+      }
+    }	
+    fn.blocks   = new_blks;
+    fn.df_order = null;
+    // now we have to update the pred information, removing any pointers
+    // to dead blocks.
+    int num_newblks = Xarray::length(new_blks);
+    for(int i=0; i < num_newblks; ++i) 
+      Xarray::reuse(Xarray::get(new_blks,i).pred);
+    for(int i=0; i < num_newblks; ++i) {
+      cf_block         next      = Xarray::get(new_blks,i);
+      <cf_block>xarray succs     = next.succ;
+      int              num_succs = Xarray::length(succs);
+      for(int j=0; j < num_succs; ++j)
+	Xarray::add(Xarray::get(succs,j).pred, next);
+    }
+    // now we renumber the blocks -- have to do this last or the now_from
+    //   dict is screwed up
+    for(int i=0; i < num_newblks; ++i)
+      Xarray::get(new_blks,i).num = i;
+  }
+}
+
+// no sense in keeping a var refined if it isn't live.  This should
+// help compilation time.
+void eliminate_dead_refine(cf_function fn,<varName>Set::set all_live[][]) {
+  <cf_block>xarray blks     = fn.blocks;
+  int              num_blks = Xarray::length(blks);
+  for(int i=0; i < num_blks; ++i) {
+    cf_block blk = Xarray::get(blks,i);
+    blk.refined_locals = Dict::fold_c(dead_refine_f, 
+				      all_live[i][0], 
+				      blk.refined_locals,
+				      Dict::empty(intcmp));
+  }
+}
+
+static <int,cf_refinement>dict dead_refine_f(<varName>Set::set s, varName v,
+                                             cf_refinement r, 
+                                             <int,cf_refinement>dict accum) {
+  if(Set::member(s,v))
+    return Dict::insert(accum,v,r);
+  return accum;
+}
+
+////////////////////// Null check elimination //////////////////////////////
+// simple full redundancy elimination, doesn't even currently propagate
+// copies or treat Call as an ambiguous assignment.  
+// So this is a simple forward analysis.  The ensuing transformation
+// replaces NullCheck (and maybe NullBranch) with Uncond as possible.
+// The transformation must also update refined_locals in blocks.
+// This should probably be followed by a "block-smashing" transformation
+// so that global analyses that follow will be more efficient.
+
+void eliminate_nullchecks(cf_function fn) {
+  // return a bit vector set if that block ends in a redundant NullCheck
+  // or NullBranch (so conservative answer is an empty vector).
+  <cf_block>xarray blks     = fn.blocks;
+  int              num_blks = Xarray::length(blks);
+
+  // first we find all the nullable vars and give them a dense range,
+  // keeping a forwarding dictionary
+  <cf_idinfo>xarray          all_operands = fn.all_operands;
+  int                        num_vars     = Xarray::length(all_operands);
+  <varName,int>dict          var_names    = Dict::empty(intcmp);
+  <int,varName>dict          to_varname   = Dict::empty(intcmp);
+  int                        num_nullable = 0;
+  cf_file f = fn.file;
+  for(int i=0; i < num_vars; ++i)
+    if(is_nullable(f, Xarray::get(all_operands,i).typ)) {
+      to_varname = Dict::insert(to_varname, num_nullable, i);
+      var_names  = Dict::insert(var_names,  i, num_nullable++);
+    }
+  if(num_nullable == 0)
+    return;
+
+  // initialize the bit vectors, notice a block can only gen (make not null)
+  // one var, but can kill (make possibly null) many
+  int ins      [][] = new_array(num_blks, {:int});
+  int outs_all [][] = new_array(num_blks, {:int}); // not including gens!!
+  int kills    [][] = new_array(num_blks, {:int});
+  // .1 == -1 means none genned, .2 == -1 means on all successors
+  *(int,blockName) gens[] = new_array(num_blks, ^(-1,-1)); 
+  
+  for(blockName i=0; i < num_blks; ++i) {
+    // compute local information.  Don't do anything special with handler
+    // vars (they're not nullable anyway) and just let a Call kill even on
+    // handler branch (losing some precision).
+    outs_all[i] = Bitvec::new_empty(num_nullable);
+    varName kill[] = kills[i] = Bitvec::new_empty(num_nullable);
+    ins[i] = Bitvec::new_empty(num_nullable);
+    
+    cf_block               blk    = Xarray::get(fn.blocks,i);
+    <cf_instruction>xarray insts  = blk.insts;
+    int                    len    = Xarray::length(insts);
+    
+    // instructions
+    <*(<int,int>dict,varName[])>use_def_env ude = 
+       ^use_def_env(^(var_names,kill),
+                    ignore_use@<*(<int,int>dict,varName[])>, 
+                    nullcheck_kill, 
+                    true);
+    for(int j=0; j < len; ++j) 
+      instruction_use_def(ude, Xarray::get(insts,j));
+    // transfer -- notice we're not using the utilities here
+    switch blk.trans {
+    case Call(x):      if(x.1!=null) nullcheck_kill(^(var_names,kill), x.1.v);
+    case NullCheck *(op,dest): 
+      switch op {
+      case Local(y): gens[i] = ^(Dict::lookup(var_names,y),-1);
+      default:       ;
+      }
+    case NullBranch *(op,dest1,dest2):
+      switch op {
+      case Local(y): 
+	// Cyclone +
+	switch dest1 {
+	case Known(b) :gens[i] = ^(Dict::lookup(var_names,y), b.num);
+	case Unknown(_) : ; // XXX Do something smarter here.
+	}
+	// Cyclone -
+      default:       ;
+      }
+    default: ;
+    }
+  }
+  // iterate using depth-first order and a worklist
+  int df_order[] = get_df_order(fn);
+  int df_sz      = size(df_order); // dead blocks not in there!
+  int worklist[] = new_array(num_blks,0);
+  int marks   [] = Bitvec::new_empty(num_blks);
+  int i=0;
+  for(; i < df_sz; ++i) {
+    int next = df_order[i];
+    worklist[i] = next;
+    Bitvec::set(marks,next);
+  }
+  for(int j=0; j < num_blks; ++j)
+    if(!Bitvec::get(marks,j))
+      worklist[i++] = j;
+  Bitvec::set_all(marks);
+  int worklist_start  = 0;
+  int worklist_end    = num_blks-1;
+  int num_in_worklist = num_blks;
+  int in_temp[]       = Bitvec::new_full(num_nullable);
+  while(num_in_worklist > 0) {
+    int i = worklist[worklist_start];
+    worklist_start = (worklist_start+1) % num_blks;
+    Bitvec::clear(marks,i);
+    --num_in_worklist;
+    if(i == fn.entry.num)
+      continue;
+    // we used to think that since refined locals aren't named, we can
+    // optimize through handlers.  But actually we don't since 
+    // the pred and succ info does NOT take care of handlers.  We could
+    // extend the analysis to do it, but for now it's not worth it. (Dec. 1999)
+    if(Xarray::get(blks,i).handler_var != null)
+      continue;
+    <cf_block>xarray preds     = Xarray::get(blks, i).pred;
+    int              num_preds = Xarray::length(preds);
+    Bitvec::set_all(in_temp);
+    for(int j=0; j < num_preds; ++j) {
+      blockName pred = Xarray::get(preds,j).num;
+      int  gen_var = gens[pred].1;
+      int  gen_blk = gens[pred].2;
+      bool gen_in  = 
+	gen_var >= 0 
+	&& (gen_blk < 0 || gen_blk == i) 
+	&& Bitvec::get(in_temp,gen_var);
+      Bitvec::intersect_two(in_temp, in_temp, outs_all[pred]);
+      if(gen_in)
+	Bitvec::set(in_temp, gen_var);
+    }
+    if(!Bitvec::compare_two(in_temp, ins[i])) {
+      <cf_block>xarray succs     = Xarray::get(blks, i).succ;
+      int              num_succs = Xarray::length(succs);
+      for(int j=0; j < num_succs; ++j) {
+	int succ = Xarray::get(succs,j).num;
+	if(!Bitvec::get_and_set(marks,succ)) {
+	  worklist_end = (worklist_end+1) % num_blks;
+	  worklist[worklist_end] = succ;
+	  ++num_in_worklist;
+	}
+      }
+      Bitvec::diff_two(outs_all[i], in_temp, kills[i]);
+      int swap[] = in_temp;
+      in_temp    = ins[i];
+      ins[i]     = swap;
+    }
+  }
+  // we've reached a fixed point -- now transform based on that info:
+  // * change NullCheck to Uncond (later smash blocks)
+  // * update refined locals
+  // * later transform NullBranch too? (won't be a win for sane code?)
+  for(int i=0; i < num_blks; ++i) {
+    cf_block  blk      = Xarray::get(blks,i);
+    <int>list ins_list = Bitvec::to_sorted_list(ins[i], num_nullable);
+    for(; ins_list != null; ins_list=ins_list.tl)
+      blk.refined_locals = Dict::insert(blk.refined_locals, 
+					Dict::lookup(to_varname,ins_list.hd),
+					^cf_refinement.NotNull);
+    switch blk.trans {
+    case NullCheck *(op,dest):
+      switch op {
+      case Local(y):
+	int z = Dict::lookup(var_names,y);
+	if(Bitvec::get(ins[i],z) && !Bitvec::get(kills[i],z)) 
+	  blk.trans = ^cf_transfer.Uncond(dest);
+      default: ;
+      }
+    default: ;
+    }
+  }
+}
+static cf_operand nullcheck_kill(*(<varName,int>dict,varName[]) env, cf_operand op) {
+  switch op {
+  case Local(x): 
+    if(Dict::member(env.1,x)) 
+      Bitvec::set(env.2,Dict::lookup(env.1,x));
+  default: ;
+  }
+  return op;
+}
+
+////////////////////////// Dominators, Loops //////////////////////////////////
+
+// We cookbook from Muchnick page 182ff using the slower easier-to-understand
+// algorithm.  We're a bit ashamed as a 410 instructor that we didn't take
+// the time to learn the faster more complex algorithm -- we can upgrade later.
+
+int dominator_relation(cf_function fn) [][]{
+  // The return value is an implicit representation of the dominator relation:
+  // Bitvec::get(ans[i],j) is set precisely when j dominates i.
+
+  int num_blocks = Xarray::length(fn.blocks);
+
+  // data flow initialization
+  int buckets[][]  = new_array(num_blocks, Bitvec::new_empty(num_blocks));
+  for(int i=0; i<num_blocks; ++i) 
+    buckets[i] = Bitvec::new_full(num_blocks);
+  int entry_num = fn.entry.num;
+  buckets[entry_num] = Bitvec::new_empty(num_blocks);
+  Bitvec::set(buckets[entry_num], entry_num);
+
+  // iterate 
+  int  df_order[] = get_df_order(fn);
+  int  num_df     = size(df_order);
+  int  temp[]     = Bitvec::new_full(num_blocks);
+  bool change     = true;
+  while (change) {
+    change = false;
+    for(int i=0; i < num_df; ++i) {
+      int next = df_order[i];
+      if (next == entry_num)
+	continue;
+      Bitvec::set_all(temp);
+      <cf_block>xarray preds = Xarray::get(fn.blocks, next).pred;
+      for(int j=0; j < Xarray::length(preds); ++j)
+	Bitvec::intersect_two(temp, temp, buckets[Xarray::get(preds,j).num]);
+      Bitvec::set(temp,next);
+      if(!Bitvec::compare_two(temp,buckets[next])) {
+	change     = true;
+	int swap[] = temp;
+	temp       = buckets[next];
+	buckets[next] = swap;
+      }
+    }
+  }
+  return buckets;
+}
+
+*(<int, int[]>dict, int[]) all_loops(cf_function fn, int dominators[][]){
+  // given dominator information, return:
+  // 1: a collection of bitvectors
+  //    where each one's set bits correspond to blocks in a loop
+  //    By loop we mean natural loop except loops with common headers
+  //    are merged.
+  //    The loops are indexed by the headers which by the above definition are
+  //    distinct.
+  // 2: the loop depth of each block.  This is the number of loops it is in
+  int             num_blocks = size(dominators);
+  <int,int[]>dict loops      = Dict::empty(Core::intcmp);
+  int             depths[]   = new_array(num_blocks,0);
+
+  // back edge detection -- iterate through all edges.
+  // (could try to remember non-forward edges to save some time)
+  for (int head=0; head<num_blocks; ++head) {
+    <cf_block>xarray preds = Xarray::get(fn.blocks, head).pred;
+    for(int pred_ind=0; pred_ind < Xarray::length(preds); ++pred_ind) {
+      int tail = Xarray::get(preds, pred_ind).num;
+      if (Bitvec::get(dominators[tail], head)) {
+	// found a back edge
+	
+	// if first loop with this header, put in loops
+	if (!Dict::member(loops, head)) {
+	  loops = Dict::insert(loops, head, Bitvec::new_empty(num_blocks));
+	  ++depths[head];
+	}
+	// get the loop bitvector and set all the blocks in the loop
+	int       loopvec[] = Dict::lookup(loops, head);
+	<int>list todo      = ^list(tail, null);
+	Bitvec::set(loopvec, head);
+	while (todo != null) {
+	  int next = todo.hd;
+	  todo = todo.tl;
+	  if (next != head && !Bitvec::get(loopvec, next)) {
+	    Bitvec::set(loopvec, next);
+	    ++depths[next];
+	    <cf_block>xarray more = Xarray::get(fn.blocks, next).pred;
+	    for(int i=0; i < Xarray::length(more); ++i)
+	      todo = ^list(Xarray::get(more, i).num, todo);
+	  }
+	}
+      }
+    }
+  }
+  return ^(loops,depths);
+}
+
+////////////////////////////////// Liveness ///////////////////////////////////
+*(<varName>Set::set[],int[]) global_liveness(cf_function fn) {
+  // result.1[i] contains j if variable j may be live on exit of block i
+  // note we only track local variables
+
+  // result.2 bit [i] set iff block i ends in a Call within a handler
+  // and the result of that call is assigned to a variable that is live
+  // on entry to the handler. (Compiling exceptions is fun, no? :-) )
+
+  // since we expect few live variables anywhere, we might want not to use
+  // bit vectors for this one.  But we needs something for
+  // the register allocator and this will do.
+  // and of course this will all change with a new block structure
+  <cf_block>xarray blks     = fn.blocks;
+  int              num_blks = Xarray::length(blks);
+  int              num_vars = Xarray::length(fn.all_operands);
+
+  // initialize the bit vectors
+  varName ins  [][] = new_array(num_blks, {:int});
+  varName outs [][] = new_array(num_blks, {:int}); 
+  varName uses [][] = new_array(num_blks, {:int});
+  varName defs [][] = new_array(num_blks, {:int});
+  varName defOnlyOnNonException[] = new_array(num_blks, -1);
+  blockName callVarLiveOnExn[] = Bitvec::new_empty(num_blks);
+  for(blockName i = num_blks-1; i >= 0; --i) {
+    varName use[] = uses[i] = Bitvec::new_empty(num_vars);
+    varName def[] = defs[i] = Bitvec::new_empty(num_vars);
+    outs[i] = Bitvec::new_empty(num_vars);
+    ins [i] = Bitvec::new_empty(num_vars); 
+
+    cf_block               blk    = Xarray::get(fn.blocks,i);
+    <cf_instruction>xarray insts  = blk.insts;
+    int                    len    = Xarray::length(insts);
+
+    if(blk.handler_var != null) 
+      Bitvec::set(def, blk.handler_var.v);
+
+    // instructions
+    <*(varName[],varName[])>use_def_env ude = 
+       ^use_def_env(^(use,def), liveness_use, liveness_def, false);
+    for(int j=0; j < len; ++j) 
+      instruction_use_def(ude, Xarray::get(insts,j));
+
+    // transfer
+    transfer_use_def(ude, blk.trans);
+    switch blk.trans {
+    case Call(x): 
+      // If we're in a handler, soundness requires we do not have a define
+      // on that branch
+      if(x.1 != null) 
+	switch x.1.v {
+	case Local(x): 
+	  if (!Bitvec::get(def,x)) defOnlyOnNonException[i]=x;
+	  if (!Bitvec::get(use,x)) Bitvec::set(def,x);
+	default: ;
+      }
+    default: ;
+    }
+    // get the dataflow ball rolling
+    Bitvec::union_two(ins[i], use, use);
+  }
+  // iterate using reverse dfs to start a worklist (will be a more general
+  // utility later)
+  int df_order[] = get_df_order(fn);
+  int df_sz      = size(df_order); // dead blocks not in there!
+  int worklist[] = new_array(num_blks,0);
+  int marks   [] = Bitvec::new_empty(num_blks);
+  int i=0;
+  for(; i < df_sz; ++i) {
+    int next = df_order[df_sz-1-i];
+    worklist[i] = next;
+    Bitvec::set(marks,next);
+  }
+  for(int j=0; j < num_blks; ++j)
+    if(!Bitvec::get(marks,j))
+      worklist[i++] = j;
+  Bitvec::set_all(marks);
+  int worklist_start  = 0;
+  int worklist_end    = num_blks-1;
+  int num_in_worklist = num_blks;
+  int out_temp[]      = Bitvec::new_empty(num_vars);
+  int exn_temp[]      = Bitvec::new_empty(num_vars);
+  while(num_in_worklist > 0) {
+    int i = worklist[worklist_start];
+    worklist_start = (worklist_start+1) % num_blks;
+    Bitvec::clear(marks,i);
+    --num_in_worklist;
+    <cf_block>xarray succs     = Xarray::get(blks, i).succ;
+    int              num_succs = Xarray::length(succs);
+    Bitvec::clear_all(out_temp);
+    for(int j=0; j < num_succs; ++j) {
+      blockName succ = Xarray::get(succs,j).num;
+      Bitvec::union_two(out_temp, out_temp, ins[succ]);
+    }
+    if(has_exn_edge(fn, i)) {
+      blockName  h       = Xarray::get(blks,i).handler.v.num;
+      Bitvec::union_two(out_temp, out_temp, ins[h]);
+      int callVar = defOnlyOnNonException[i];
+      if(callVar >= 0 && Bitvec::get(ins[h], callVar))
+	Bitvec::set(callVarLiveOnExn,i);
+    }
+    if (!Bitvec::compare_two(out_temp,outs[i])) {
+      <cf_block>xarray preds     = Xarray::get(blks, i).pred;
+      int              num_preds = Xarray::length(preds);
+      for(int j=0; j < num_preds; ++j) {
+	int pred = Xarray::get(preds,j).num;
+	if(!Bitvec::get_and_set(marks,pred)) {
+	  worklist_end = (worklist_end+1) % num_blks;
+	  worklist[worklist_end] = pred;
+	  ++num_in_worklist;
+	}
+      }
+      Bitvec::diff_two (ins[i], out_temp, defs[i]);
+      Bitvec::union_two(ins[i], ins[i],   uses[i]);
+      if(Bitvec::get(callVarLiveOnExn,i))
+	Bitvec::set(ins[i], defOnlyOnNonException[i]);
+      int swap[] = out_temp;
+      out_temp   = outs[i];
+      outs[i]    = swap;
+    }
+  }
+  // convert to sparse format 
+  <varName>Set::set null1 = Set::empty(intcmp);
+  <varName>Set::set ans[] = new_array(num_blks, null1);
+  for(blockName i=0; i < num_blks; ++i)
+    ans[i] = Set::from_list(intcmp,Bitvec::to_sorted_list(outs[i],num_vars));
+  return ^(ans, callVarLiveOnExn);
+}
+
+static cf_operand liveness_use(*(varName[],varName[]) env, cf_operand op) {
+  switch op {
+  case Local(x): if(!Bitvec::get(env.2,x)) Bitvec::set(env.1,x);
+  default:       ;
+  }
+  return op;
+}
+static cf_operand liveness_def(*(varName[],varName[]) env, cf_operand op) {
+  switch op {
+  case Local(x): if(!Bitvec::get(env.1,x)) Bitvec::set(env.2,x);
+  default:       ;
+  }
+  return op;
+}   
+
+<varName>Set::set local_liveness(<varName>Set::set atEnd, cf_block blk,
+                                 bool callVarLiveOnExn)[] {
+  // given what's live at the end, return what's live 
+  // before and after each instruction
+  <cf_instruction>xarray insts    = blk.insts;
+  int                    num_inst = Xarray::length(insts);
+  <varName>Set::set      ans[]    = new_array(num_inst+2, atEnd);
+  int                    i        = num_inst;
+
+  // must process an instruction's defs BEFORE its uses
+  <*(<varName>Set::set[],int)>use_def_env ude = 
+     ^use_def_env(^(ans,i), locallive_use, locallive_def, true);
+  // transfer
+  ans[i+1] = atEnd;
+  ans[i]   = atEnd;
+  switch blk.trans {
+  case Call(x): 
+    // If we're in a handler, soundness requires we may not have a define,
+    // but if not in a handler, we're safe b/c exception will leave the
+    // function
+    if (x.1 != null && !callVarLiveOnExn)
+      switch x.1.v { 
+      case Local(v): ans[i] = Set::delete(ans[i],v); 
+      default: ; 
+    }
+  default: ;
+  }
+  transfer_use_def(ude, blk.trans);
+  // instructions
+  for(--i; i >=0; --i) {
+    ans[i] = ans[i+1];
+    ude.env.2 = i;
+    instruction_use_def(ude, Xarray::get(insts,i));
+  }
+  return ans;
+}
+static cf_operand locallive_use(*(<varName>Set::set[],int) env, cf_operand op) {
+  switch op {
+  case Local(v): env.1[env.2] = Set::insert(env.1[env.2],v);
+  default:       ;
+  }
+  return op;
+}
+static cf_operand locallive_def(*(<varName>Set::set[],int) env, cf_operand op) {
+  switch op {
+  case Local(v): env.1[env.2] = Set::delete(env.1[env.2],v);
+  default:       ;
+  }
+  return op;
+}
+
+
+//////////////////////////////// Reaching Definitions ////////////////////////
+
+// We solve reaching defs via bit vectors and can then create chains from that.
+// We cookbook from Muchnick chapter 8.
+// Note we only keep track of local variables.
+
+// these are used for var_place.cond
+#define ALL_BLOCK  -1
+#define SAME_BLOCK -2
+
+// for var_place.instName: we need to handle the refinements as uses
+#define REFINE_INFO -1
+
+struct var_place { 
+  // used for describing a defn or a use, which function implicit
+  // parameters get block -1, instruction 0
+  blockName block;
+  instName  inst; // transfer gets number of instructions
+  varName   v;
+  blockName cond; // > 0 means only used/defd on transfer to that block
+                  // < 0 has special meaning (see above)
+  placeName name; // must be unique per function
+}
+struct fun_places {
+  // all defns and uses for a function
+  // we may relax "all" to those spanning blocks.
+  // Or maybe give those spanning blocks lower numbers (so we have smaller
+  //   bit vectors for iteration).
+  <var_place>xarray def_info; // name == index
+  int               num_defs;
+}
+struct reach_def_info {
+  fun_places      places;
+  <var_place>list blk_defs[]; // blk_defs[i] are the defs in block i
+  <var_place>list var_defs[]; // var_defs[i] are the defs of variable i
+  blockName       rdefs[][];  // bit j of rdefs[i] set if placeName j may reach
+                              //   blockName i
+}
+
+// du_chains are indexed by definition number.  ud_chains are more
+// complex.  We want the ability to lookup a set of defs based on
+// (blk,instruction,variable) and the ability to conveniently walk
+// forward through a block.  Therefore, ud_chains are indexed by block
+// number, instruction number.  Then follow all the sets of
+// definitions for locals occuring in that instruction. For most
+// instructions there are between 0-3 possible uses so we use a list.
+
+struct chain_env {
+  <var_place>list           du_chains[];
+  <*(varName,<var_place>list)>list ud_chains[][]; // indexed by blk,inst,rdefs
+  int                       live     [];
+  <var_place>list           var_defs [];
+  <var_place>xarray         use_info; // name == index
+  int num_uses;
+}
+
+fun_places create_places(cf_function fn) {
+  <var_place>xarray def_info = Xarray::create_empty();
+  fun_places ans = ^fun_places(def_info, 0);
+  // parameters
+  for(<int>list l = fn.params; l!=null; l=l.tl)
+    add_def(^(ans,-1,0, ALL_BLOCK), ^cf_operand.Local(l.hd));
+  // blocks
+  int num_blks = Xarray::length(fn.blocks);
+  *(fun_places, int, int, blockName) env = ^(ans, 0, 0, ALL_BLOCK);
+  <*(fun_places, int, int, blockName)>use_def_env ude = 
+     ^use_def_env(env, 
+		  ignore_use@<*(fun_places, int, int, blockName)>,
+		  add_def, 
+		  true);
+  for(int i=0; i < num_blks; ++i) {
+    env.2 = i;
+    env.4 = ALL_BLOCK;
+    cf_block                       blk   = Xarray::get(fn.blocks,i);
+    // instructions
+    <cf_instruction>xarray insts = blk.insts;
+    int                            len   = Xarray::length(insts);
+    for (int j=0; j < len; ++j) {
+      env.3 = j;
+      // remember -- we don't analyze through pointers such as arrays
+      // or globals, but the latter is handled by add_def and add_use
+      instruction_use_def(ude, Xarray::get(insts,j));
+    }
+    // transfer
+    switch blk.trans {
+    case Call(x): 
+      <cf_block>Opt h = blk.handler;
+      if (h != null) 
+	add_def(^(ans, i, len, h.v.num), ^cf_operand.Local(h.v.handler_var.v));
+      if (x.1 != null) 
+	add_def(^(ans, i, len, Xarray::get(blk.succ,0).num), x.1.v); 
+                                  // use SAME_BLOCK when an instruction!!!
+    default: ;
+    }
+  }
+  return ans; 
+}
+static cf_operand add_def(*(fun_places, blockName, instName, blockName) env, 
+			  cf_operand op) {
+  fun_places ans = env.1;
+  blockName i = env.2;
+  blockName j = env.3;
+  blockName b = env.4;
+  switch op {
+  case Local(v):
+    var_place p  = ^var_place(i,j,v,b, ans.num_defs);
+    Xarray::add(ans.def_info, p);
+    ++ans.num_defs;
+  default: ;
+  }
+  return op;
+}
+
+reach_def_info global_reach_defs(cf_function fn, fun_places places) {
+
+  <cf_block>xarray blks = fn.blocks;
+  int num_blks = Xarray::length(blks);
+  int num_vars = Xarray::length(fn.all_operands);
+  // set up the data structures
+  <var_place>list null1     = null;
+  BITVEC             ins [] = new_array(num_blks,{:int});
+  reach_def_info  ans       = ^reach_def_info(places, 
+					      new_array(num_blks, null1),
+					      new_array(num_vars, null1),
+					      ins);
+  for(int i=0; i < places.num_defs; ++i) {
+    var_place place = Xarray::get(places.def_info, i);
+    if (place.block >= 0) // -1 for input parameters
+      ans.blk_defs[place.block] = ^list(place, ans.blk_defs[place.block]);
+    ans.var_defs[place.v]     = ^list(place, ans.var_defs[place.v]);
+  }
+
+  // create gen and kill bit vectors for each block
+  // For call edges in try blocks, have alternate gen/kill vectors
+  //     used when following the exceptional edge
+  //This will all have to be updated when transfers out of blocks are supported
+  // Also, we should special-case when there are no try blocks.
+  int sz           = places.num_defs;
+  BITVEC gens    [] = new_array(num_blks,{:int});
+  BITVEC kills   [] = new_array(num_blks,{:int});
+  BITVEC exngens [] = new_array(num_blks,{:int});
+  BITVEC exnkills[] = new_array(num_blks,{:int});
+
+  for (int i=0; i < num_blks; ++i) {
+    BITVEC gen     = gens    [i] = Bitvec::new_empty(sz);
+    BITVEC kill    = kills   [i] = Bitvec::new_empty(sz);
+    BITVEC  exngen = exngens [i] = Bitvec::new_empty(sz);
+    BITVEC exnkill = exnkills[i] = Bitvec::new_empty(sz);
+    ins[i] = Bitvec::new_empty(sz);
+
+    for(<var_place>list ds = ans.blk_defs[i]; ds != null; ds = ds.tl) {
+      var_place d_p = ds.hd;
+      placeName d   = d_p.name;
+      // are we normal, exceptional or both 
+      *(bool,bool) pr = defkind(fn, d_p);
+      bool is_normal = pr.1;
+      bool is_exn    = pr.2;
+      // kill definitions of same var as appropriate 
+      // also see if this definition is overwritten in the block
+      bool normal_overwrite = false;
+      bool exn_overwrite    = false;
+      for(<var_place>list ks = ans.var_defs[d_p.v]; ks != null; ks = ks.tl) {
+	var_place k_p = ks.hd;
+	placeName k   = k_p.name;
+	// Kill all other definitions of this variable not in this block.
+	if (k_p.block != i || k_p.inst < d_p.inst) {
+	  if (is_normal) Bitvec::set(kill,    k);
+	  if (is_exn)    Bitvec::set(exnkill, k);
+	}
+	// deal with overwriting
+	if (k_p.block == i && k_p.inst > d_p.inst) {
+	  pr = defkind(fn, k_p);
+	  normal_overwrite = pr.1;
+	  exn_overwrite    = pr.2;
+	}
+      }
+      // gen  
+      if (is_normal && !normal_overwrite) Bitvec::set(gen,    d);
+      if (is_exn    && !exn_overwrite)    Bitvec::set(exngen, d);
+    }    
+  }
+
+  // special case -- parameters reach the entry block
+  for(int i=0; i < places.num_defs; ++i) {
+    var_place place = Xarray::get(places.def_info, i);
+    if (place.block < 0) // -1 for input parameters
+      Bitvec::set(ins[fn.entry.num], place.name);
+  }
+
+  // now iterate, using a different vector for exception edges
+  // of course some day we'll have a more general iteration framework,
+  // but let's get something working for now
+  // even without being general, we should use depth-first order!!!
+
+  // notice we're choosing less space because of big functions, may
+  // revisit this classic trade-off
+  BITVEC to_do    = Bitvec::new_full(num_blks);
+  BITVEC in_temp  = Bitvec::new_empty(sz);
+  BITVEC out_temp = Bitvec::new_empty(sz);
+  bool change     = true;
+
+  Bitvec::clear(to_do,fn.entry.num);
+  while (change) {
+    change = false;
+    for(int i=0; i < num_blks; ++i) 
+      if (Bitvec::get(to_do,i)) {
+	Bitvec::clear(to_do,i);
+	<cf_block>xarray preds     = Xarray::get(blks, i).pred;
+	int              num_preds = Xarray::length(preds);
+	Bitvec::clear_all(in_temp);
+	for(int j=0; j < num_preds; ++j) {
+	  int pred   = Xarray::get(preds,j).num;
+
+	  /* FMS: Debugging XXX remove
+	     if(pred<0 || pred>=num_blks) {
+	    Popilprint::suppress_output = false;
+	    Popilprint::prn_fun(fn);
+	    printf("Unexpected pred %d, num_blks=%d\n",pred,num_blks);
+	    _ p = Xarray::get(preds,j);
+	    _ b = Xarray::get(blks,i);
+	    printf("pred name = %s\n",Id::id_to_string(p.label));
+	    printf("block name = %s\n",Id::id_to_string(b.label));
+	    BUG("Unexpected predecessor.");
+	  }
+	  */
+
+	  BITVEC gen  = gens [pred];
+	  BITVEC kill = kills[pred];
+	  if (is_exn_edge(fn, pred, i)) {
+	    gen  = exngens [pred];
+	    kill = exnkills[pred];
+	  }
+	  Bitvec::diff_two (out_temp, ins[pred], kill);
+	  Bitvec::union_two(out_temp, out_temp,  gen);
+	  Bitvec::union_two(in_temp,  in_temp,   out_temp);
+	}
+	if(!Bitvec::compare_two(in_temp,ins[i])) {
+	  <cf_block>xarray succs     = Xarray::get(blks, i).succ;
+	  int              num_succs = Xarray::length(succs);
+	  for(int j=0; j < num_succs; ++j)
+	    Bitvec::set(to_do,Xarray::get(succs,j).num);
+	  if(has_exn_edge(fn,i))
+	    Bitvec::set(to_do,Xarray::get(blks,i).handler.v.num);
+	  change = true;
+	  int swap[] = in_temp;
+	  in_temp    = ins[i];
+	  ins[i]     = swap;
+	}
+      }
+  }
+
+  return ans;
+}
+
+static *(bool,bool) defkind(cf_function fn, var_place p) {
+ if (p.cond < 0)
+    if (p.cond == ALL_BLOCK) return ^(true,true);
+    else raise InvalidArg("reach defs: unknown negative condition number");
+  else {
+    cf_block blk = Xarray::get(fn.blocks, p.block);
+    switch blk.trans {
+    case Call(x): 
+      if (p.cond == Xarray::get(blk.succ, 0).num) 
+	return ^(true,false);
+      else return ^(false,true);
+    default: return ^(true,true);
+    }
+  }
+}
+
+static bool is_exn_edge(cf_function fn, int src, int dest) {
+  return Xarray::get(fn.blocks,dest).handler_var != null;
+}
+static bool has_exn_edge(cf_function fn, int src) {
+  // This will all change once we're super-blockish.
+  // also changes when array-bounds is catchable.
+  cf_block blk = Xarray::get(fn.blocks, src);
+  if(blk.handler == null)
+    return false;
+  switch blk.trans {
+  case Call(x):       return true;
+  case TailCall(x):   return true;
+  case Raise(x):      return true;
+  case NullCheck(x):  return true;
+  case UnionCheck(x): return true;
+  default:            return false;
+  }
+}
+
+/////////////////////////// Chains and Webs ////////////////////////////
+
+// Build du and ud chains.
+// Returns pair (du_chains, ud_chains)
+*(< <var_place>list >array,
+  <<<*(varName,<var_place>list)>list>array>array) chains(cf_function fn, reach_def_info info) {
+  <var_place>xarray def_info = info.places.def_info;
+  int               num_defs = Xarray::length(def_info);
+  int               num_blks = size(info.rdefs);
+  <var_place>list   null1    = null; // remove this later
+  <var_place>list   ans []   = new_array(num_defs, null1);
+  int               live[]   = Bitvec::new_empty(num_defs);
+
+  _  uses = new_array(num_blks,{: <*(varName,<var_place>list)>list });
+
+  chain_env env = ^chain_env(ans,uses,live, info.var_defs, Xarray::create_empty(),0);
+  <*(chain_env,int,int,int)>use_def_env ude = 
+     ^use_def_env(^(env,0,0,ALL_BLOCK), chain_use, chain_def, false);
+
+  // We should be keeping track of refined locals as uses,
+  // but it seems clumsy to put them here. They aren't really live,
+  // so it may break things if we add to the DU chains
+  for (int i=0; i < num_blks; ++i) {
+    cf_block               blk    = Xarray::get(fn.blocks,i);
+    <cf_instruction>xarray insts  = blk.insts;
+    int                    len    = Xarray::length(insts);
+    Bitvec::clear_all(live);
+    Bitvec::union_two(live, live, info.rdefs[i]);
+    ude.env.2 = i;
+
+    // +1 for transfer.
+    env.ud_chains[i] = new_array(len+1,null);
+
+    for(int j=0; j < len; ++j) {
+      ude.env.3 = j;
+      instruction_use_def(ude, Xarray::get(insts,j));
+      env.ud_chains[i][j] = List::imp_rev(env.ud_chains[i][j]);
+    }
+    ude.env.3 = len;
+    transfer_use_def(ude, blk.trans);
+
+    switch blk.trans {
+    case Call(x): 
+      <cf_block>Opt h = blk.handler;
+      if (h != null) {
+	ude.env.4 = h.v.num;
+	chain_def(ude.env, ^cf_operand.Local(h.v.handler_var.v));
+      }
+      if (x.1 != null) {
+	// use SAME_BLOCK when an instruction!!!
+	ude.env.4 = Xarray::get(blk.succ,0).num; 
+	chain_def(ude.env, x.1.v);
+      }
+    default: ;
+    }
+
+    env.ud_chains[i][len] = List::imp_rev(env.ud_chains[i][len]);
+  }
+  return ^(env.du_chains,env.ud_chains);
+}
+static cf_operand chain_use(*(chain_env, blockName, instName, blockName) env,
+		      cf_operand op) { 
+  _ blk      = env.2;
+  _ inst     = env.3;
+  _ blk_cond = env.4;
+  switch op {
+  case Local(y):
+    var_place use = ^var_place(blk, inst, y, blk_cond, env.1.num_uses);
+    Xarray::add(env.1.use_info, use);
+    ++env.1.num_uses;
+    <var_place>list rdefs = null;
+    for(<var_place>list yds = env.1.var_defs[y]; yds != null; yds = yds.tl) {
+      var_place def = yds.hd;
+      placeName dn  = def.name;
+      if (Bitvec::get(env.1.live, dn)){
+	env.1.du_chains[dn] = ^list(use, env.1.du_chains[dn]);
+	rdefs = ^list(def, rdefs);
+      }
+    }
+    // Order of rdefs probably doesn't matter but for sanities sake
+    // set them right.
+    _ ud_chains = env.1.ud_chains[blk];
+    ud_chains[inst] = ^list(^(y,List::imp_rev(rdefs)), ud_chains[inst]);
+  default: ;
+  }
+  return op;
+}
+static cf_operand chain_def(*(chain_env, blockName, instName, blockName) env,
+		      cf_operand op) { 
+  switch op {
+  case Local(y):
+    _ found_place = -1;
+    for(<var_place>list yds = env.1.var_defs[y]; yds != null; yds = yds.tl) {
+      var_place p = yds.hd;
+      if (p.block == env.2 && p.inst == env.3) {
+	Bitvec::set(env.1.live, p.name);
+	found_place = p.name; }
+      /* FMS: The below did not make sense to me so I am going with the 
+	 above.
+	if (p.block == env.2 && p.inst == env.3 && p.var==y && p.cond==env.4) 
+	Bitvec::set(env.1.live, p.name);
+	
+	else if (env.4 == ALL_BLOCK || p.cond == env.4)
+	Bitvec::clear(env.1.live, p.name);
+      */
+    }
+    // If we find a def we must kill all live definitions for this 
+    // variable, except the one we found.  After all they can 
+    // no longer reach.
+    if(found_place>=0) {
+      for(_ yds = env.1.var_defs[y]; yds!=null; yds=yds.tl) {
+	_ p = yds.hd;
+	if(p.name != found_place)
+	  Bitvec::clear(env.1.live,p.name);	
+      }
+    }
+  default: ;
+  }
+  return op;
+}
+
+void trace_refinement(varName old_name, varName new_name, cf_function fn, 
+		      <cf_block>xarray current){
+  for(int i = 0; i < Xarray::length(current); i++){
+    cf_block blk = Xarray::get(current, i);
+    _ refs = blk.refined_locals;
+    // if we've renamed, update the refinement info
+    if(Dict::member(refs, old_name) && !(Dict::member(refs, new_name))){
+      refs = Dict::insert(refs, new_name, Dict::lookup(refs, old_name));
+      //refs = Dict::delete(refs, old_name);
+      blk.refined_locals = refs;
+      trace_refinement(old_name, new_name, fn, blk.succ);
+    }
+  }
+}
+
+
+// NOT TESTED - and DAMN inefficient. I've got work to do... -ETS
+void copy_propagate(cf_function fn){
+  fun_places        places    = create_places(fn);
+  reach_def_info    info      = global_reach_defs(fn, places);
+  _                 ud_chains = chains(fn,info).2;
+
+  _ cp_env = ^(null, fn, 0);
+  _ ude= ^use_def_env(cp_env, 
+		      propagate_use, 
+  		      ignore_use@<*(<*(varName,<var_place>list)>list,
+		      cf_function,int)>,
+  		      true);
+  for(int i = 0; i < Xarray::length(fn.blocks); i++){
+    cf_block blk = Xarray::get(fn.blocks, i);
+    _ blk_rdefs = ud_chains[i];
+    cp_env.3 = i;
+    int len = Xarray::length(blk.insts);
+    for(int j = 0; j < len; j++){
+      cf_instruction inst = Xarray::get(blk.insts, j);
+      cp_env.1 = blk_rdefs[j];
+      instruction_use_def(ude, inst);
+    }
+    cp_env.1 = blk_rdefs[len];
+    transfer_use_def(ude, blk.trans);
+  }
+}
+
+/*
+// iterate over _everything_, replacing binops/unops with copies. copy-
+// propagation and dead-code elimination will sweep these away.
+void constant_fold(cf_function fn){
+  int len;
+  for(int i = 0; i < Xarray::length(fn.blocks); i++){
+    _ blk = Xarray::get(fn.blocks, i);
+    for(int j = 0; j < Xarray::length(blk.insts); j++){
+      _ inst = Xarray::get(blk.insts, j);
+      len = Xarray::length(fn.all_consts);
+      switch inst{
+      case Unop(x):
+	switch x.3{
+	case Const(i):
+	  _ c = Xarray::get(fn.all_consts, i);
+	  _ new_const = ^cf_constinfo(do_unop(x.1,c.val), c.typ);
+	  Xarray::add(fn.all_consts, new_const);
+	  inst = ^cf_instruction.Copy(x.2,^cf_operand.Const(len));
+	default: ;
+	}
+      case Binop(x):
+	switch x.3{
+	case Const(i):
+	  switch x.4{
+	  case Const(j):
+	    _ c = Xarray::get(fn.all_consts, i);
+	    _ c2 = Xarray::get(fn.all_consts, j);
+	    _ new_const = ^cf_constinfo(do_binop(x.1,c.val, c2.val), c.typ);
+	    Xarray::add(fn.all_consts, new_const);
+	    inst = ^cf_instruction.Copy(x.2,^cf_operand.Const(len));
+	  default: ;
+	  }
+	default: ;
+	}
+      default: ;
+      }
+    }
+  }
+}
+
+int do_unop(Popsyntax::primop op, int v){
+  switch op{
+  case Not: ;
+  default: ;
+    
+  }
+}
+
+int do_binop(Popsyntax::primop op, int v1, int v2){
+  switch op{
+  case Mod: ;
+  default: ;
+  }
+}
+*/
+// when passed a use and an env, tries to replace the use with a previous copy
+// if the use is not a local, the use_num is unchanged
+  cf_operand propagate_use(*(<*(varName,<var_place>list)>list, cf_function,
+                           int) env, cf_operand op){
+  cf_function fn = env.2;
+  cf_block blk = Xarray::get(fn.blocks, env.3);
+  varName new_name = -1;
+  <varName>Set::set defs = Set::empty(intcmp);
+  switch op{
+    case Local(old_name):
+      new_name = old_name;
+      //     printf("definitions that reach %d,%d:\n", env.1.hd.1,old_name);
+      for(_ rdefs = env.1.hd.2; rdefs!=null; rdefs=rdefs.tl){
+	var_place def = rdefs.hd;
+	if (def.block < 0) return op;
+	cf_block blk = Xarray::get(fn.blocks, def.block);
+	int len = Xarray::length(blk.insts);
+	// skip empty blocks or transfers
+	if ((len == 0) || (def.inst == len)) return op;
+	// inst defines the use, and this def reaches. can we copy?
+	cf_instruction inst = Xarray::get(blk.insts, def.inst);
+	switch inst{
+	case Copy(x):  
+	  switch x.2{
+	  case Local(i): defs = Set::insert(defs, i);
+	  default: return op;
+	  }
+	default: return op;
+	}
+      }
+      // if we never found a rdef, initialize new_name to old_name
+      if (Set::cardinality(defs) == 1){
+	new_name = Set::choose(defs);
+	printf("replaced %d with %d\n",old_name,new_name);
+	//rename refinement information
+	if (Dict::member(blk.refined_locals, old_name)){
+	  cf_refinement info = Dict::lookup(blk.refined_locals, old_name);
+	  //blk.refined_locals = Dict::delete(blk.refined_locals, old_name);
+	  blk.refined_locals = Dict::insert(blk.refined_locals, new_name, info);
+	}
+	trace_refinement(old_name, new_name, fn, blk.succ);
+      }
+      env.1 = env.1.tl;
+      return ^cf_operand.Local(new_name);
+  default: return op;
+  }
+}
+
+// register allocation is much easier to hack up 
+// if we just rewrite the code after
+// we build the webs.  I'll do that later (we have to be careful to 
+// either update reaching definitions or recompute it from scratch).
+// So without using this, the register allocator will just effectively
+// merge all webs with the same variable.
+// Nonetheless, this function is tested.
+*(webName[],int) make_webs(<var_place>list chains  [], 
+                           <var_place>list var_defs[]) {
+  // as Briggs points out, this is just union-find
+  int     num_chains = size(chains);
+  int     num_webs   = num_chains;
+  webName parents[]  = new_array(num_chains,0);
+  int     ranks[]    = new_array(num_chains,0);
+  for(int i=0; i < num_chains; ++i)
+    parents[i] = i;
+  
+  // this would be asymptotically faster if we sorted uses for better intersect
+  int numVars = size(var_defs);
+  for(varName i=0; i < numVars; ++i) {
+    for(<var_place>list l1 = var_defs[i]; l1 != null; l1 = l1.tl) {
+      l: for(<var_place>list l2 = l1.tl; l2 != null; l2 = l2.tl) {
+	placeName p1 = l1.hd.name;
+	placeName p2 = l2.hd.name;
+	webName web1 = find_set(parents,p1);
+	webName web2 = find_set(parents,p2);
+	if (web1 != web2) {
+	  for(<var_place>list u1 = chains[p1]; u1 != null; u1 = u1.tl)
+	    for(<var_place>list u2 = chains[p2]; u2 != null; u2= u2.tl)
+	      if (u1.hd.name == u2.hd.name) {
+		union_set(parents,ranks,web1,web2);
+		--num_webs;
+		break l;
+	      }
+	}
+      }
+    }
+  }
+  // compress and re-number (so we can make bit vectors indexed by web name)
+  <webName,webName>dict rename  = Dict::empty(intcmp);
+  webName               ans[]   = new_array(num_chains,0);
+  int                   counter = 0;
+  for(placeName i=0; i < num_chains; ++i) {
+    webName      oldName    = find_set(parents,i);
+    <webName>Opt newNameOpt = Dict::lookup_opt(rename, oldName);
+    if (newNameOpt == null) {
+      rename = Dict::insert(rename, oldName, counter);
+      ans[i] = counter;
+      ++counter;
+    } else
+      ans[i] = newNameOpt.v;
+  }
+  return ^(ans,num_webs);
+}
+
+webName find_set(webName ans[], webName i) {
+  // find
+  int root = i;
+  while(ans[root] != root)
+    root = ans[root];
+  // compress
+  while (ans[i] != root) {
+    ans[i] = root;
+    i = ans[i];
+  }
+  // return
+  return root;
+}
+void union_set(webName ans[], int ranks[], webName i, webName j) {
+  int rank_i = ranks[i];
+  int rank_j = ranks[j];
+  if(rank_i > rank_j)
+    ans[j] = i;
+  else
+    ans[i] = j;
+  if (rank_i == rank_j)
+    ++ranks[j];
+}
+
+// not sure where this will be useful, if anywhere.
+webName def2web(blockName i, instName j, <var_place>list vds, webName webs[]){
+  for(; vds != null; vds = vds.tl) {
+    var_place p = vds.hd;
+    if (p.block == i && p.inst == j)
+      return webs[p.name];
+  }
+  raise Core::Not_found(); 
+}
+
+<webName>Set::set liveReachable(<varName>Set::set full_liveness[][],
+                                reach_def_info    rdefs) [] {
+  // return a sparse representation of the defs which may reach entry to
+  // blocks, leaving out defs that aren't live anyway (hence sparse we hope)
+
+  // note this should be run after rewriting IL in terms of webs
+  int               num_blks = size(full_liveness);
+  <webName>Set::set mt       = Set::empty(intcmp);
+  <webName>Set::set ans[]    = new_array(num_blks, mt);
+  for(blockName i=0; i < num_blks; ++i) {
+    <varName>Set::set live = full_liveness[i][0];
+    ans[i] = Set::fold_c(add_live_reachable, ^(rdefs,i), live, mt);
+  }
+  return ans;
+}
+static <webName>Set::set 
+add_live_reachable(*(reach_def_info, blockName) env,
+		   varName live, <webName>Set::set accum) {
+  reach_def_info    info   = env.1;
+  blockName         blk    = env.2;
+  <webName>Set::set ans    = accum;
+  for(<var_place>list defs = info.var_defs[live]; defs != null; defs=defs.tl) {
+    placeName name = defs.hd.name;
+    if (Bitvec::get(info.rdefs[blk], name))
+      ans = Set::insert(ans, name);
+  }
+  return ans;
+}
+////////////////////// Top-level Control  ///////////////////////////////
+
+////////
+// spill cost info -- used by register allocator to choose spills
+// note loop depth of a block not changed by register allocation
+// gotta be kludgy to hopefully avoid integer overflow and such
+// (some day use floating point here)
+///////
+unsigned int spill_costs(cf_function fn) [] {
+  int doms[][]      = dominator_relation(fn);
+  int loop_depths[] = all_loops(fn, doms).2;
+  int num_vars      = Xarray::length(fn.all_operands);
+  unsigned int costs[]       = new_array(num_vars, (:unsigned int)num_vars);
+  *(unsigned int[],int) env = ^(costs,0);
+  <*(unsigned int[],int)>use_def_env ude = 
+     ^use_def_env(env,add_weight,add_weight,true);
+  <cf_block>xarray blks     = fn.blocks;
+  int              num_blks = Xarray::length(blks);
+  for(int i=0; i < num_blks; ++i) {
+    if(loop_depths[i] > 10)
+      env.2 = 0x10000000;
+    else
+      env.2 = 1 << (3 * loop_depths[i]);
+    cf_block blk = Xarray::get(blks,i);
+    <cf_instruction>xarray insts     = blk.insts;
+    int                    num_insts = Xarray::length(insts);
+    for(int j=0; j < num_insts; ++j)
+      instruction_use_def(ude,Xarray::get(insts,j));
+    transfer_use_def(ude,blk.trans);
+    switch blk.trans {
+    case Call(x): if (x.1 != null) add_weight(env,x.1.v);
+    default:      ;
+    }
+  }
+  return costs;
+}
+
+cf_operand add_weight(*(unsigned int[],int) env, cf_operand op) {
+  switch op {
+  case Local(x): 
+    int new_val =  env.1[x] + env.2;
+    if (new_val > 0)
+      env.1[x] = new_val;
+    else
+      env.1[x] = 0x1FFFFFFF;
+  default: ;
+  }
+  return op;
+}
+
+// We're only renaming variables that were def'd earlier, so
+// we know they are always locals. Make sure we rename the right thing
+// by comparing to old_name
+cf_operand rename_use(*(varName,varName) env, cf_operand op){
+  switch op{
+  case Local(old_name): 
+    if (env.1==old_name) return ^cf_operand.Local(env.2);
+  default: ;
+  }
+  return op;
+}
+
+// only Locals can be defined.
+cf_operand rename_def(*(varName, varName) env, cf_operand def){
+  switch def{
+  case Local(old_name): return ^cf_operand.Local(env.2);
+  default:  printf("not a local!\n");
+    raise InvalidArg("rename_def called with a non-local");
+  }
+  return def;
+}
+  
+//////////
+// du chains and var_defs , used for webs (some day used for better regalloc)
+// and for dead code elim (eg. after copy propagation)
+// this stuff is fairly well tested, but not currently used 
+/////////
+*(int[],int) compute_webs(cf_function fn){
+  fun_places        places   = create_places(fn);
+  reach_def_info    info     = global_reach_defs(fn, places);
+  <var_place>list   chains[] = chains(fn,info).1; // Just the du_chain
+  print_du_chains(ilf, info, chains);
+  *(int[],int)      webs     = make_webs(chains, info.var_defs);
+  return webs;
+}
+
+void webify(cf_function fn) {
+  fun_places        places   = create_places(fn);
+  reach_def_info    info     = global_reach_defs(fn, places);
+  <var_place>list   chains[] = chains(fn,info).1; // Just the du_chain
+  *(int[],int)      webs     = make_webs(chains, info.var_defs);
+  print_du_chains(ilf, info, chains);
+
+  int num_vars = Xarray::length(fn.all_operands);
+  *(varName, <*(varName, int)>list) names[] = new_array(num_vars, ^(-1, null));
+  for(int i=0; i< size(names); ++i)  names[i] = ^(-1, null);
+  for(int i = 0; i < size(webs.1); ++i){
+    var_place def = Xarray::get(info.places.def_info, i);
+    varName old_name = def.v;
+    varName new_name = webs.1[i];
+    // if we haven't seen this var yet, record the web's name as our map
+    if(names[old_name].1 == -1) names[old_name].1 = new_name;
+    // if this var was already mapped to some other name, rename def/uses
+    if (names[old_name].1 != new_name){
+      // if we've never seen this name before, add it to all_operands
+      // and record it in 'names', along with its index
+      <*(varName, int)>list new_names = names[old_name].2;
+      if (!List::mem_assoc(new_names, new_name)){
+	cf_idinfo new_op = Xarray::get(fn.all_operands, old_name);
+	Xarray::add(fn.all_operands, new_op);
+	new_names = new list(^(new_name, num_vars++), new_names);
+	names[old_name].2 = new_names;
+      } // we rename it to whatever index it was given in all_operands
+      new_name = List::assoc(names[old_name].2, new_name);
+      _ ude = ^use_def_env(^(old_name, new_name),
+      ignore_use@<*(varName, varName)>, 
+      rename_def, 
+      true);
+      if(def.block != -1) {  // parameters aren't def'd anywhere
+	cf_block blk = Xarray::get(fn.blocks, def.block);
+	int len = Xarray::length(blk.insts);
+	if(def.inst == len) transfer_use_def(ude, blk.trans);
+	else instruction_use_def(ude, Xarray::get(blk.insts, def.inst));      
+      }
+      // go rename the uses, and update refinement info
+      for(<var_place>list uses = chains[i]; uses != null; uses = uses.tl) {
+	cf_block blk = Xarray::get(fn.blocks, uses.hd.block);
+	if(Dict::member(blk.refined_locals, old_name)){
+	  cf_refinement ref_info = Dict::lookup(blk.refined_locals, old_name);
+	  blk.refined_locals = Dict::insert(blk.refined_locals, 
+					    new_name, ref_info);
+	  //blk.refined_locals = Dict::delete(blk.refined_locals, old_name);
+	  trace_refinement(old_name, new_name, fn, blk.succ);
+	}
+	ude.use = rename_use;
+	ude.def = ignore_use@<*(varName, varName)>;
+	int len = Xarray::length(blk.insts);
+	if(uses.hd.inst == len) transfer_use_def(ude, blk.trans);
+	else instruction_use_def(ude, Xarray::get(blk.insts, uses.hd.inst));
+      }
+    }
+  }
+}
+
+
+//////////
+// liveness, used for register allocation and creating TAL labeltypes
+/////////
+<varName>Set::set compute_all_liveness(cf_function fn)[][] {
+  int num_blks = Xarray::length(fn.blocks);
+  *(<varName>Set::set[], int[]) liveness = global_liveness(fn);
+  <varName>Set::set all_live[][] = new_array(num_blks, 
+    {:<varName>Set::set});
+  for(blockName i=0; i<num_blks; ++i) 
+    all_live[i] = local_liveness(liveness.1[i], Xarray::get(fn.blocks, i),
+				 Bitvec::get(liveness.2,i));
+  return all_live;
+}
+
+
+//////////////////////////////// Dead Code //////////////////////////////
+
+struct dead_env {
+  <*(varName,<var_place>list)>list ud_chains;
+  Worklist::worklist w;
+  BITVEC live_insts;
+  int blk_offsets[]; // Indexed by blk, used to compute offset in live_insts
+  <blockName>xarray offset2blk;
+}
+
+static bool is_global(cf_operand o) {
+  switch o {
+  case Global(_): return true;
+  default: return false;
+  }
+}
+
+// Because our chains do not include globals we must treat all instructions
+// defining globals as essential.
+static bool is_essential_inst(cf_instruction i) {
+  cf_operand o_def;
+
+  switch i {
+  case Nop                   : return true; // No point in eliminating.
+  case Copy        *(o,_)    : o_def = o;
+  case Nullop      *(_,o)    : o_def = o;
+  case Unop        *(_,o,_)  : o_def = o;
+  case Binop       *(_,o,_,_): o_def = o;
+  case TypedCopy   *(o,_,_)  : o_def = o;
+  case SelectField *(_,o,_)  : o_def = o;
+  case AssignField  (_)      : return true;
+  case ArrayCheck   (_)      : return !Popcorn::unsafe_arrays.v; // Sets the condition code. 
+  case CArrayCheck  (_)      : return !Popcorn::unsafe_arrays.v;
+  case ArraySub    *(o,_,_)  : o_def = o;
+  case ArrayUpd     (_)      : return true;
+  case New          (o)      : o_def = o;
+  case Rdtsc       *(o1,o2)  : return (is_global(o1) || is_global(o2));
+  case Start        (o)      : o_def = o;
+  case Dump        *(o1,o2,_): return true;
+  case Hole        *(_,o)    : return true; // We could eliminate holes but not for now.
+  case Fill         (_)      : return true;
+  case FillJmp      (_)      : return true;
+  case End         *(o,_)    : o_def = o;
+  }
+  return is_global(o_def);
+}
+
+static int place2offset(dead_env env, blockName b, instName i) {
+  return (env.blk_offsets[b] + i);
+}
+
+static *(blockName,instName) offset2place(dead_env env, int offset) {
+  try {
+    _ blk = Xarray::get(env.offset2blk,offset);
+    _ inst = offset - env.blk_offsets[blk];
+    return ^(blk,inst);
+  } handle y {
+    printf("offset = %d, length(offset2blk) = %d\n",
+	   offset, Xarray::length(env.offset2blk));
+    raise(y);
+  }
+}
+
+static cf_operand dead_code_use(dead_env env, cf_operand o) {
+  varName x;
+  switch o {
+  case Local(y): x = y;
+  default: return o;
+  }
+
+  // x is the variable being used.
+  _ defs;
+  try {
+    defs = List::assoc(env.ud_chains,x);
+  } handle y {
+    BUG("dead_code_use: variable not used in instruction.");
+  }
+
+  // For each def in the chain, add the instruction containing that def to the
+  // worklist if its not marked.
+  for(;defs!=null; defs=defs.tl) {
+    _ d = defs.hd;
+    if(d.block >= 0) { // <0 for parameters.
+      _ offset = place2offset(env,d.block,d.inst);
+      if(!Bitvec::get_and_set(env.live_insts,offset)) {
+	Worklist::add(env.w,offset);
+	//	printf("%d makes (%d,%d) live\n",x,d.block,d.inst);
+      }
+    }
+  }
+
+  return o;
+}
+
+// Eliminate dead_code -- useless instructions (not blocks!)
+void dead_code(cf_function fn) {
+  // We should probably try to reuse reach_defs from previous opts
+  // but for now just recompute it.
+  fun_places        places    = create_places(fn);
+  reach_def_info    info      = global_reach_defs(fn, places);
+  _                 ud_chains = chains(fn,info).2;
+
+  /*
+  Popilprint::prn_fun(fn); 
+
+  printf("%s : reaching definitions",fn.name);
+  for(int i = 0; i<size(info.rdefs); i++) {
+    printf("\n%d :", i);
+    Bitvec::print_bvec(info.rdefs[i]);
+  }
+  printf("\n");
+
+  printf("Places: ");
+  _ places = info.places.def_info;
+  for(int i=0; i < Xarray::length(places); i++) {
+    _ p = Xarray::get(places,i);
+    printf("\n%d: (%d,%d,%d)",p.name,p.block,p.inst,p.cond);
+  }
+  printf("\nVariable definitions:");
+  for(int i=0; i < size(info.var_defs); i++) {
+    printf("\n%d : ",i);
+    for(_ x=info.var_defs[i];x!=null;x=x.tl) {
+      printf("(%d,%d,%d) ",x.hd.block,x.hd.inst,x.hd.cond);
+    }
+  }
+  
+  printf("\n%s : ud_chains\n",fn.name);
+  print_ud_chains(tal_stdout,ud_chains);
+  printf("\n");
+  */  
+
+  // Begin by marking all instructions as dead.
+  // We also construct an isomorphism from block * instruction <--> int 
+  // for a dense range.
+  _   blocks        = fn.blocks;
+  _   num_blks      = Xarray::length(blocks);
+  _   blk_offsets[] = new_array(num_blks,0); // Used to convert blk,inst --> int
+  _   offset2blk    = Xarray::create_empty();
+  int total_insts   = 0;
+  for(int i=0; i < num_blks; i++) {
+    _ blk = Xarray::get(blocks,i);
+    _ num_insts = Xarray::length(blk.insts) + 1; // +1 for transfer
+    blk_offsets[i] = total_insts;
+    for(int j = 0; j < num_insts; j++) {
+      Xarray::add(offset2blk,i);
+    }
+    total_insts += num_insts;
+  }
+  _ live_insts = Bitvec::new_empty(total_insts);  
+  _ w          = Worklist::create(total_insts);
+
+  _ d_env = ^dead_env(null,w,live_insts,blk_offsets,offset2blk);
+
+  // Mark all the necessarily live instructions
+  // add them to the worklist.
+  for(int i = 0; i < num_blks; i++) {
+    _ blk = Xarray::get(blocks,i);
+    _ num_insts = Xarray::length(blk.insts);
+    for(int j = 0; j < num_insts; j++) {
+      _ inst = Xarray::get(blk.insts,j);
+      if(is_essential_inst(inst)) {
+	_ offset = place2offset(d_env,i,j);
+	Worklist::add(w,offset);
+	Bitvec::set(live_insts,offset);
+      }
+    }
+    _ offset = place2offset(d_env,i,num_insts);
+    Worklist::add(w,offset);
+    Bitvec::set(live_insts,offset);
+  }
+
+  _ ude = ^use_def_env(d_env,dead_code_use,ignore_def@<dead_env>,false);
+
+  // Now iterate through until the worklist is empty.
+  // Iteratively adding instructions.
+  while(!Worklist::is_empty(w)) {
+    _ next = Worklist::remove(w);
+
+    // May want to avoid this for efficiencies sake later. For now though...
+    _ x = offset2place(d_env,next);
+    _ blk_num = x.1;
+    _ inst_num = x.2;
+
+    _ blk = Xarray::get(blocks,blk_num);
+
+    // Get ud_chains for this instruction.
+    d_env.ud_chains = ud_chains[blk_num][inst_num];
+
+    if(Xarray::length(blk.insts) == inst_num) {
+      transfer_use_def(ude,blk.trans);
+    } else {
+      _ inst = Xarray::get(blk.insts,inst_num);
+      instruction_use_def(ude,inst);
+    }    
+  }
+  
+  // Any instruction that is not marked is now dead.
+  // So we rewrite it to no-op.
+  _ dead_insts = Bitvec::new_full(total_insts);
+  Bitvec::diff_two(dead_insts,dead_insts,live_insts);
+  Bitvec::clear_above(dead_insts,total_insts-1);
+  _ num_dead = 0;
+  _ offset = Bitvec::next(dead_insts,0);
+  while(offset>=0) {
+    _ x = offset2place(d_env,offset);
+    _ blk_num = x.1;
+    _ inst_num = x.2;
+    
+    _ blk = Xarray::get(blocks,blk_num);
+    // All transfers are assumed to be live so we should never try
+    // to replace a transfer.  If we do we'll get an exception raised
+    // here.
+
+    // For RTCG, if the instruction is a hole, requires cleaning up the
+    // parent.  Fills and dumps are always essential. For now so are holes.
+    try {
+      Xarray::set(blk.insts,inst_num,^cf_instruction.Nop);
+    } handle y {
+      printf("Xarray set failed.\n");
+      printf("blk_num = %d, inst_num = %d, blk_len = %d\n",
+	     blk_num,inst_num,Xarray::length(blk.insts));
+      
+      raise(y);
+    }
+
+    num_dead++;
+    offset = Bitvec::next(dead_insts,offset+1);
+  }
+
+  /*  if(num_dead != 0) 
+    printf("%d - %s \n",num_dead,fn.name);
+  */
+}
+
+/////////////////////////////// Diagnostics ////////////////////////////
+void print_du_chains(FILE f, reach_def_info info, <var_place>list chains[]) {
+  for(int i=0; i < size(chains); ++i) {
+    var_place def = Xarray::get(info.places.def_info, i);
+    fprintf(f, "\n%d %d %d: ", def.block, def.inst, def.v);
+    for(<var_place>list chain = chains[i]; chain != null; chain = chain.tl) {
+      var_place use = chain.hd;
+      fprintf(f, " %d %d %d ", use.block, use.inst, use.v);
+    }
+  }
+}
+void print_ud_chains(FILE f,
+		     <*(varName,<var_place>list)>list chains[][]) {
+  for(int i=0; i < size(chains); i++) {
+    for(int j = 0; j < size(chains[i]); j++) {
+      fprintf(f,"(%d,%d): ",i,j);
+      for(_ x = chains[i][j]; x!=null; x=x.tl) {
+	fprintf(f,"(%d: ",x.hd.1);
+	for(_ y = x.hd.2; y!=null;y=y.tl) {
+	  fprintf(f,"(%d,%d) ",y.hd.block, y.hd.inst);
+	}
+	fprintf(f,")");
+      }
+      fprintf(f,"\n");
+    }
+  }
+}
+void print_webs(FILE f, reach_def_info info, 
+		<var_place>list chains[], webName webs[]) {
+  for(int i=0; i < size(chains); ++i) {
+    var_place def = Xarray::get(info.places.def_info, i);
+    fprintf(f, "\n%d %d %d: %d", def.block, def.inst, def.v, webs[i]);
+  }
+}
+void print_live_reach(FILE f, <webName>Set::set live_reach[]) {
+  for(int i=0; i < size(live_reach); ++i) {
+    fprintf(f, "\n%d: ", i);
+    Set::iter_c(print_one_live_reach, f, live_reach[i]);
+  }
+}
+static void print_one_live_reach(FILE f, webName n) {
+  fprintf(f, " %d ", n);
+}
+void print_liveness(FILE f, <varName>Set::set all_live[][]) {
+  for(int i=0; i < size(all_live); ++i) {
+    fprintf(f, "\n%d: ", i);
+    for(int j=0; j < size(all_live[i]); ++j) {
+      fprintf(f, "\n%d", j);
+      for(<varName>list l = Set::elements(all_live[i][j]); l!= null; l = l.tl)
+	fprintf(f, " %d ", l.hd);
+    }
+  }
+}
+
+

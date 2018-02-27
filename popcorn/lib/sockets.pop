@@ -1,0 +1,92 @@
+#include "core.h"
+// #include "tal_sockets.h"
+#include "string.h"
+
+union socket_domain {
+  void PF_UNIX;			/* internal value 1 */
+  void PF_INET;			/* internal value 2 */
+}
+
+union socket_type {
+  void SOCK_STREAM;
+  void SOCK_DGRAM;
+  void SOCK_RAW;
+  void SOCK_SEQPACKET;
+}
+
+union sockaddr {
+  string ADDR_UNIX;
+  *(int, int) ADDR_INET;	/* (addr, port) */
+  void ADDR_NULL;
+}
+
+extern int               tal_send(FILE, string);
+extern int               tal_recv(FILE, string, int, int);
+extern int               tal_sendto(FILE, string, sockaddr);
+extern *(int, sockaddr)  tal_recvfrom(FILE, string, sockaddr);
+
+extern FILE              tal_socket(socket_domain, socket_type, int);
+extern void              tal_bind(FILE, sockaddr);
+extern void              tal_listen(FILE, int);
+extern *(FILE, sockaddr) tal_accept(FILE);
+extern void              tal_connect(FILE, sockaddr);
+extern void              tal_close(FILE);
+extern void              tal_unlink(string s);
+extern <FILE> List::list tal_select(<FILE> List::list,
+                                    <FILE> List::list,
+                                    <FILE> List::list, int);
+extern string tal_gethostname();
+extern void   print_sockaddr(sockaddr);
+extern string tal_tmpnam();
+extern int    tal_gethostbyname(string);
+extern string tal_inaddr_to_dot(int);
+extern void tal_signal(int, void f());
+
+exception SockReadError(string);
+
+string sock_read(FILE sd)
+{
+  int n, ofs, len;
+  string slen = "1234";
+  
+  /* all reads should be preceded by a 4 byte length */
+  n = tal_recv(sd, slen, 0, 4);
+
+  /* EOF indicated by n == 0 */
+  if (n == 0)
+    return "";
+
+  if (n != 4)
+    sprintf("*** Error in sock_read: n(%d) != 0 or 4 ***", n);
+
+  /* compute message length */
+  len = slen[0] + (slen[1] << 8) + (slen[2] << 16) + (slen[3] << 24);
+  string s = Core::new_string(len);
+
+  for (ofs = 0; len > 0; ) {
+    n = tal_recv(sd, s, ofs, len);
+    if (n < 0)
+      raise(^SockReadError("Error in sock_read: n < 0"));
+    else if (n == 0)
+      raise(^SockReadError("Error in sock_read: n == 0"));
+    else {
+      len -= n;
+      ofs += n;
+    }
+  }
+  return s;
+}
+
+void sock_send(FILE sd,  string message)
+{
+  int len = size(message);
+  string slen = "1234";
+
+  slen[0] = len & 255;
+  slen[1] = (len >> 8) & 255;
+  slen[2] = (len >> 16) & 255;
+  slen[3] = (len >> 24) & 255;
+
+  tal_send(sd, slen);
+  tal_send(sd, message);
+}

@@ -1,0 +1,604 @@
+/////////////////////////////////////////////////////////////////////////////
+// Poptypestmt:  used to type-check statements and make sure they return
+// properly.  
+/////////////////////////////////////////////////////////////////////////////
+#include "core.h"
+#include "list.h"
+#include "dict.h"
+#include "popsyntax.h"
+#include "poperr.h"
+#include "poptypeenv.h"
+#include "popunify.h"
+#include "poptypeexp.h"
+#define location Gcdfec::seg
+
+open Core;
+open Popsyntax;
+open List;
+open Poptypeenv;
+open Popunify;
+open Poptypeexp;
+
+
+prefix Poptypestmt;
+open Poptypestmt;
+
+/////////////////////////////////////////////////////////////////////////////
+// Checking that a function returns properly
+/////////////////////////////////////////////////////////////////////////////
+// should really be called "does not fall off with an implicit return"
+// now synthesized during type-checking, but still used by Cyclone
+// BROKEN (ask Fred)
+bool does_return(bool in_splice,stmt statement) {
+
+  bool does_return_arm(bool in_splice,switch_arm sw) {
+    return(does_return(in_splice,sw.body));
+  };
+
+  raw_stmt s = statement.raw_stmt;
+  switch (s) {
+  case Skip: return(false);
+  case Exp(e): 
+    switch(e.raw_exp) {
+    case Raise(_): return(!in_splice);
+    default: return(false);
+    }
+  case Seq(p): return(does_return(in_splice,p.1)||does_return(in_splice,p.2));
+  case Return(_): return(!in_splice);
+  case IfThenElse(t): 
+    return(does_return(in_splice,t.2)&&does_return(in_splice,t.3));
+  case While(p): return(false);
+  case Break(_): return(false);
+  case Continue(_): return(!in_splice);
+  case For(q): return(false);
+  case IntSwitch(t): 
+    return(List::forall_c(does_return,in_splice,
+			  List::map(snd@<int,stmt>,t.2)) && 
+	   does_return(in_splice,t.3));
+  case CharSwitch(t): 
+    return(List::forall_c(does_return,in_splice,
+			  List::map(snd@<char,stmt>,t.2)) && 
+	   does_return(in_splice,t.3));
+  case UnionSwitch(t): 
+    return(List::forall_c(does_return_arm,in_splice,t.2) &&
+	   ((t.3 == null) || does_return(in_splice,t.3.v)));
+  case ExnSwitch(t):
+    return(List::forall_c(does_return_arm,in_splice,t.2) &&
+	   ((t.3 == null) || does_return(in_splice,t.3.v)));
+  case Decl(q): return(does_return(in_splice,q.4));
+  case Label(p): return(does_return(in_splice,p.2));
+  case Do(p): return(does_return(in_splice,p.1));
+  case TryHandle(t): return(does_return(in_splice,t.1) && 
+			    does_return(in_splice,t.3));
+  case TryCatchFinally(q): 
+    return(does_return(in_splice,q.1) && 
+	   List::forall_c(does_return_arm,in_splice,q.2) &&
+	   ((q.3 == null) || does_return(in_splice,q.3.v)) &&
+	   ((q.4 == null) || does_return(in_splice,q.4.v)));
+  case Cut(s): 
+    if (!in_splice) return(does_return(true,s)); else return(false);
+  case Splice(s): 
+    if (!in_splice) return(false); else return(does_return(false,s));
+  case With(q): return(does_return(in_splice,q.5));
+  case Rdtsc(_): return false;
+  }
+}
+
+/////////////////////////////////////////////////////////////////////////////
+// Type-checking Statements
+/////////////////////////////////////////////////////////////////////////////
+
+static f_stmt_synth join_synth(f_stmt_synth synth1, f_stmt_synth synth2,
+			       bool unreachable) {
+  // used by if and switches
+  _ merge_un;
+  if(unreachable)          merge_un = mt_varset_g.v;
+  else if(synth1.does_jmp) merge_un = synth2.unassigned;
+  else if(synth2.does_jmp) merge_un = synth1.unassigned;
+  else merge_un = Set::union_two(synth1.unassigned,synth2.unassigned);
+  return ^f_stmt_synth((synth1.does_jmp && synth2.does_jmp) || unreachable,
+		       merge_un);
+}
+static f_stmt_synth decl_synth(global_env g, c_env outer_env,
+			       <*(var,typ)>list vs, bool init, stmt s) {
+  _ vset     = Set::from_list(strcmp,List::map(fst@<var,typ>,List::copy(vs)));
+  _ inner_un = Set::diff(unassigned(outer_env),vset);
+  _ shadows  = Set::intersect(unassigned(outer_env),vset);
+  _ initer;
+  if(init)
+    initer = fun c_env f(c_env env, *(var,typ) pr) { 
+                         return add_var_init(env,pr.1,pr.2); };
+  else
+    initer = fun c_env f(c_env env, *(var,typ) pr) { 
+                         return add_var_uninit(env,pr.1,pr.2); };
+  _ inner_env = set_unassigned(outer_env,inner_un);
+  inner_env = List::fold_left(initer,inner_env,vs);
+  _ synth = tcStmt(g,inner_env,s);
+  if(!synth.does_jmp)
+    synth.unassigned = Set::union_two(synth.unassigned,shadows);
+  return synth;
+}
+static void check_bool(global_env g,f_exp_synth esynth,exp e,string form) {
+    // used by If and loop forms
+    // for now just exit, but really should try to keep going
+  if(!unify(g,^typ.BooleanType,esynth.typ)) {
+    terr4(e.loc,form," argument has type ",typ2string(esynth.typ),
+	  " instead of bool");
+    raise Gcdfec::Exit();
+  }
+}
+
+f_stmt_synth tcStmt(global_env g,c_env env,stmt statement) {
+
+  _ s   = statement.raw_stmt;
+  _ loc = statement.loc;
+  switch s {
+  case Skip:   return ^f_stmt_synth(false,unassigned(env));
+  case Exp(e): 
+    _ esynth = tcExp(g,env,e);
+    return ^f_stmt_synth(esynth.does_raise,un_after_exp(esynth));
+  case Seq*(s1,s2): 
+    _ synth1 = tcStmt(g,env,s1);
+    _ synth2 = tcStmt(g,set_unassigned(env,synth1.unassigned),s2);
+    synth2.does_jmp = synth2.does_jmp || synth1.does_jmp;
+    return synth2;
+  case Return(eopt):
+    typ t = retType(env);
+    if (eopt == null) {
+      switch t {
+      case VoidType: ;
+      default:       terr2(loc,"must return a value of type ",typ2string(t));
+      }
+    } else {
+      exp e      = eopt.v;
+      _   esynth = tcExp(g,env,e);
+      if (!unify_coerce1(g,e,t))
+	terr4(loc,"returns value of type ",typ2string(esynth.typ),
+	      " but requires ",typ2string(t));
+      
+    }
+    return jump_synth_g.v;
+
+  case IfThenElse*(e,s1,s2):
+    _ esynth = tcExp(g,env,e);
+    check_bool(g,esynth,e,"if");
+    _ un_pr  = un_after_bool(esynth);
+    _ synth1 = tcStmt(g,set_unassigned(env,un_pr.1),s1);
+    _ synth2 = tcStmt(g,set_unassigned(env,un_pr.2),s2);
+    return join_synth(synth1,synth2,esynth.does_raise);
+
+  case While*(e,s):
+    // Definite assignment not like Java yet -- see comment in ML version
+    _ esynth = tcExp(g,env,e);
+    check_bool(g,esynth,e,"while");
+    _ un_true = un_after_bool(esynth).1;
+    tcStmt(g,set_inloop(set_unassigned(env,un_true)),s);
+    return ^f_stmt_synth(esynth.does_raise,
+			 un_after_exp(esynth)); // as if breaks immediately
+  case Break(labelopt):
+    if (labelopt == null) {
+      if (!inloop(env)) terr(loc,"break not inside loop");
+    } else if (!label_bound(env,labelopt.v))
+      terr3(loc,"label ",labelopt.v," is undefined");
+    return jump_synth_g.v;
+  case Continue(labelopt):
+    if (labelopt == null) {
+      if (!inloop(env)) terr(loc,"continue not inside loop");
+    } else if (!label_bound(env,labelopt.v))
+      terr3(loc,"label ",labelopt.v," is undefined");
+    return jump_synth_g.v;
+  case For*(e1,e2,e3,s):
+    _ esynth1 = tcExp(g,env,e1);
+    _ esynth2 = tcExp(g,set_unassigned(env,un_after_exp(esynth1)),e2);
+    check_bool(g,esynth2,e2,"2nd for");
+    _ un_true  = un_after_bool(esynth2).1;
+    _ env_true = set_inloop(set_unassigned(env,un_true));
+    _ synth_s  = tcStmt(g,env_true,s);
+    _ esynth3  = tcExp(g,env_true,e3); // as if continue immediately
+    return ^f_stmt_synth(esynth1.does_raise || esynth2.does_raise,
+			 un_after_exp(esynth2)); // as if break immediately
+  case IntSwitch*(e,ss,s):
+    // pull out the case tags and sort them
+    _ esynth = tcExp(g,env,e);
+    // XXX -- should allow unsigned values too!
+    if (!unify_coerce_int(g,e))
+      terr3(loc,"switch argument has type ",typ2string(esynth.typ),
+	    " but int cases");
+    // check that the case tags are unique, ss cannot be null (parser check)
+    _ indices = merge_sort(intcmp,map(fst@<int,stmt>,ss));
+    while (indices.tl != null) {
+      if (indices.hd == indices.tl.hd)
+	terr2(loc,"switch has two cases for ",string_of_int(indices.hd));
+      indices = indices.tl;
+    }
+    // type-check each case
+    env = set_unassigned(env,un_after_exp(esynth));
+    // order is bad here for error message (does default first)
+    _ synth = tcStmt(g,env,s);
+    while (ss != null) {
+      _ this_synth = tcStmt(g,env,ss.hd.2);
+      synth = join_synth(synth,this_synth,esynth.does_raise);
+      ss = ss.tl;
+    }
+    return synth;
+
+  case CharSwitch*(e,ss,s):
+    // pull out the case tags and sort them
+    _ esynth = tcExp(g,env,e);
+    if (!unify_coerce1(g,e,^typ.CharType))
+      terr3(loc,"switch argument has type ",typ2string(esynth.typ),
+	    " but int cases");
+    // check that the case tags are unique, ss cannot be null (parser check)
+    _ indices = merge_sort(charcmp,map(fst@<char,stmt>,ss));
+    while (indices.tl != null) {
+      if (indices.hd == indices.tl.hd)
+	terr2(loc,"switch has two cases for ",string_of_char(indices.hd));
+      indices = indices.tl;
+    }
+    // type-check each case
+    env = set_unassigned(env,un_after_exp(esynth));
+    // order is bad here for error message (does default first)
+    _ synth = tcStmt(g,env,s);
+    while (ss != null) {
+      _ this_synth = tcStmt(g,env,ss.hd.2);
+      synth = join_synth(synth,this_synth,esynth.does_raise);
+      ss = ss.tl;
+    }
+    return synth;
+
+  case UnionSwitch*(e,ss,def): 
+    return tcUnionSwitch(g,env,loc,statement,e,ss,def);
+  case ExnSwitch*(e,ss,def):   
+    return tcExnSwitch(g,env,loc,e,ss,def);
+
+  case Decl(p):
+    _ x = p.1;
+    _ t = p.2;
+    _ eopt = p.3;
+    _ s = p.4;
+
+    check_valid_type(loc,g,tyvars(env),t);
+    // we now only default initialize variables declared with the form t x[e]
+    switch t {
+    case ArrayType*(t2,eopt2):
+      if(eopt == null && eopt2 != null)
+	p.3 = eopt = ^Opt(default_initializer(g,t,loc));
+    default: ;
+    }
+    bool init;
+    if(eopt==null)
+      init = false;
+    else {
+      init = true;
+      _ e      = eopt.v;
+      _ esynth = tcExp(g,env,e);
+
+      if (!unify_coerce1(g,e,t))
+	terr4(loc,x," declared with type ",typ2string(t),
+	      strconcat(" but initializer has type ",typ2string(esynth.typ)));
+      env = set_unassigned(env,un_after_exp(esynth));
+    }
+    return decl_synth(g,env,^list(^(x,t),null),init,s);
+
+  case Label*(x,s):
+    // deviates from Java as though immediate break
+    tcStmt(g,add_label(env,x),s);
+    return ^f_stmt_synth(false,unassigned(env));
+  case Cut(s):
+    switch env {
+    case Frame(p):
+      // set_outloop to prevent break/continue across cut
+      tcStmt(g,set_outloop(^c_env.Hidden(p)),s);
+      // very conservative in presence of Cyclone right now
+      // BUG: splice might assign to variables (see comments in poptypeexp)
+      return ^f_stmt_synth(false,unassigned(env));
+    case Hidden(_):    
+      terr(loc,"cannot cut while codegen is in cut");
+      return jump_synth_g.v;
+    case Outermost(_): 
+      terr(loc,"cut can only be used within codegen");
+      return jump_synth_g.v;
+    }
+
+  case Splice(s):
+    switch env {
+    case Hidden(p):
+      // set_outloop to prevent break/continue across splice
+      tcStmt(g,set_outloop(^c_env.Frame(p)),s);
+      // very conservative in presence of Cyclone right now
+      // BUG: splice might assign to variables (see comments in poptypeexp)
+      return ^f_stmt_synth(false,unassigned(env));
+    case Frame(_):     
+      terr(loc,"cannot splice while already in codegen");
+      return jump_synth_g.v;
+    case Outermost(_): 
+      terr(loc,"splice can only be used within cut");
+      return jump_synth_g.v;
+    }
+  case Do*(s,e):
+    _ esynth = tcExp(g,env,e); // env b/c might continue imediately
+    check_bool(g,esynth,e,"do-while");
+    tcStmt(g,set_inloop(env),s);
+    return ^f_stmt_synth(false,unassigned(env)); // may break immediately
+  case TryHandle*(s1,x,s2):
+    _ synth1 = tcStmt(g,env,s1);
+    _ synth2 = decl_synth(g,env,^list(^(x,^typ.ExnType),null),true,s2);
+    return join_synth(synth1,synth2,false);
+
+  case TryCatchFinally(q):
+    // to simplify our lives for now, we just translate this into a
+    // try/handle expression -- this means we can't deal with finally
+    // clauses yet.
+    if (q.4 != null) terr(loc,"finally clauses not supported yet -- sorry.");
+    var exn_var = "_";
+    exp exn_var_exp = ^exp(null,^raw_exp.Var(exn_var),null,loc);
+    stmt sw = ^stmt(^raw_stmt.ExnSwitch(^(exn_var_exp,q.2,q.3)),loc);
+    raw_stmt rs = ^raw_stmt.TryHandle(^(q.1,exn_var,sw));
+    statement.raw_stmt = rs;
+    return tcStmt(g,env,statement);
+  case With(q): return tcWith(g,env,loc,statement,q);
+  case Rdtsc *(e1,e2): return tcRdtsc(g,env,loc,statement,e1,e2);
+    
+  }
+} // end tcStmt
+
+static f_stmt_synth tcUnionSwitch(global_env g,c_env env,location loc,
+				  stmt statement,
+				  exp e,<switch_arm>list ss,<stmt>Opt sopt) {
+  _ esynth = tcExp(g,env,e);
+  _ t      = compress(esynth.typ);
+  env = set_unassigned(env,un_after_exp(esynth));
+  switch t {
+  case NamedType*(u,ts):
+    _ ud;
+    try
+      ud = Dict::lookup(g.unions,u).1;
+    handle y switch y {
+      case Dict::Absent: 
+	terr3(loc,"switch has argument type ",typ2string(t)," but union cases");
+      return jump_synth_g.v;
+    }
+    destruct_union(g,u);
+    _ inst   = List::zip(ud.tyvars,ts);
+    _ fields = merge_sort(strcmp,map(get_switch_arm_field,ss));
+    // check that the cases are unique
+    _ duplicate = check_unique(strcmp,fields);
+    if (duplicate != null)
+      terr3(loc,"duplicate field ",duplicate.v," in switch");
+    // check for redundant default
+    if(List::length(fields) == List::length(ud.fields) && (sopt != null))
+      terr(loc,"switch has redundant default");
+    // check that the cases are exhaustive
+    if(sopt == null)
+      for (_ ud_fields=ud.fields; ud_fields != null; ud_fields = ud_fields.tl) 
+	if (!mem(strcmp,fields,ud_fields.hd.1))
+	  terr2(loc,"missing case for field ",ud_fields.hd.1);
+    _ synth = ^f_stmt_synth(true,mt_varset_g.v); // correct base case, ss!=null
+    // type-check each case
+    while (ss != null) {
+      switch_arm arm = ss.hd;
+      field_name f   = arm.field;
+      pattern    pat = arm.pat;
+      stmt       s   = arm.body;
+      Gcdfec::seg arm_loc = s.loc;
+      typ t2;
+      try 
+	t2 = List::assoc_cmp(strcmp,ud.fields,f);
+      handle y switch y {
+      case Not_found: 
+	terr4(arm_loc,typ2string(t)," has no ",f," field");
+	return jump_synth_g.v;
+      }
+      // determine the right binding and type-check the statement
+      t2 = subst(inst,t2);
+      _ vs = tcPattern(g,env,arm_loc,f,t2,pat);
+      _ this_synth = decl_synth(g,env,vs,true,s);
+      synth = join_synth(synth,this_synth,esynth.does_raise);
+      // move on to the next case
+      ss = ss.tl;
+    }
+    // type-check the default case of the union switch
+    if (sopt != null) {
+      _ this_synth = tcStmt(g,env,sopt.v);
+      synth = join_synth(synth,this_synth,esynth.does_raise);
+    }
+    return synth;
+  case ExnType:
+    statement.raw_stmt = ^raw_stmt.ExnSwitch(statement.raw_stmt.UnionSwitch);
+    return tcStmt(g,env,statement);
+  default: 
+    terr3(loc,"switch has argument type ", typ2string(t)," but union cases");
+    return jump_synth_g.v;
+  }
+} // end tcUnionSwitch
+
+static f_stmt_synth tcExnSwitch(global_env g,c_env env,location loc,
+				exp e, <switch_arm>list ss, <stmt>Opt sopt) {
+  _ esynth = tcExp(g,env,e);
+  _ t      = compress(esynth.typ);
+  env = set_unassigned(env,un_after_exp(esynth));
+  if (t != ^typ.ExnType)
+    terr2(loc,"exception switch expression has type ",typ2string(t));
+  // must complete the exception names of the fields
+  for(_ ss = ss; ss != null; ss = ss.tl) {
+    _ arm = ss.hd;
+    _ f   = arm.field;
+    if (!Dict::member(g.exceptions,f)) {
+      _ fopt = Dict::lookup_opt(g.open_vals,f);
+      if (fopt == null) {
+	terr2(loc,"there is no exception ",f); 
+	raise Gcdfec::Exit();
+      } else 
+	arm.field = fopt.v;
+    }
+    destruct_exn(g, arm.field);
+  }
+  // check that the cases are unique
+  _ fields = merge_sort(strcmp,map(get_switch_arm_field,ss));
+  _ duplicate = check_unique(strcmp,fields);
+  if (duplicate != null) 
+    terr3(loc,"duplicate exception ",duplicate.v," in switch");      
+  _ synth = ^f_stmt_synth(true,mt_varset_g.v); // correct base case, ss!=null
+  // check each case is well-formed
+  while (ss != null) {
+    switch_arm arm = ss.hd;
+    field_name f   = arm.field;
+    pattern    pat = arm.pat;
+    stmt       s   = arm.body;
+    // this should never fail due to completion above -- famous last words...
+    typ t  = Dict::lookup(g.exceptions,f).1;
+    _   vs = tcPattern(g,env,s.loc,f,t,pat);
+    _   this_synth = decl_synth(g,env,vs,true,s);
+    synth = join_synth(synth,this_synth,esynth.does_raise);
+    ss = ss.tl;
+  }
+  // check default case
+  if (sopt != null) {
+    _ this_synth = tcStmt(g,env,sopt.v);
+    synth = join_synth(synth,this_synth,esynth.does_raise);
+  }
+  return synth;
+} // end tcExnSwitch
+
+// Used by both tcUnionSwitch and tcExnSwitch.  Given a c_env, type, and
+// pattern, checks that the pattern matches the type (updating info in
+// the abstract syntax) and returns a list of var,typ bindings
+static <*(var,typ)>list tcPattern(global_env g,c_env env,location loc,
+				  field_name f,typ t, pattern pat) {
+  switch pat {
+  case None: 
+    if (t != ^typ.VoidType) 
+      terr3(loc,"the case for ",f," should have a pattern");
+    return null;
+  case Prim(p):
+    if (t == ^typ.VoidType)
+      terr3(loc,"the case for ",f," should not have a pattern");
+    switch p {
+    case Wild(p):
+      p.1 = t;
+      return null;
+    case Var(p):
+      p.2 = t;
+      return ^list(p,null);
+    }
+  case Tuple(ps):
+    switch t {
+    case TupleType(ts):
+      <var>list        vs  = null;
+      <*(var,typ)>list ans = null;
+      while ((ps != null) && (ts != null)) {
+	prim_pattern p = ps.hd;
+	typ t = ts.hd;
+	ps = ps.tl; ts = ts.tl;
+	switch p {
+	case Wild(x):
+	  x.1 = t;
+	case Var(x):
+	  x.2 = t;
+	  if (List::mem(strcmp,vs,x.1))
+	    terr3(loc,"duplicate variable ",x.1," in tuple pattern");
+	  vs  = ^list(x.1,vs);
+	  ans = ^list(x,ans);
+	}
+      }
+      if (ps != null) terr(loc,"too many pattern fields");
+      if (ts != null) terr(loc,"too few pattern fields");
+      return ans;
+
+    default: 
+      terr2(loc,"tuple pattern does not match ",typ2string(t));
+      return null;
+    }
+  }
+}
+
+static f_stmt_synth tcWith(global_env g,c_env env,location loc,stmt statement,
+			   *(var,<typ>Opt,<var>list,exp,stmt) q) {
+  
+  typ make_var(var v) { return ^typ.VarType(v); };
+
+  var       x  = q.1;
+  <var>list vs = q.3;
+  exp       e  = q.4;
+  stmt      s  = q.5;
+  _ esynth = tcExp(g,env,e);
+  _ t = compress(esynth.typ);
+  env = set_unassigned(env,un_after_exp(esynth));
+  switch t {
+  case NamedType*(n,ts):
+    _ ad;
+    try 
+      ad = Dict::lookup(g.abstypes,n).1;
+    handle excep switch excep {
+    case Dict::Absent: 
+      terr2(loc,n," is not an abstype");
+      return jump_synth_g.v;
+    }
+    destruct_abstype(g,n);
+    _ inst = List::zip(ad.all_tyvars,ts);
+    _ inst2;
+    try 
+      inst2 = List::zip(ad.exist_tyvars,List::map(make_var,vs));
+    handle excep switch excep {
+    case List_mismatch:
+      terr2(loc,"wrong number of abstract type variables for abstype ",n);
+      return jump_synth_g.v;
+    }
+    typ inst_t = subst(List::append(inst,inst2),ad.defn);
+    q.2 = ^Opt(inst_t);
+    env = add_tyvars(env,loc,vs);
+    return decl_synth(g,env,^list(^(x,inst_t),null),true,s);
+
+  default: 
+    terr3(loc,"this expression has type ",typ2string(t),
+	  " which is not an abstype");
+    return jump_synth_g.v;
+  }
+}
+
+static f_stmt_synth tcRdtsc(global_env g,
+			     c_env env,
+			     location loc,
+			     stmt statement,
+			     exp e1, 
+			     exp e2) {
+
+  _ v1;
+  switch e1.raw_exp {
+  case Var(v) : v1 = v;
+  default: 
+    terr(loc,"First argument to Rdtsc must be a variable.");
+    v1 = "bogus1";
+  }
+
+  _ v2;
+  switch e2.raw_exp {
+  case Var(v) : v2 = v;
+  default:
+    terr(loc, "Second argument to Rdtsc must be a variable.");
+    v2 = "bogus2";
+  }
+
+  _ env_hi = set_unassigned(env,Set::delete(unassigned(env),v1));
+  _ env_lo = set_unassigned(env,Set::delete(unassigned(env),v2));
+
+  _ synth_hi = tcExp(g,env_hi,e1);
+  _ synth_lo = tcExp(g,env_lo,e2);
+
+  _ unsigned_int = ^typ.IntType(^(false,^size_of.B4));
+    if (!unify_coerce_int(g,e1) ||
+	!unify_coerce_int(g,e2)) {
+      terr4(loc,"Both arguments to rdtsc should be ints not ",
+	    typ2string(e1.typ.v),
+	    " and ",
+	    typ2string(e2.typ.v));
+    }
+  _ un_after = Set::delete(Set::delete(un_after_exp(synth_lo),v1),v2);
+  _ does_raise = synth_hi.does_raise || synth_lo.does_raise;
+  return ^f_stmt_synth(does_raise, un_after);
+} 
+
+
+
+
+

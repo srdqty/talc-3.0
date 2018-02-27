@@ -1,0 +1,43 @@
+// int_msort.pop
+// Merge sorts a list of 100 integers.
+// Uses the functionality provided by int_list.pop
+
+#include "core.h"
+open Core;
+
+extern int_list;
+extern void print_list(int_list);
+extern int_list merge_sort(int_list);
+extern int_list mk_list(int);
+
+void pop_main() 
+{
+  string s[] = std_args();
+
+  if (size(s)!=2) 
+    {
+      print_string(s[0]);
+      print_string(": usage: <num>");
+      print_newline();
+    } 
+  else 
+    {
+      int iterations = int_of_string(s[1]);
+      int i = 0;
+      
+      int_list x = mk_list(100);  
+      print_list(x);
+      print_newline();
+      
+      for (i=0; i < iterations; i++) 
+	{
+	  x = merge_sort(x);
+	  print_string(".");
+	}	
+      print_newline();
+      print_list(merge_sort(x));
+    }
+  return;
+}
+
+// EOF: int_msort.pop

@@ -1,0 +1,84 @@
+How to Release TALC
+===================
+
+1) Tagging the files.  With CVSROOT set to where the repository is,
+run the command cvs rtag release-x_x talc/<filename> for the files to
+be released.  Currently I do:
+
+cvs rtag release-x_x talc/Makefile talc/README talc/INSTALL talc/util \
+                     talc/computil talc/talx86 talc/popcorn talc/scheme \
+                     talc/build talc/runtime talc/stripm \
+		     talc/doc/tal.el talc/doc/TODO talc/doc/CHANGES 
+                     talc/doc/talx86_lang_spec.tex talc/doc/proof.sty \
+                     talc/toplevel talc/apps talc/tests
+
+2) Export the sources.  Goto \\bigbird\til\talc\releases and run the
+command:
+
+cvs export -rrelease-x_x -d talc-x.x talc
+cd talc-x.x
+touch .depend
+
+Check that the directory build exists, if not make it.  Check that the
+directory apps/popcorn/build exists, if not make it.
+
+3) Update the files INSTALL & README to reflect the new release number
+and check that they are uptodate (people are lazy about this,
+releasers should not be).
+
+4) Check that it builds.  I would suggest:
+
+make depend
+make clean all runtime scheme_runtime
+make PROFILE=y clean all runtime scheme_runtime
+make NATIVE=y clean all runtime scheme_runtime
+
+5) Check that the test files work.  I would suggest:
+
+tests/popcorn:
+  make all                            (the diff at end should produce no ouput)
+  make USETALC=y all                  (ditto)
+
+apps/popcorn:
+  make all scheme_linkcheck
+  make clean
+
+tests/scheme:
+  scheme --TALC *.s    (These tests actually fail, but do them anyway)
+  scheme --TALC *.ss
+
+6) If either step (4) or (5) fails then start again.  That is, delete
+the exported files, remove the tags (cvs rtag -rrelease-x_x -d
+release-x_x talc), checkout the release as a working copy, fix the
+problems, commit the changes, release the working copy (cvs release
+<working dir>), delete the working copy, start again from (1).
+
+7) Clean the repository:
+
+for i in util computil talx86 runtime toplevel popcorn scheme cfg regalloc; \
+  do (cd $i; rm -f *.cmo *.cmi *.cmx *.obj *.o *~ *.output *.exe) \
+done
+(cd build; rm -f *.cma *.cmxa *.lib)
+rm -f talx86/tallex.ml talx86/talparser.ml talx86/talparser.mli \
+      popcorn/poplex.ml popcorn/popparse.ml popcorn/popparse.mli \
+      toplevel/lineno.ml \
+      scheme/slex.ml scheme/sparse.ml scheme/sparse.mli *~
+(cd tests/popcorn; make clean)
+(cd tests/scheme; rm -f *.obj *.o *.lst *.exe *~)
+(cd tests/talx86; rm -f *.obj *.o *.lst *.exe *~)
+(cd doc; rm -f *.aux *.dvi *.log *.elc)
+
+8) Create a zip file.  I use WinZip to do this.  Create a new archive
+in the parent directory of talc-x.x.  Add with wildcards the files
+talc-x.x\*.*.  Turn on store extra folder info and recursive into
+folders, turn off store lowercase filenames (this is in the options
+menu stuff somewhere).
+
+9) Copy the zip file somewhere, like into the web page directories.
+
+Currently the releases are stored in \\bigbird\til\releases\talc-x.x
+and \\bigbird\til\talc\releases\talc-x.x.zip.
+
+10) If these instructions are out of date, then update them.
+
+Neal Glew

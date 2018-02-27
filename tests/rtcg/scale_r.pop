@@ -1,0 +1,43 @@
+#include "poptiming.h"
+#include "core.h"
+open Core;
+
+// Scale a vector by a constant.
+int scale_gen(int u[])(int) {
+  unsigned int len = size(u);
+
+  return codegen(int dot(int v) {
+    int result = 0;
+    cut {
+      for(unsigned int i = 0; i < len; ++i)
+	splice { result += fill(u[i]) * v; }
+    }
+    return result;
+  });
+} 
+
+void pop_main()
+{
+  string s[] = std_args();
+  if (size(s)!=2) 
+    {
+      print_string(s[0]);
+      print_string(": usage: <vec_len>");
+      print_newline();
+      return;
+    } 
+
+  int vec_len = int_of_string(s[1]);
+  int u[] = new_array(vec_len,0);
+  int x = 5;
+
+  for(int i = 0; i < vec_len; i++) {
+    u[i] = i;
+  }
+
+  MAIN_TEST("scale",COMPILER,RTCG_KIND,s[1],_ f = scale_gen(u),f(x));
+
+  _ result = f(x);
+  printf("vec_len = %d, result = %d\n",vec_len, result);
+}
+

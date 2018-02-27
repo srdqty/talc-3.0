@@ -1,0 +1,26 @@
+#include <core.h>
+#include <string.h>
+
+open Core;
+
+void pop_main() {
+
+  printf("hello\n");
+  printf("32 = %d\n",32);
+  printf("foo = %s\n","foo");
+  printf("c = %c\n",'c');
+  printf("exp: %d * %d = %d\n",3,2,3*2);
+  printf("blah: %s %d %c %c\n","howdy",3,'a','A');
+  
+  fprintf(tal_stdout,"Hello\n");
+  fprintf(tal_stdout,"32 = %d\n",32);
+  fprintf(tal_stdout,"foo = %s\n","foo");
+  fprintf(tal_stdout,"c = %c",'c');
+  fprintf(tal_stdout,"exp: %d * %d = %d\n",3,2,3*2);
+  fprintf(tal_stdout,"blah: %s %d %c %c\n","howdy",3,'a','A');
+
+  printf("%x %u\n",0xfeedface,0xfeedface);
+
+  string s = sprintf("%d %x %u %s %c\n",3,0xfeedface,0xdeadbeef,"hello",'A');
+  printf("%s",s);
+}

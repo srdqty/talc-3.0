@@ -1,0 +1,137 @@
+FASTnet --------------------------------------------------------------------
+
+Single ---------------------------------------------------------------------
+
+To run non-regression suite in "single node" mode, do the following:
+
+  $ make run
+  $ make check
+
+This executes a number of tests and checks their results with a
+reference file.  If there are no errors, the "diff" command will not
+find any differences.
+
+Distributed ----------------------------------------------------------------
+
+To test the distributed system, create a topology of FASTnet nodes.
+For example, the following topology:
+
+  4001 - 4002/4004 - 4005
+           4003         
+             |        
+           4007     
+           4008   
+             |  
+           4009
+
+is created by executing the following five commands in five different
+windows:
+
+  $ ./pland.exe  -if i1
+  $ ./pland.exe  -if i2
+  $ ./pland.exe  -if i3
+  $ ./pland.exe  -if i4
+  $ ./pland.exe  -if i5
+
+Each window creates a FASTnet node given an interface file.  Now PLAN
+programs can be injected into the system.  The first the you have to
+do is build routing tables by running a routing protocol.  This is
+done by executing the following command in (yet another) windows:
+
+  $ ./inject.exe  spf.plan
+
+Each node should print out a message each time it receives, evaluates,
+sends, or fowards a packet.  Any "print" commands in the PLAN programs
+should also be printed out, of course.  Once this is done, other
+programs (that use OnRemote) can be injected, e.g.
+
+  $ ./inject.exe  ping.plan
+
+The ping.plan program sends a ping PLAN packet from the machine:4001
+node to the machine:4009 node, which returns an ack packet back to the
+machine:4001 node.  The two nodes in the path should forward the
+packets in both directions, and the node not in the path should not do
+anything.
+
+  $ ./inject.exe  traceroute.plan
+
+The traceroute.plan program sends a traceroute PLAN packet from the
+machine:4001 node to the machine:4009 node.  Each node along this path
+returns an ack packet back to the machine:4001 node, which prints out
+its hostname (and well as resource-bound information).
+
+  ./inject.exe  broadcast_msg.plan
+
+... broadcasts a message on all of its neighbors.
+
+  ./inject.exe  broadcast_msg.plan
+
+... broadcasts a message to all nodes on the network.
+
+  ./inject.exe  rb.plan
+
+... tests the resource bound usage.  If initial resource bound is set
+to 4, packet will not reach all the nodes in the network.  If it is
+set to 5, it will.
+
+  ./inject.exe svcs.plan
+  ./inject.exe simpserv.plan
+  ./inject.exe test_svcs.plan  (remove this)
+
+
+Adaptive Network Services --------------------------------------------------
+
+(not currently working)
+
+dserv.pop: server code dynamically linked into PLANet node
+dserv.plan: 
+
+  uuencode -m dserv.o dserv.o > dserv.o.uu
+  uuencode -m dserv.to dserv.to > dserv.to.uu
+
+  uuencode -m simpserv.o simpserv.o > simpserv.o.uu
+  uuencode -m simpserv.to simpserv.to > simpserv.to.uu
+
+
+  uuencode -m rtcgtest.o rtcgtest.o > rtcgtest.o.uu
+  uuencode -m rtcgtest.to rtcgtest.to > rtcgtest.to.uu
+
+  ./inject.exe simpserv.plan
+  ./inject.exe usesimp.plan
+
+
+  4001 - 4002/4004 - 4005(/4006)
+           4003         .
+             |        .
+           4007     .
+           4008   .
+             |  .
+        4009(/4010)
+
+
+     ./pland.exe  -if i3a
+     ./pland.exe  -if i5a
+
+file dependencies ----------------------------------------------------------
+
+           (planbase.pop)
+
+             lex.pop   absyn.pop
+                |     /        \
+            parse.pop        env.pop
+            /   |              /
+ network.pop    |            /
+	    \   |          /
+              svc.pop    /
+                |      /
+             eval.pop
+            /        \
+        plan.pop   pland.pop
+
+Notes:
+  - env.pop and svc.pop use prefix notation for modules
+
+todo -----------------------------------------------------------------------
+
+  - Adaptive Network Services: verification fails during dynamic linking
+  - better data hiding

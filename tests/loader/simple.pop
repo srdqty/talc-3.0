@@ -1,0 +1,8 @@
+?struct fooT {
+  int a;
+  int b;
+}
+
+int foo(int a) {
+  return a +1;
+}

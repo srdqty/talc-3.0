@@ -1,0 +1,26 @@
+fun ret (source) =
+  OnRemote (|print|("Success"), source, getRB (), defaultRoute)
+
+svc checksum : 'a chunk -> unit chunk
+
+fun checksum_em (chunks,c) =
+  (checksum(c)::chunks)
+
+svc generateKey : void -> key
+svc sendAck : ('a chunk,key,int) -> unit chunk
+svc fragment : ('a chunk,int) -> unit chunk list
+svc checksum_overhead : int
+  
+(* Do ping such that
+   - the packet is fragmented, and each fragment is checksummed
+   - the ack sent back once the whole packet is reconstructed *)
+fun ping(source, dest) =
+  let val c = |ret|(source)
+      val seq = generateKey()
+      val d = sendAck(c,seq,32)
+      val p = defaultRoute(dest)
+      val cs = fragment(d,getMTU(snd p) - checksum_overhead)
+      val ds = foldl(checksum_em,[],cs)
+      val len = length(ds) in
+    RetransOnRemote(ds,seq,3,dest,(getRB()/3)/len,defaultRoute)
+  end

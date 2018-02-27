@@ -1,0 +1,4995 @@
+#define PR(x) { printf("%d\n",(x)); fflush(tal_stdout); }
+// Translate the IL with register assignment and liveness information to TAL
+#include "popconfig.h"
+
+////////////////////////// Module Issues /////////////////////////
+
+#include "core.h"
+#include "xarray.h"
+#include "dict.h"
+#include "id.h"
+#include "set.h"
+#include "bitvec.h"
+#include "arg.h"
+
+open Core;
+
+#include "poperr.h"
+#include "popsyntax.h"
+#include "popil.h"
+#include "popregalloc.h"
+#include "poptalenv.h"
+#include "poptaltypes.h"
+#include "tal.h"
+#include "popilprint.h"
+#include "popilanalyze.h"
+#include "popiltype.h"
+#include "popprofile.h"
+
+extern Arg::bool_ref Popcorn::unsafe_arrays;
+
+open Popil;
+open Poptalenv;
+open Poptaltypes;
+open Tal;
+
+// not sure printing should happen from this module, but okay for now
+#include "talpp.h"
+#include "talout.h"
+
+prefix Popcorn {
+extern Arg::bool_ref no_verbose_exn; // from popcorn.pop
+}
+
+prefix Popiltal;
+open   Popiltal;
+open Id;
+
+/////////////////////////// Syntactic Niceties ////////////////////////
+
+#define list   List::list
+#define xarray Xarray::xarray
+#define dict   Dict::dict
+// #define id     Id::id
+// Try referring to code_block's id field with this defined!
+#define varName   int
+#define blockName int
+
+// #define DEBUG_FLOATS
+
+#ifdef DEBUG_FLOATS 
+#  define FP_DEBUG(X) X
+#  define FP_DEBUG_PRN0(X)  printf(X)
+#  define FP_DEBUG_PRN1(X,Y)  printf(X,Y)
+#  define FP_DEBUG_PRN2(X,Y,Z)  printf(X,Y,Z)
+#  define FP_DEBUG_PRN3(X,Y,Z,W)  printf(X,Y,Z,W)
+#  define FP_DEBUG_PRN4(X,Y,Z,W,U)  printf(X,Y,Z,W,U)
+#  define FP_DEBUG_ENV fp_env_print(env)
+#else
+#  define FP_DEBUG(X)
+#  define FP_DEBUG_PRN0(X)
+#  define FP_DEBUG_PRN1(X,Y)
+#  define FP_DEBUG_PRN2(X,Y,Z)
+#  define FP_DEBUG_PRN3(X,Y,Z,W)
+#  define FP_DEBUG_PRN4(X,Y,Z,W,U)
+#  define FP_DEBUG_ENV
+#endif
+
+#define EMIT(x) Xarray::add(env.current_instrs, ^instruction.x)
+#define EMIT_INSTRUCTION(x) Xarray::add(env.current_instrs, x)
+
+#define EMIT_FPS(X,A) EMIT(FPsomeargs(^(^fpsomeargs.X,A)))
+#define EMIT_FP(X)   EMIT(FPnoargs(^fpnoargs.X))
+#define ST(I) ^.FPstack(I)
+#define ST2(B,I) ^.FPstack2(^(B,I))
+#define FP32(X) ^.FPgenop(^(^scale.Byte4,X))
+#define FP64(X) ^.FPgenop(^(^scale.Byte8,X))
+
+static reg eax = ^reg.Eax;
+static reg ebx = ^reg.Ebx;
+static reg ecx = ^reg.Ecx;
+static reg edx = ^reg.Edx;
+static reg esi = ^reg.Esi;
+static reg edi = ^reg.Edi;
+static reg ebp = ^reg.Ebp;
+static reg esp = ^reg.Esp;
+static genop geax = ^genop.Reg(^reg.Eax);
+static genop gebx = ^genop.Reg(^reg.Ebx);
+static genop gecx = ^genop.Reg(^reg.Ecx);
+static genop gedx = ^genop.Reg(^reg.Edx);
+static genop gesi = ^genop.Reg(^reg.Esi);
+static genop gedi = ^genop.Reg(^reg.Edi);
+static genop gebp = ^genop.Reg(^reg.Ebp);
+static genop gesp = ^genop.Reg(^reg.Esp);
+
+static genop prjr(reg r, int offset) { 
+  return ^genop.Prjr(^(^coerce(r,null), offset, null));
+}
+
+static genop prjr_coerce(reg r, int offset, <coercion>list cs) {
+ return ^genop.Prjr(^(^coerce(r,cs), offset, null));
+} 
+static <id>coerce jcc_dest(cg_env env, cf_block blk) {
+  return ^coerce(blk.label, branch_tapp(env, blk));
+}
+static <genop>coerce absjump_dest(cg_env env, cf_block blk) {
+  return ^coerce(^genop.Addr(blk.label), branch_tapp(env, blk));
+}
+
+static <id>Opt nullFailureLab = null;
+static id nullFailureLabel() { 
+  if(nullFailureLab == null)
+    nullFailureLab = ^Opt(Id::id_new("nullFailure"));
+  return nullFailureLab.v;
+}
+static <id>Opt unionFailureLab = null;
+static id unionFailureLabel() { 
+  if(unionFailureLab == null)
+    unionFailureLab = ^Opt(Id::id_new("unionFailure"));
+  return unionFailureLab.v;
+}
+static <id>Opt arrayFailureLab = null;
+static id arrayFailureLabel() {
+  if(arrayFailureLab == null)
+    arrayFailureLab = ^Opt(Id::id_of_string("_array_bounds_error"));
+  return arrayFailureLab.v;
+}
+
+// Cyclone +
+static int operand2tptr(cg_env env, cf_operand o) {
+  switch operand_type(env.fn,o) {
+  case TemplPtr(x): return x;
+  default: BUG("Expected template pointer.")
+  }
+}
+
+static int operand2region(cg_env env, cf_operand o) {
+    switch operand_type(env.fn,o) {
+    case CodeRgn(x): return x;
+    default: BUG("Expected code region")
+    }
+}
+
+// Cyclone - 
+
+////////////////////////// Top level //////////////////////////////////
+open Talpp {
+void trans_file(string basename, string modname, cf_file il) {
+  
+    string talfile    = strconcat(basename, ".tal");
+    string impfileabs = strconcat(basename, "_i.tali");
+    string expfileabs = strconcat(basename, "_e.tali");
+    string impfile    = strconcat(modname,  "_i.tali");
+    string expfile    = strconcat(modname,  "_e.tali");
+    string objectfile = strconcat(basename, Talout::object_file_suffix);
+    
+    // compile types and print what precedes the code in the .tal file
+    tg_env t_env = trans_typdecls(il);
+    dg_env d_env = ^dg_env(Xarray::create_empty(),
+			   Xarray::create_empty(),
+			   Xarray::create_empty());
+
+    Popprofile::add_generic_imports(d_env,t_env);
+
+    trans_exns   (il,d_env);
+    trans_externs(il,d_env);
+    trans_globals(il,d_env);
+    
+    *(id,con) all_abbrevs[] =  // (std abbrevs are now in pop_runtimenew.tali)
+      Xarray::to_array(t_env.file_abbrevs);
+    
+    string runtime = "pop_runtimenew.tali";
+    tal_imp imp = ^tal_imp({runtime,impfile},
+			   {expfile},
+			   all_abbrevs,
+			   Xarray::to_array(t_env.file_cons),
+			   {:code_block},
+			   Xarray::to_array(d_env.blocks),
+			   {:template});
+    output_file = file_open(talfile,"w");
+    pp_tal_before_code(basename, imp);
+    
+    trans_functions(il,d_env);
+
+    // put null failure block and union failure block at the bottom
+    pp_code_block(^code_block(nullFailureLabel(), null, 
+			      failure_code("NullPointer?exn?pkt")));
+    pp_code_block(^code_block(unionFailureLabel(), null,
+			      failure_code("UnionVariant?exn?pkt")));
+    
+    // spit out the interfaces
+    pp_tal_int(impfileabs, ^tal_int(get_std_abbrevs(),
+				    Xarray::to_array(t_env.import_cons),
+				    Xarray::to_array(d_env.imports))); 
+    pp_tal_int(expfileabs, ^tal_int(get_std_abbrevs(),
+				    Xarray::to_array(t_env.export_cons),
+				    Xarray::to_array(d_env.exports))); 
+    // spit out the data
+    pp_tal_after_code(imp);
+    file_close(output_file);
+}
+}
+
+instruction failure_code(string pkt) [] {
+  instruction load_pkt = 
+      ^instruction.Mov(^(geax,
+	 ^coerce(^genop.Prjl(^(^coerce(Id::id_of_string(pkt),
+				       null),
+	                       0, null)),
+	         null)));
+  instruction pop_stk = ^instruction.Mov(^(gesp,^coerce(gebp,null)));
+  instruction retn    = ^instruction.Retn(null);
+  // We must clear the floating point stack.
+  // It is surprisingly okay to free a FP register that is empty.
+  return { 
+#define FP_FREE(X) ^.FPsomeargs(^(^fpsomeargs.Ffree,^.FPstack(X)))
+    FP_FREE(0), FP_FREE(1), FP_FREE(2), FP_FREE(3), FP_FREE(4), FP_FREE(5),
+    FP_FREE(6), FP_FREE(7),
+#undef FP_FREE
+    load_pkt, 
+    pop_stk, 
+    retn };
+}
+
+/////////////////////////// Code Translation ///////////////////////////
+
+union optimized_jump { void None; blockName Fallthru; blockName Smash; }
+
+void move(cg_env env, genop g1, genop g2, <coercion>list cs) {
+  if(genop_compare(g1,g2) == 0) {
+    if(cs != null)
+      EMIT(Coerce(^coerce(g1,cs)));
+  } else 
+    EMIT(Mov(^(g1,^coerce(g2,cs))));
+}
+
+static Tal::code_block gen_code_block(id name, <con>Opt label_con, 
+				      <instruction>xarray instrs) {
+  return ^Tal::code_block { id = name,
+			      tipe = label_con,
+			      insts = Xarray::to_array(instrs) };
+}
+
+static void emit_template(cg_env env,cf_template templ, <Tal::code_block>xarray blocks) {
+
+  if(templ == null) BUG("Cannot emit null template.\n")
+  
+  con c = env2template(env,templ,blocks);
+  
+  Talpp::pp_template_start(templ.name,c);
+  
+  Xarray::iter(Talpp::pp_code_block,blocks);
+
+  Talpp::pp_template_end();
+
+  env.template_cons = Dict::insert(env.template_cons,templ,c);
+}
+
+// Cyclone: Modified trans_function to handle functions made up of templates
+// as well.
+void trans_function(cg_env env) {
+  cf_function fn       = env.fn;
+  int         num_blks = Xarray::length(fn.blocks);  
+  con         entry    = fun_con(fn.convention,
+				 fn.tyvars, fn.ret_typ, fn.arg_typs);
+
+  bool        rtcg     = (fn.templates != null); // Cyclone
+
+  id          fun_id   = tid_fun(fn.name,fn.convention,fn.arg_typs);
+
+  // reset the env appropriately here
+  env.fun_has_handler  = false;
+  env.handler_types    = Dict::empty(intcmp);
+  env.current_instrs   = Xarray::create_empty();
+  env.refined_locals   = Dict::empty(intcmp);
+  env.partial_inits    = Dict::empty(intcmp); // XXX - necessary?
+  env.current_template = null;
+  env.regions          = Dict::empty(intcmp);
+  env.filled           = Dict::empty(intcmp);
+  env.hole_cons        = {:Tal::con};
+
+  fp_trans_init_fn(env); // FP : initialize the environment for FP.
+
+  // generate export as necessary
+  if(!rtcg && !fn.is_static) // Cyclone: Technically rtcg funs must be static.
+    Xarray::add(env.exports, ^(fun_id, entry));
+
+  // choose block layout:
+  *(blockName,optimized_jump) layout[] = choose_fallthrus(fn);
+  // Cyclone: layout is different for rtcg functions.
+
+  // set up the environment:
+  // to preserve regs, must know if fn has a handler
+  // to memoize handler types, must know what regs are preserved
+  for(int i=0; i < num_blks; ++i)
+    if(is_handler(env,i)) {
+      env.fun_has_handler = true;
+      break;
+    }
+   // decide which callee-save registers need to be preserved
+   // note that functions with handlers always need to preserv them
+   // (assuming the handler contains a call)
+  tal_place assignment[] = env.assignment_info.assignment;
+  int       num_vars     = size(assignment);
+  if(env.fun_has_handler) {
+    env.num_callee_used = 3;
+    env.ebx_used = true;
+    env.esi_used = true;
+    env.edi_used = true;
+  } else {
+    env.num_callee_used = 0;
+    env.ebx_used = false;
+    env.esi_used = false;
+    env.edi_used = false;
+    for(int i=0; i < num_vars; ++i) 
+      switch assignment[i] {
+      case Reg(r):
+	switch r {
+	case Ebx: if(!env.ebx_used){ env.ebx_used=true; ++env.num_callee_used; }
+	case Esi: if(!env.esi_used){ env.esi_used=true; ++env.num_callee_used; }
+	case Edi: if(!env.edi_used){ env.edi_used=true; ++env.num_callee_used; }
+	default:  ;
+	}
+      default: ;
+    }
+  }
+
+   // for each label, decided whether it needs a type:
+  if(!rtcg) { // Cyclone: All blocks need types according to trevor for rtcg
+    env.label_types = Bitvec::new_empty(num_blks);
+    int marks    [] = Bitvec::new_empty(num_blks);
+    int in_degree[] = new_array(num_blks,0); 
+l1:
+    for(int i=0; i < size(layout); ++i) {
+      int next_num = layout[i].1;
+      Bitvec::set(marks,next_num);
+      cf_block next_blk = Xarray::get(fn.blocks,next_num);
+      // handlers "escape" on calls so must have types
+      if(next_blk.handler_var != null) {
+	Bitvec::set(env.label_types,next_num);
+	in_degree[next_num]=1;
+	continue;
+      }
+      // non-handlers
+      <cf_block>xarray preds     = next_blk.pred;
+      int              num_preds = Xarray::length(preds);
+      if(num_preds == 0) 
+	in_degree[next_num] = 1;
+      for(int j=0; j < num_preds; ++j) {
+	int pred_num = Xarray::get(preds,j).num;
+	if(!Bitvec::get(marks,pred_num) || pred_num == next_num) {
+	  // back edge -- must put type in
+	  Bitvec::set(env.label_types,next_num);
+	  in_degree[next_num]=1;
+	  break;
+	}
+	// else add to the in_degree
+	in_degree[next_num] += in_degree[pred_num];
+      }
+      // put type in iff exceeded threshold
+      if(in_degree[next_num] > LABEL_OFF_THRESHOLD) {
+	Bitvec::set(env.label_types,next_num);
+	in_degree[next_num]=1;
+      }
+    }
+  }
+  else env.label_types = Bitvec::new_full(num_blks);
+
+  update_stack_desc(env); // Do before generating handler types below.
+  memoize_tyvars(env,fn);
+
+  // memoize the type of each handler
+  if(env.fun_has_handler)
+    for(int i=0; i < num_blks; ++i)
+      if(is_handler(env, i)) {
+	cf_block blk = Xarray::get(fn.blocks,i);
+	env.il_block       = i;
+	env.il_inst        = 0;
+	env.refined_locals = blk.refined_locals;
+	env.partial_inits  = blk.partial_inits;
+	env.handler_types  = Dict::insert(env.handler_types,i, 
+					  ccode_ms(env2open_code_type(env)));
+      }
+
+  // The above may have messed these up so reset them.
+  new_block_env(env,0,false); // IGNORING returned block.
+
+  Popprofile::enter_fun(env);
+
+ l2:
+
+  emit_function_prologue(env);
+
+  // Variable to hold template blocks.
+  _ dummy_cb = ^Tal::code_block(Id::id_of_string("BOGUS"),null,
+				{:instruction});
+  <code_block>xarray template_blocks = Xarray::create(10, dummy_cb);
+  
+  if(rtcg) { // Cyclone: start the first template.
+    _ first_blkName = layout[0].1;
+
+    // ASSERTION
+    if(Xarray::length(fn.blocks)<=first_blkName) BUG("Index out of range.")
+
+    _ first_blk = Xarray::get(fn.blocks,first_blkName);
+    if(first_blk.template == null) 
+      BUG("All or none of the blocks in a function may be within templates")
+    _ templ = first_blk.template;
+
+    env.current_template = templ;
+    
+    // cbyte1 is a dummy value that should be overwritten.
+    env.hole_cons = new_array(Xarray::length(env.fn.all_holes),
+			      Tal::cbyte1());
+
+    env.jcc_holes = 
+      Dict::insert(env.jcc_holes,fn.name,
+		   Bitvec::new_empty(Xarray::length(fn.all_holes)));
+  }
+  
+  if(rtcg) {
+    Xarray::add(template_blocks,
+		gen_code_block(fun_id,^Opt(entry),env.current_instrs));
+  } 
+  else 
+    Talpp::pp_code_block_x(fun_id, ^Opt(entry), env.current_instrs);
+
+
+  // translate the blocks in the order decided above
+  for(int i=0; i < size(layout); ++i) {
+    Xarray::reuse(env.current_instrs);
+    Xarray::reuse(env.other_blocks);
+    bool     in_smashed = false;
+    <con>Opt labeltype  = null;
+    id  label     = Id::id_make("",0);
+    while(true) {
+      // adjust environment for this block, 
+      // note that current_instrs is set by caller because of smashing
+      *(blockName,optimized_jump) pr = layout[i];
+
+      _ old_template = env.current_template;
+
+      _ blk = new_block_env(env,pr.1,in_smashed);
+
+      if(old_template != env.current_template) {
+	emit_template(env,old_template,template_blocks);
+	Xarray::reuse(template_blocks);
+      }
+
+      if(!in_smashed) {
+	if(Bitvec::get(env.label_types,blk.num))
+	  labeltype = ^Opt(env2code_type(env));
+	label = blk.label;
+      }
+
+      // printf("\n%s",Id::id_to_string(blk.label));
+      // translate this block
+      trans_block(env, blk, pr.2);
+      // decide what to do next
+      switch pr.2 {
+      case Smash(x): ++i; in_smashed = true; continue;
+      default:       ;
+      }
+      // spit it out
+      if(rtcg) {
+	Xarray::add(template_blocks,
+		    gen_code_block(label,labeltype,env.current_instrs));
+      } 
+      else 
+	Talpp::pp_code_block_x(label, labeltype, env.current_instrs);
+
+      if(Xarray::length(env.other_blocks) > 0) {
+	_ len = Xarray::length(env.other_blocks);
+	for(int i=0; i<len; ++i) {
+	  _ b = Xarray::get(env.other_blocks,i);
+	  if(rtcg)
+	    Xarray::add(template_blocks,gen_code_block(b.1,b.2,b.3));
+	  else
+	    Talpp::pp_code_block_x(b.1,b.2,b.3);
+	}
+      }
+      break;
+    }
+
+  }
+
+  if(rtcg) { // Cyclone
+    if(Xarray::length(template_blocks)>0)
+       emit_template(env,env.current_template,template_blocks);
+  }
+}
+static void print_other_block(*(id,<con>Opt,<instruction>xarray) b) {
+  Talpp::pp_code_block_x(b.1, b.2, b.3);
+}
+
+// Updates the translation environment for a new block.
+static cf_block new_block_env(cg_env env, blockName blk_name, bool in_smashed) {
+  _ blk = Xarray::get(env.fn.blocks,blk_name);
+  env.il_block         = blk_name;
+  env.il_inst          = 0;
+  env.refined_locals   = blk.refined_locals;
+  // see KLUDGE in trans_instruction:
+  env.partial_inits    = Dict::map(copy_pr,blk.partial_inits); 
+  env.filled           = blk.filled;
+  env.regions          = blk.regions;
+  env.current_template = blk.template;
+  env.fp_env           = env.fp_envs[blk_name];
+
+  if(!in_smashed) {
+    // this part unnecessary real soon now (once naming stuff worked out)!
+    if(USE_CALLEE_SAVE) {
+      env.ebx_local = env.esi_local = env.edi_local = null;
+      _ assignment = env.assignment_info.assignment;
+      <varName>list l =Set::elements(env.assignment_info.all_live[blk_name][0]);
+      for(; l!=null; l=l.tl) {
+	_ hd = l.hd;
+	switch assignment[hd] {
+	case Stackslot(i): ;
+	case Reg(r):
+	  switch r {
+	  case Ebx: env.ebx_local = ^Opt(hd);
+	  case Esi: env.esi_local = ^Opt(hd);
+	  case Edi: env.edi_local = ^Opt(hd);
+	  default:  ;
+	  }
+	case Fpreg(i): ;
+	}
+      }
+    }
+  }
+  return blk;
+}
+
+*(blockName,optimized_jump) choose_fallthrus(cf_function fn) [] {
+  // return the order to layout the TAL blocks.  If a block falls-thru
+  // or smashes to another block, then that block MUST appear next in
+  // the array.
+
+  // we must not output blocks without predecessors since we never generated
+  // proper IL code for them!
+
+  // we're still not putting loop headers at the bottom.
+
+  // entry block must come first.
+
+  // first compute a topological sort of the blocks:
+  int rev_queue[];
+  if(fn.templates == null) rev_queue = reverse_topological_sort(fn);
+  else { // Cyclone
+    // OK. This is brain-dead but it works and is really simple.
+    // Must process template containing entry block last.
+    _ templates = fn.templates;
+    _ entry_template = fn.entry.template;
+
+    // ASSERTION
+    if(entry_template==null) BUG("Null entry template.");
+
+    if(entry_template != templates.hd) { // Make the above true.
+      for(_ x=templates;x.tl!=null; x=x.tl) {
+	if(x.tl.hd == entry_template) {
+	  x.tl = x.tl.tl;  // cut out the entry template
+	  break;
+	}
+      }
+    fn.templates = ^list(entry_template,templates); // Entry at the beginning. 
+    templates = fn.templates;
+    }
+
+    rev_queue = reverse_topological_sort(fn);
+    
+    // loop reverses the list of templates so that the entry template is at 
+    // the end.
+    _ result = null;
+    for(_ x = templates; x!=null; x=x.tl) {
+      _ t = x.hd;
+      _ p = template_partition(fn,t,false,rev_queue);
+
+      // Does the order matter here? Yes! Expect reverse order (entry at end)
+      result = ^list(p,result);
+    }
+
+    int j = 0;
+    for(_ x = result; x!=null; x=x.tl) {
+      _ this_order = x.hd;
+      for(_ i=0;i<size(this_order);i++) {
+	_ this_block = this_order[i];
+	if(this_block<0) break;
+	if(j<0 || j >= size(rev_queue)) { // DEBUGGING XXXX
+	  printf("j = %d, size(rev_queue) = %d, i = %d, size(this_order) = %d\n",
+		 j,size(rev_queue),i,size(this_order));
+	  printf("templates list = ");
+	  for(_ y = templates; y!=null; y=y.tl){
+	    printf("%s, ",Id::id_to_string(y.hd.name));
+	  }
+	  printf("\n");
+	  fflush(tal_stdout);
+	  printf(", this_order[i] = %d\n", this_order[i]);
+	  if(x.tl==null) printf("x.tl = null.\n");
+
+	  fflush(tal_stdout);
+	}                                 // END DEBUGGING
+	rev_queue[j] = this_order[i];
+	j++;
+      }
+    }
+  }
+
+  <cf_block>xarray  blks       = fn.blocks;
+  int               num_blks   = Xarray::length(blks);
+  int               positions[]= new_array(num_blks,0);
+  int num_reachable = 0;
+  for(;  num_reachable < num_blks; ++num_reachable) {
+    int next = rev_queue[num_reachable];
+    if(next < 0)
+      break;
+    positions[next] = num_reachable;
+  }
+
+  // create optimized jumps as possible:
+  *(blockName,optimized_jump) ans[]   = new_array(num_reachable,
+						  ^(0,^optimized_jump.None));
+  int marks[] = Bitvec::new_empty(num_blks);
+  int ans_pos = 0;
+
+  for(int i=num_reachable-1; i >=0; --i) {
+    cf_block curr_blk = Xarray::get(blks,rev_queue[i]);
+    cf_block next_blk = curr_blk;
+    optimized_jump oj;
+    while(true) {
+      if(Bitvec::get_and_set(marks,curr_blk.num))
+	break;
+      switch curr_blk.trans {
+      case Abort: ;
+      case Uncond(d): 
+	switch d {
+	case Known(bb): next_blk = bb;
+	case Unknown(_): ;
+	}
+      case Call *(_,_,_,_,d):   
+	switch d {
+	case Known(bb): next_blk = bb;;
+	case Unknown(_): BUG("Impossible, unknown successor to Call.")
+	}
+      case Cond *(d1,d2,_,_,_): 
+	switch d1 {
+	case Known(b1):
+	  if(Bitvec::get(marks,b1.num)) {
+	    switch d2 {
+	    case Known(b2) : next_blk = b2;
+	    case Unknown(_): ;
+	    }
+	  }
+	  else next_blk = b1;
+	case Unknown(_): ;
+	}
+      case NullBranch *(op,notnull_dest,null_dest):
+	switch notnull_dest {
+	case Known(notnull_blk):
+	  if(Bitvec::get(marks,notnull_blk.num)) {
+	    switch null_dest {
+	    case Known(null_blk): next_blk = null_blk;
+	    case Unknown(_): ;
+	    }
+	  }
+	  else next_blk = notnull_blk;
+	case Unknown(_): ;
+	}
+      case NumSwitch(x):  ;
+      case SumSwitch(x):  ;
+      case ExnSwitch *(_,_,d):  
+	switch d {
+	case Known(b)   : next_blk = b;
+	case Unknown(_) : ;
+	}
+      case NullCheck *(_,d):
+	switch d {
+	case Known(b) : next_blk = b;
+	case Unknown(_) : ;
+	}
+      case UnionCheck *(_,_,_,d):
+	switch d {
+	case Known(b) : next_blk = b;
+	case Unknown(_) : ;
+	}
+      case Raise(x): ;
+      case Retn(x):  ;
+      case TailCall(x): ;
+      }
+
+    
+      // XXX - Hack
+      // Must keep the exit block of the template last so
+      // don't allow any optimization in this case.
+      // Should really rewrite this whole function to be template aware.
+      if(next_blk.template !=null
+	 && next_blk != curr_blk 
+	 && next_blk.template.exit != null
+	 && next_blk.template.exit.v.1 == next_blk) {
+	  
+	// We only need to disable this optimization if all the other
+	// blocks in this template have not been placed.
+	_ templ = next_blk.template;
+	_ exit_blk = templ.exit.v.1;
+	_ templ_blks = templ.blocks;
+	_ num_templ_blks = Xarray::length(templ_blks);
+	for(_ i = 0; i < num_templ_blks; i++) {
+	  _ b = Xarray::get(templ_blks,i);
+	  if(b != exit_blk && !Bitvec::get(marks,b.num)) {
+	    next_blk = curr_blk;
+	    break;
+	  }
+	}
+      }
+
+      if(!Bitvec::get(marks,next_blk.num)) {
+	<cf_block>xarray preds    = next_blk.pred;
+	int              num_pred = Xarray::length(preds);
+	if(num_pred == 1) 
+	  oj = ^optimized_jump.Smash(next_blk.num);
+	else {
+	  // fallthru if all other predecessors are marked (beware this O(n^2) )
+	  // or beyond next
+	  int i=0;
+	  for(; i < num_pred; ++i) {
+	    cf_block pred = Xarray::get(preds,i);
+	    if(positions[pred.num] > positions[next_blk.num] 
+	       && !Bitvec::get(marks,pred.num))
+	      break;
+	  }
+
+	  if(i == num_pred) 
+	    oj = ^optimized_jump.Fallthru(next_blk.num);
+	  else {
+	    next_blk = curr_blk;
+	    oj = ^optimized_jump.None;
+	  }
+	}
+      } else
+	oj = ^optimized_jump.None;
+
+      ans[ans_pos++] = ^(curr_blk.num,oj);
+      curr_blk = next_blk;
+    }
+  }
+
+  return ans;
+}
+
+void trans_block(cg_env env, cf_block blk, optimized_jump oj) {
+
+  int block_num = blk.num;
+  // if we are a handler, then we must re-create the last stack slot b/c
+  // it just got popped
+  // and we must move the packet to where it goes 
+  if(blk.handler_var != null) {
+    EMIT(ArithBin(^(^arithbin.Sub, gesp,^genop.Immed(4))));
+    move(env, operand2genop(env,^cf_operand.Local(blk.handler_var.v)), 
+	 geax, null);
+  }
+
+  // if a target of a block in a different handler, must install our handler
+  // conveniently, handler installation is idempotent
+  // notice we must do the Tapp now, and handlers don't work if there
+  // are refined variables across them.  (We're workin' on it.)
+  if(handler_changes(env,block_num)) 
+    if(blk.handler == null)
+      // new handler is one passed from caller
+      EMIT(Mov(^(gebp, ^coerce(prjr(esp,4),null))));
+    else {
+      // code for this block's handler gets put on top of Stack
+      EMIT(ArithBin(^(^arithbin.Add, gesp, ^genop.Immed(4))));
+      <coercion>list cl = branch_tapp(env,blk.handler.v);
+      EMIT(Push    (^coerce(^genop.Addr(blk.handler.v.label),cl)));
+      // since old handler might be one from caller, must adjust ebp
+      // (we could produce slightly more efficient code by deciding this
+      //  move isn't necessary, but that means we must check all preds)
+      EMIT(Mov     (^(gebp, ^coerce(gesp,null))));
+    }
+
+  // If this is a handler notify the profiler once we're all setup.
+  if(blk.handler_var!=null)
+    Popprofile::enter_handler(env);
+
+  // FP
+  fp_trans_init_block(env); // Setup block entry invariants.
+
+  // compile the instructions
+  int len = Xarray::length(blk.insts);
+  for(env.il_inst=0; env.il_inst < len; ++env.il_inst) 
+    trans_instruction(env);
+
+  // compile the transfer
+  trans_transfer(env, oj);
+} 
+
+void trans_instruction(cg_env env) {
+  // emit instructions, and update partial inits and refined
+  // when null checks don't end blocks, this will create refinement
+  // note that many instructions can't affect partial inits and refined
+  // assume a postpass will eliminate useless moves??
+  //  (alternately could have a move function that was smarter)
+
+  // the updates to ebx,esi,edi don't need to be tracked once we have an
+  // appropriate supertype for registers
+
+  // ENORMOUS KLUDGE: Aliases of partial_init must physically share their
+  // codomain in env.partial_inits.  Then an AssignField to one will be
+  // reflected in all copies!
+  cf_instruction inst = 
+    Xarray::get(Xarray::get(env.fn.blocks, env.il_block).insts, env.il_inst);
+  switch inst {
+  case Nop: ;
+  case Copy *(cf_dest,cf_src):
+    track_assignment(env,cf_dest);
+
+    if(is_fp_op(env.fn,cf_dest)) { trans_fp_copy(env,cf_dest,cf_src); return; }
+
+    // if the source is refined
+    //   and the dest is global, we unrefine
+    //   and the dest is local,  we propagate the refinement
+    // else
+    //   remove any refinement of dest (unless dest is src)
+    // if the source is partial init
+    //   and the dest is global, this is an error
+    //   and the dest is local,  we propagate the partial init
+    // else
+    //   remove any partial init of dest (unless dest is src)
+    // if the source is constant, we roll/sum as necessary
+    <coercion>list cs = null;
+    bool src_local = false;
+    switch cf_src {
+    case Local(src_num):
+      src_local = true;
+      switch cf_dest {
+      case Global(i):
+	cs = rollOperand(env, cf_src);
+      case Local(dest_num):
+	if(dest_num != src_num) { // slow in common case of not in either
+	  env.refined_locals = Dict::delete(env.refined_locals, dest_num);
+	  env.partial_inits  = Dict::delete(env.partial_inits,  dest_num);
+	}
+	if(Dict::member(env.refined_locals, src_num))
+	  env.refined_locals = 
+	    Dict::insert(env.refined_locals, dest_num,
+			 Dict::lookup(env.refined_locals, src_num));
+	if(Dict::member(env.partial_inits, src_num))
+	  env.partial_inits = 
+	    Dict::insert(env.partial_inits, dest_num, // must share!
+			 Dict::lookup(env.partial_inits, src_num));
+      default: BUG("bad copy destination")
+      }
+    case Const(x): 
+      switch cf_dest {
+      case Global(x): cs = rollOperand(env,cf_src);
+      default:        cs = typ2constCoerce(operand_type(env.fn,cf_src));
+      }
+    default:       ;
+    }
+    if(!src_local)
+      switch cf_dest {
+      case Local(dest_num):
+	env.refined_locals = Dict::delete(env.refined_locals, dest_num);
+	env.partial_inits  = Dict::delete(env.partial_inits,  dest_num);
+	switch cf_src {
+	case Global(x): cs = unrollOperand(env,cf_src);
+	default: ;
+	}
+      default: ;
+    }
+
+    genop dest = operand2genop(env, cf_dest); 
+    genop src  = operand2genop(env, cf_src);
+//     bool do_move = true;
+//     switch dest {
+//     case Prjr(x):
+//       switch src {
+//       case Prjr(y):
+// 	if(genop_compare(dest,src)!=0) {
+// 	  // If ESP, then must adjust the projection b/c we just pushed!!!
+// 	  do_move = false;
+// 	  EMIT(Push(^coerce(src,cs)));
+// 	  EMIT(Pop(dest));
+// 	}
+//       default: ;
+//       }
+//     default: ;
+//     }
+//     if(do_move)
+    move(env, dest, src, cs);
+
+  case Nullop *(nullop,dest_op): 
+    trans_fp_nullop(env,nullop,dest_op); 
+    
+  case Unop *(unop,dest_op,src_op): 
+    // this will change when we don't use Popsyntax::primop 
+    track_assignment(env,dest_op);
+
+    switch unop {
+    case ItoF: trans_fp_itofd(env,dest_op,src_op); return;
+    case ItoD: trans_fp_itofd(env,dest_op,src_op); return;
+    case FtoI: trans_fp_fdtoi(env,dest_op,src_op); return;
+    case DtoI: trans_fp_fdtoi(env,dest_op,src_op); return;
+    case FtoD: trans_fp_copy (env,dest_op,src_op); return;
+    case DtoF: trans_fp_copy (env,dest_op,src_op); return;
+    case CosF:    trans_fp_unop(env,^.Fcos,   dest_op,src_op); return;
+    case SinF:    trans_fp_unop(env,^.Fsin,   dest_op,src_op); return;
+    case TanF:    trans_fp_tan(env,dest_op,src_op); return;
+    case SqrtF:   trans_fp_unop(env,^.Fsqrt,  dest_op,src_op); return;
+    case F2xm1F:  trans_fp_unop(env,^.F2xm1,  dest_op,src_op); return;
+    case FabsF:   trans_fp_unop(env,^.Fabs,   dest_op,src_op); return;
+    case FroundF: trans_fp_unop(env,^.Frndint,dest_op,src_op); return;
+    default: ;
+    }
+
+    genop dest = operand2genop(env, dest_op);
+    genop src  = operand2genop(env, src_op);
+    switch unop {
+    case Resize *(src_signed,dest_sz,src_sz):
+      trans_resize(env, src_signed, dest_sz,src_sz,dest,src);
+    case Not:
+      switch src {
+      case Immed(x): 
+	// constant-folding should make this not happen,
+	// but since Cmp can't have two constant args, we'll be careful
+	if(x==0) EMIT(Mov (^(dest, tal_true())));
+	else     EMIT(Mov (^(dest, tal_false())));
+      default:
+	// should do even better to avoid initializing dest where possible
+	if(genop_compare(src,dest)!=0)
+	  EMIT(Mov(^(dest, tal_false())));
+	EMIT(Cmp  (^(^coerce(src, null), tal_false()))); 
+	EMIT(Setcc(^(^condition.Eq,      dest)));
+      }
+    case Bitnot: 
+      move(env, dest, src, null);
+      EMIT(ArithUn(^(^arithun.Not, dest)));
+    default: BUG("bad unary operator")
+    }
+      
+  case Binop *(bop,cf_dest,cf_src1,cf_src2): 
+    // this will change when we don't use Popsyntax::primop
+    track_assignment(env,cf_dest);
+
+    if(is_fp_primop(bop)) {
+      if(is_fp_relop(bop)) trans_fp_relop(env,bop,cf_dest,cf_src1,cf_src2);
+      else {
+	switch bop {
+	case Fyl2xF: 
+	  trans_fp_restricted_binop(env,^.Fyl2x,cf_dest,cf_src1,cf_src2);
+	case Fyl2xp1F:
+	  trans_fp_restricted_binop(env,^.Fyl2xp1,cf_dest,cf_src1,cf_src2);
+	case AtanF:
+	  trans_fp_restricted_binop(env,^.Fpatan,cf_dest,cf_src1,cf_src2);
+	case FremF:
+	  trans_fp_frem(env,cf_dest,cf_src1,cf_src2);
+	default: trans_fp_arithop(env,bop,cf_dest,cf_src1,cf_src2);
+	}
+      }
+      return;
+    }
+
+    genop dest = operand2genop(env, cf_dest);
+    genop src1 = operand2genop(env, cf_src1);
+    genop src2 = operand2genop(env, cf_src2);
+    switch bop {
+    case Plus:   trans_arith(env, ^arithbin.Add,      dest, src1, src2);
+    case Bitand: trans_arith(env, ^arithbin.And,      dest, src1, src2);
+    case Bitor:  trans_arith(env, ^arithbin.Or,       dest, src1, src2);
+    case Bitxor: trans_arith(env, ^arithbin.Xor,      dest, src1, src2);
+    case Times:  trans_arith(env, ^arithbin.Imul2,    dest, src1, src2);
+    case TimesU: trans_arith(env, ^arithbin.Imul2,  dest, src1, src2);
+    case Minus:  trans_arith(env, ^arithbin.Sub,      dest, src1, src2);
+    case Bitlshift:  trans_shift(env, ^arithsr.Shl,   dest, src1, src2);
+    case Bitlrshift: trans_shift(env, ^arithsr.Shr,   dest, src1, src2);
+    case Bitarshift: trans_shift(env, ^arithsr.Sar,   dest, src1, src2);
+    case Div:  trans_divmod(env, true, geax, dest, src1, src2);
+    case DivU: trans_divmod(env, false, geax, dest, src1, src2);
+    case Mod:  trans_divmod(env, true,  gedx, dest, src1, src2);
+    case ModU: trans_divmod(env, false, gedx, dest, src1, src2);
+    default: trans_relop(env, bop, dest, cf_src1, cf_src2);
+    }
+   case TypedCopy *(cf_dest,cf_src,type_op): 
+     track_assignment(env,cf_dest);
+     genop          dest = operand2genop(env, cf_dest);
+     genop          src  = operand2genop(env, cf_src);
+     switch type_op {
+     case Instantiation(tl):
+       // since this is only available for functions, the source
+       // should not be refined or part init
+       <coercion>list cs   = List::rev(List::map(tapp, 
+						 List::map(typ2con_roll, tl)));
+       move(env, dest, src, cs);
+
+     case Unpacking(vl):
+       // source should not be refined or part init MUST BE LOCAL
+       move(env, dest, src, null);
+       for(vl = List::rev(vl); vl!=null; vl=vl.tl)
+	 switch dest {
+	 case Reg(r): EMIT(Unpack (^(tid_tyv(vl.hd), r, ^coerce(dest,null))));
+	 default:     EMIT(Sunpack(^(tid_tyv(vl.hd), dest)));
+       }
+
+     case Packing(exist_ts):
+       // see the ML implementation for why this is so complicated
+       // source should not be refined or part init 
+       // source and destination must be LOCAL
+       <coercion>list coercions   = null;
+       switch operand_type(env.fn, cf_dest) {
+       case Named(pr):
+	 string         name        = pr.1;
+	 <con>list      all_ts      = List::map(typ2con_roll, pr.2);
+	 cf_abstypedecl adecl       = Dict::lookup(env.fn.file.abstypes, name);
+	 con            body        = typ2con_roll(adecl.defn);
+	 <id>list       exist_vs    = List::map(tid_tyv, adecl.exist_tyvars);
+	 <con>list      exist_ts    = List::map(typ2con_roll, exist_ts);
+	 <id>list       used_vs     = null;
+	 while(exist_ts!=null) {
+	   used_vs  = ^list(exist_vs.hd, used_vs);
+	   
+	   con f1 = ids2exists(used_vs, body);
+	   con f2 = tyvars2lam(adecl.all_tyvars, ids2lam(exist_vs.tl, f1));
+	   coercions = ^list(^coercion.Pack(^(exist_ts.hd, 
+					      app_cons(f2, List::append(all_ts, 
+									exist_ts.tl)))),
+	   coercions);
+	   
+	   exist_ts = exist_ts.tl;
+	   exist_vs = exist_vs.tl;
+	 }
+       case Num(n): // Pack the singleton into a B4.
+	 if(n.s != ^.B4) BUG("Unexpected packing, not B4.");
+
+	 coercions = ^list(^.Subsume(cbyte4()), coercions);
+       default: BUG("Unexpected packing.");
+       }
+       move(env, dest, src, coercions);
+     case InitRoll:
+       // The destination type determines the coercions that must be applied
+       // to the src.  The source is always a tuple, or an unpacked array.
+       _ dest_typ = operand_type(env.fn,cf_dest);
+       _ src_typ = operand_type(env.fn,cf_src);
+       _ cs = null;
+       switch dest_typ {
+       case Exn:
+	 _ value_typ = src_typ.Tuple[1].typ;
+	 cs = ^list(^coercion.Pack(^(cfield(typ2con_roll(value_typ),
+					    ^variance.ReadWrite),
+				     exn_packed())),
+	 cs);
+       case Named(x):
+	 if (Dict::member(env.fn.file.structs, x.1)) {
+	   cs = ^list(^coercion.Roll(
+				     chptr(null,
+					   ^Opt(mem_name_con(x.1,List::map(typ2con_roll,x.2))),
+					   null)),
+	   cs);
+	   cf_structdecl sd = Dict::lookup(env.fn.file.structs, x.1);
+	   if(sd.possibly_null)
+	     cs = ^list(^coercion.Tosum(typ2con(dest_typ)), cs);
+	 } else 
+	   // it's a union
+	   cs = ^list(^coercion.Tosum(typ2con(dest_typ)), cs);
+       case Array *(szopt,t) :
+	 if(szopt == null) 
+	   BUG("partially initialized array of unknown size")
+	     int sz = szopt.v;
+	 con c = typ2con_roll(t);
+	 cs = ^list(^coercion.Pack (^(pcint(sz),array_packed(c))), cs);
+       default: BUG("Cannot roll this type after initialization.");	 
+       }
+
+       move(env,dest,src,cs);
+     }
+
+   case SelectField *(cf_offset,cf_dest,cf_src): 
+     track_assignment(env,cf_dest);
+
+     // we allow projections off a partial init even though currently
+     // our compiler would never create such a thing.
+     // we assume any necessary null check has been done
+     // we assume the operand type or its unrolling must be a product
+     // register allocator must ensure dest is a Reg (Local)
+     // and src is not global (can change this later)
+     // !!!!!THIS IS ALL VERY BRITTLE!!!!!
+     int   il_src  = cf_src.Local;
+     genop src     = operand2genop(env,cf_src);
+     _     offset_scale = op_index2offset_scale(env,cf_src,cf_offset); 
+     _     offset  = offset_scale.1;
+     _     scale   =  offset_scale.2;
+     <coercion>list prod_cs  = null;
+     <coercion>list field_cs = unrollOperand(env, cf_dest);
+     if(!Dict::member(env.partial_inits, il_src))
+       switch operand_type(env.fn, cf_src) {
+       case Named(n):
+	 if(Dict::member(env.fn.file.unions, n.1))
+	   prod_cs = ^list(^coercion.Fromsum,null);
+	 else
+	   prod_cs = ^list(^coercion.Unroll,null);
+       default: ;
+     }
+
+     if(is_fp_op(env.fn,cf_dest)) {
+       _ src_reg = src.Reg; // For floating point must hold!
+       _ src_gop = prjr_coerce(src_reg,offset,prod_cs);
+       _ src_fp_gop = (scale == 8) ? FP64(src_gop) : FP32(src_gop);
+       trans_fp_load(env,cf_dest,src_fp_gop);
+       return;
+     }
+
+     genop dest    = operand2genop(env,cf_dest);
+     genop src_gop;
+     switch src {
+     case Reg(r): src_gop = prjr_coerce(r,offset,prod_cs);
+     default:
+       EMIT(Mov(^(dest, ^coerce(src,prod_cs))));
+       src_gop = prjr(dest.Reg,offset);
+     }
+
+     switch scale {
+     case 1: EMIT(Movpart(^(true, dest, ^.RPe, src_gop, ^.RPl)));
+     case 2: EMIT(Movpart(^(true, dest, ^.RPe, src_gop, ^.RPx)));
+     case 4: EMIT(Mov(^(dest,^coerce(src_gop,field_cs))));
+     case 8: BUG("Unexpected scale == 8.");
+     default: BUG("Unknown scale.");
+     }
+
+   case AssignField *(cf_offset,cf_dest,cf_src): 
+     // we track partial initialization
+     // same caveats and BRITTLENESS as SelectField apply
+     int        dest_num = cf_dest.Local;
+     cf_typ dest_typ = Xarray::get(env.fn.all_operands,dest_num).typ;
+     genop      dest     = operand2genop(env,cf_dest);
+
+     cf_operand il_src   = cf_src;
+     cf_operand il_dest  = cf_dest;
+
+     cf_typ     src_typ  = operand_type(env.fn, il_src);
+
+     _      offset_scale = op_index2offset_scale(env,cf_dest,cf_offset);
+     int    offset       = offset_scale.1;
+     int    scale        = offset_scale.2;
+
+     // compute destination coercions:
+     //   if dest is partial init, no coercion
+     //   else unrolled if named (letting refinement override)
+     <coercion>list dest_cs = null;
+     if(!Dict::member(env.partial_inits, dest_num))
+       switch dest_typ {
+       case Named(x):
+	 // This happens to be correct at the moment
+	 dest_cs = ^list(^coercion.Unroll, null);
+       default: ;
+     }
+       
+       _ dest_gop = prjr_coerce(dest.Reg,offset,dest_cs);
+
+     if(is_fp_op(env.fn,cf_src)) {
+       switch scale {
+       case 4: trans_fp_store(env,FP32(dest_gop),cf_src);
+       case 8: trans_fp_store(env,FP64(dest_gop),cf_src);
+       default: BUG("Unexpected scale for FP operand.");
+       }
+     }
+     else {
+       genop      src      = operand2genop(env,il_src);
+       
+       switch scale {
+       case 1: EMIT(Movpart(^(true, dest_gop, ^.RPl, src, ^.RPl)));
+       case 2: EMIT(Movpart(^(true, dest_gop, ^.RPx, src, ^.RPx)));
+       case 4:
+	 // compute source coercions:
+	 //  src needs to be rolled up
+	 <coercion>list src_cs  = rollOperand(env, il_src);
+
+       EMIT(Mov(^(dest_gop,^coerce(src,src_cs))));
+
+       case 8: BUG("Non-FP operand of size 8?");
+       default: BUG("Unrecognized scale.");
+       }
+     }
+
+     // for partial init, we update the environment
+     if (Dict::member(env.partial_inits, dest_num)) {
+       *(int[],int) old_init = Dict::lookup(env.partial_inits, dest_num);
+       // perhaps one more field is initialized
+       // must be destructive to handle aliases correctly!
+       Bitvec::set(old_init.1,cf_offset);
+       // perhaps we're now fully initialized
+       if (Bitvec::all_set(old_init.1,old_init.2)) {
+	 // New only allocates tuples or unpacked arrays.
+	 <coercion>list cs = ^list(^coercion.Forgetname,null);
+	 switch dest_typ {
+	 case UnpackedArray *(sing,t):
+	   int sz = sing.Int; // FMS: Failure here indicates a bug!
+	   con c = typ2con_roll(t);
+	   cs = ^list(^coercion.Toarray(^(0,0,cfield(c,^variance.ReadWrite))),cs);
+	 case Tuple(x): ;
+	 default: BUG("unexpected end of partial initialization")
+	 }
+	 EMIT(ForgetUnique(op2cname(env,il_dest)));
+	 EMIT(Coerce(^coerce(
+			     operand2genop(env,^.Local(env.assignment_info.names[dest_num])),
+			     cs)));
+	 // remove from partial init, must search for all aliases!
+	 // as a side effect, we emit a Forgetname for each!
+	 env.partial_inits = Dict::fold_c(rm_initialized, env,
+					  env.partial_inits, env.partial_inits);
+       }
+     }
+  case ArrayCheck*(index_op,len_op):
+    // If one is an immediate, the other can be register or memory.
+    // Otherwise, one must be in a register.
+
+     if(!Popcorn::unsafe_arrays.v) {
+       genop index_g = operand2genop(env,index_op);
+       genop   len_g = operand2genop(env, len_op);
+       
+       bool index_immed = false;
+       bool len_immed = false;
+       switch index_g {
+       case Immed(_): index_immed = true;
+       default:       ;
+       }
+       switch len_g {
+       case Immed(_): len_immed = true;
+       default:       ;
+       }
+       
+       _ cond = ^.BelowEq;
+       _ gop1 = len_g;
+       _ gop2 = index_g;
+       if(len_immed && index_immed) BUG("Array check for two immediates.");
+       if(len_immed) {
+	 gop1 = index_g;
+	 gop2 = len_g;
+	 cond = ^.Above;
+       } else if(index_immed) {
+	 gop1 = len_g;
+	 gop2 = index_g;
+	 cond = ^.BelowEq;
+       } else { // If neither is an immediate. 
+	 gop1 = len_g;
+	 gop2 = index_g;
+	 cond = ^.BelowEq;
+	 
+	 _ len_reg = false, index_reg = false;
+	 switch len_g {
+	 case Reg(r) : len_reg = true;
+	 default: ;
+	 }
+	 switch index_g {
+	 case Reg(r) : index_reg = true;
+	 default: ;
+	 }
+	 
+	 if(!len_reg && !index_reg) BUG("ArrayCheck with two non-registers.");
+       }
+       
+       EMIT(Cmp(^(^coerce(gop1,null), ^coerce(gop2,null))));
+       if(env.current_template == null) 
+	 EMIT(Jcc(^(cond,^coerce(arrayFailureLabel(),null),null)));
+       else {
+	 _ beyond = Id::id_new("beyond");
+	 EMIT(Jcc(^(negate_condition(cond),^coerce(beyond,null),null)));
+	 EMIT(Mov(^(geax,^coerce(^.Addr(arrayFailureLabel()),null))));
+	 EMIT(Jmp(^coerce(geax,null)));
+	 EMIT(Label(beyond));
+       }
+     }
+  case CArrayCheck *(index_op,len):
+    if(!Popcorn::unsafe_arrays.v) {
+      genop index_g = operand2genop(env,index_op);
+      _ cond = ^.AboveEq;
+      
+      switch index_g {
+      case Immed(_): ; // The check is static.  We're done.
+      default:
+	EMIT(Cmp(^(^coerce(index_g,null),^coerce(^.Immed(len),null))));
+	if(env.current_template == null) 
+	  EMIT(Jcc(^(cond,^coerce(arrayFailureLabel(),null),null)));
+	else {
+	  _ beyond = Id::id_new("beyond");
+	  EMIT(Jcc(^(negate_condition(cond),^coerce(beyond,null),null)));
+	  EMIT(Mov(^(geax,^coerce(^.Addr(arrayFailureLabel()),null))));
+	  EMIT(Jmp(^coerce(geax,null)));
+	  EMIT(Label(beyond));
+	}
+      }
+    }
+
+  case ArraySub*(dest_op,body_op,index_op): 
+     // translator and register allocator enforce a lot of what we need:
+     //   dest  in a register
+     //   src   in a register
+     //   index not in memory
+     track_assignment(env,dest_op);
+
+     genop body_g  = operand2genop(env, body_op);
+     genop index_g = operand2genop(env,index_op);
+
+     _ body;
+     switch body_g {
+     case Reg(r) : body = r;
+     default: BUG("ArraySub: body not in register")
+     }
+     
+     int  constant_index = -1; // if >= 0, use it, not a register
+
+     switch index_g {
+     case Immed(x): constant_index = x;
+     default:       ;
+     }
+
+    if(constant_index >= 0) {
+       EMIT(Push(^coerce(gebp,null)));
+       EMIT(Mov(^(gebp, ^coerce(^genop.Immed(constant_index), null))));
+       index_g = gebp;
+     }
+
+     _ scale;
+     switch operand_type(env.fn,body_op) {
+     case UnpackedArray*(_,t): scale = int2scale(sizeof_typ(t));
+     case Option(t):
+       switch(t) {
+       case UnpackedArray*(_,t): scale = int2scale(sizeof_typ(t));
+       default: BUG("trans_instruction: ArraySub, (2)");
+       }
+     default: BUG("trans_instruction: ArraySub")
+     }
+     _ src_g = ^genop.Prjr(^(^coerce(body,null), 0,^Opt(^(scale,index_g.Reg))));
+
+     if(is_fp_op(env.fn,dest_op)) {
+       switch scale {
+       case Byte4: trans_fp_load(env,dest_op,FP32(src_g));
+       case Byte8: trans_fp_load(env,dest_op,FP64(src_g));
+       default: BUG("Unexpected size for FP op.");
+       }
+     } else {
+       genop dest_g  = operand2genop(env, dest_op);
+       switch dest_g {
+       case Reg(r) : ;
+       default: BUG("ArraySub: dest not in register");
+       }
+
+       switch scale {
+       case Byte1: EMIT(Movpart(^(true, dest_g, ^.RPe, src_g, ^.RPl)));
+       case Byte2: EMIT(Movpart(^(true, dest_g, ^.RPe, src_g, ^.RPx)));
+       case Byte4: EMIT(Mov(^(dest_g, ^coerce(src_g,
+					      unrollOperand(env,dest_op)))));
+       case Byte8: BUG("8 byte non-FP value?");
+       }
+     }
+     
+     if(constant_index >= 0)
+       EMIT(Pop(gebp));
+  
+   case ArrayUpd*(body_op,index_op,src_op): 
+     // see comments of previous case -- this is very similar
+
+     _  body_g = operand2genop(env, body_op);
+     _ index_g = operand2genop(env,index_op);
+     _ body;
+     switch body_g {
+     case Reg(r) : body = r;
+     default: BUG("ArraySub: body not in register")
+     }
+
+     int  constant_index = -1; // if >= 0, use it, not a register
+     switch index_g {
+     case Immed(x): constant_index = x;
+     default:       ;
+     }
+
+     if(constant_index >= 0) {
+       EMIT(Push(^coerce(gebp,null)));
+       EMIT(Mov(^(gebp, ^coerce(^genop.Immed(constant_index), null))));
+       index_g = gebp;
+     }
+
+     _ scale;
+     switch operand_type(env.fn,body_op) {
+     case UnpackedArray*(_,t): scale = int2scale(sizeof_typ(t));
+     case Option(t):
+       switch t {
+       case UnpackedArray*(_,t): scale = int2scale(sizeof_typ(t));
+       default: BUG("trans_instruction: ArrayUpd, bad body");
+       }
+     default: BUG("trans_instruction: ArrayUpd, bad body")
+     }
+
+     _ dest_g = ^genop.Prjr(^(^coerce(body,null), 0,
+                                          ^Opt(^(scale,index_g.Reg))));
+     if(is_fp_op(env.fn,src_op)) {
+       switch scale {
+       case Byte4: trans_fp_store(env,FP32(dest_g),src_op);
+       case Byte8: trans_fp_store(env,FP64(dest_g),src_op);
+       default: BUG("Unrecognized scale for FP op.");
+       }
+     } 
+     else {
+       _   src_g = operand2genop(env,  src_op);
+       switch scale {
+       case Byte1: EMIT(Movpart(^(true, dest_g, ^.RPl, src_g, ^.RPl)));
+       case Byte2: EMIT(Movpart(^(true, dest_g, ^.RPx, src_g, ^.RPx)));
+       case Byte4: EMIT(Mov(^(dest_g,^coerce(src_g, rollOperand(env,src_op)))));
+       case Byte8: BUG("Non-FP op of size 8?");
+       }
+     }
+
+     if(constant_index >= 0)
+       EMIT(Pop(gebp));
+
+   case New(cf_dest): 
+     track_assignment(env,cf_dest);
+     cf_typ dest_typ = operand_type(env.fn, cf_dest);
+
+     // build the arguments to Malloc
+     int            num_elmts;
+     int            num_bytes;
+     <mallocarg>Opt marg          = null;
+
+     switch dest_typ {
+     case Tuple(x):
+       num_elmts = size(x);
+       _ last_elmt = x[num_elmts-1];
+       num_bytes = last_elmt.offset + sizeof_typ(last_elmt.typ);
+       
+       if(num_elmts*4 != num_bytes)
+	 marg = ^Opt(fields2mallocarg(x));
+     case UnpackedArray *(sing,t):
+       num_elmts = sing.Int;
+       _ elmt_sz = sizeof_typ(t);
+       num_bytes = elmt_sz * num_elmts;
+       <mallocarg>list m = null;
+       _ scale = int2scale(elmt_sz);
+       
+       for(int i=num_elmts; i > 0; --i)
+	 m = ^list(^mallocarg.Mbytes(scale), m);
+       marg = ^Opt(^mallocarg.Mprod(m));	 
+     default: BUG("Only tuples and unpacked arrays may now called by New.");
+     }
+
+     // do the malloc, moving result if necessary
+     id name = op2cname(env, cf_dest);
+     EMIT(Malloc(^(name, num_bytes, marg)));
+     genop dest = operand2genop(env,cf_dest);
+     move(env,dest,geax,null);
+
+     if(num_elmts == 0) {
+       switch dest_typ {
+       case UnpackedArray *(_,t):
+	 //If this is a zero sized array, forget the name and roll it
+	 // immediately.
+	 <coercion>list cs = ^list(^coercion.Forgetname,null);
+	 con c = typ2con_roll(t);
+	 cs = ^list(^coercion.Toarray(^(0,0,cfield(c,^variance.ReadWrite))),cs);
+
+	 EMIT(ForgetUnique(name));
+	 EMIT(Coerce(^coerce(dest,cs)));
+       default: BUG("popiltal.pop: Expected unpacked array")
+       }
+     }
+     else env.partial_inits = 
+	    Dict::insert(env.partial_inits, cf_dest.Local, 
+			 ^(Bitvec::new_empty(num_elmts),num_elmts));
+  case Rdtsc *(o1,o2):
+    genop      g1      = operand2genop(env,o1);
+    genop      g2      = operand2genop(env,o2);
+
+    EMIT(Rdtsc);
+    move(env,g1,gedx,null);
+    move(env,g2,geax,null);
+
+     //Cyclone +
+  case Start(o): 
+    // Need to get the con for the function we're generating.
+
+    _ rgn = operand2region(env,o);
+    env.regions = Dict::insert(env.regions,rgn,{:int});
+
+    _ rgn_fn = Xarray::get(env.fn.code_regions,rgn).2;
+    _ fn_con = fun_con(rgn_fn.convention,
+		       rgn_fn.tyvars, rgn_fn.ret_typ, rgn_fn.arg_typs);
+
+    EMIT(CgStart(^(tid_region(rgn),fn_con)));
+    genop dest = operand2genop(env,o);
+    move(env,dest,geax,null);
+
+  case Dump *(o1,o2,t):
+    _ rgn = operand2region(env,o1);
+    _ tptr = operand2tptr(env,o2);
+
+    _ templ_bvec = Bitvec::new_empty(Xarray::length(env.fn.template_pointers));
+    Bitvec::set(templ_bvec,tptr);
+
+    env.regions = Dict::insert(env.regions,rgn,templ_bvec);
+    env.filled  = Dict::insert(env.filled,tptr,null);
+
+    _  rgn_reg = operand2genop(env,o1).Reg; // Register allocator should ensure
+    _ tptr_reg = operand2genop(env,o2).Reg; // both o1,o2 in registers.
+    _ templ = Xarray::get(env.fn.template_pointers,tptr);
+
+    EMIT(CgDump(^(rgn_reg,
+		  tid_tptr(tptr),tptr_reg,templ.name)));
+
+    rtcg_forget(env,rgn,tptr,o2);
+
+  case Hole *(i,o): 
+    if(env.current_template == null) 
+      BUG("Hole found but not in a template.")
+
+    _ hole_id = hole2id(env.current_template,i);
+    
+    switch hole_info(env.fn,i) {
+    case Value(t) : env.hole_cons[i] = typ2con(t);
+    default: BUG("Expected a value hole.")
+    }
+
+    _ templ_id = env.current_template.name;
+
+    _ hole_gop = operand2genop(env,o);
+    _ hole_reg;
+    switch hole_gop {
+    case Reg(r): hole_reg = r;
+    default: BUG("Hole operand not a register.")
+    }
+
+    EMIT(CgHole(^(hole_reg,templ_id,hole_id)));
+
+  case Fill *(o1,o2,h,o3): 
+    _ rgn = operand2region(env,o1);    
+    _ tptr = operand2tptr(env,o2);
+    _ templ = Xarray::get(env.fn.template_pointers,tptr);
+
+    _ rgn_gop = operand2genop(env,o1);
+    _ rgn_reg = rgn_gop.Reg;
+    _ tptr_gop = operand2genop(env,o2);
+    _ tptr_reg = tptr_gop.Reg;
+    _ value_gop = operand2genop(env,o3);
+    _ value_reg = value_gop.Reg;
+
+    EMIT(CgFill(^(rgn_reg,tptr_reg,templ.name,hole2id(templ,h),value_reg)));
+
+    _ filled_holes = Dict::lookup(env.filled,tptr);
+    filled_holes = ^list(h,filled_holes);
+    env.filled = Dict::insert(env.filled,tptr,filled_holes);
+
+    rtcg_forget(env,rgn,tptr,o2);
+
+  case FillJmp *(o1,o2,h,o3,b): 
+    _ hole_tptr = operand2tptr(env,o2);
+    _ hole_templ = Xarray::get(env.fn.template_pointers,hole_tptr);
+ 
+    _ block_tptr = operand2tptr(env,o3);
+    _ block_templ = Xarray::get(env.fn.template_pointers,block_tptr);
+    
+    _ rgn = operand2region(env,o1);
+    _ rgn_fn = Xarray::get(env.fn.code_regions,rgn).2;
+
+    _        rgn_reg = operand2genop(env,o1).Reg;
+    _  hole_tptr_reg = operand2genop(env,o2).Reg;
+    _ block_tptr_reg = operand2genop(env,o3).Reg;
+
+    _ jmp_args = ^(rgn_reg, hole_tptr_reg, hole_templ.name,
+		   hole2id(hole_templ,h),
+		   block_tptr_reg,block_templ.name,b.label);
+
+    _ jcc_holes;
+    try {
+    jcc_holes = Dict::lookup(env.jcc_holes,rgn_fn.name);
+    } handle y switch y {
+    case Dict::Absent: BUG("jcc_holes 1") // XXXX  - this happens.
+    }
+
+    if(Bitvec::get(jcc_holes,h)) 
+      EMIT(CgFillJcc(jmp_args));
+    else
+      EMIT(CgFillJmp(jmp_args));
+
+    _ filled_holes = Dict::lookup(env.filled,hole_tptr);
+    filled_holes = ^list(h,filled_holes);
+    env.filled = Dict::insert(env.filled,hole_tptr,filled_holes);
+
+    rtcg_forget(env,rgn,hole_tptr,o2);
+    rtcg_forget(env,rgn,block_tptr,o3);
+
+  case End *(o1,o2):
+    // All template pointers should already be forgotten, so no cleanup should
+    // be necessary.
+    _ rgn_gop = operand2genop(env,o2);
+    _ fn_gop = operand2genop(env,o1);
+    _ rgn_reg = rgn_gop.Reg;
+
+    EMIT(CgEnd(rgn_reg));
+    move(env,fn_gop,rgn_gop,null);
+
+    // Also remove the code region from the dictionary of dumped templates.
+    // The entry for this region should be empty at this point!
+    _ rgn = operand2region(env,o2);
+    env.regions = Dict::delete_present(env.regions,rgn);
+    //Cyclone -
+  }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Floating Point instruction translation.
+
+/* As each instruction is translated the environment simulates the
+ state of the machine.  The field fp_env.real_to_alloc is an array
+ inidicating which "real" registers on the machine contain values, and
+ the field fp_env.st0 contains the top of stack pointer. In
+ fp_env.real_to_alloc a -1 denotes an unoccupied register, and a
+ non-negative value denotes an occupied register.  A zombie
+ register gets value -2 to denote that it may or may not be dead. There may be dead
+ values in registers.  The values stored in real_to_alloc correspond
+ to the register allocation decided by the register allocator.  To
+ help map allocation made by the allocator to real register we use the
+ array alloc_to_real.  I call the register numbers as decided by the
+ allocator "alloc" registers.  When we go to issue actual
+ instructions we need to emit stack slots.  Several utility functions
+ mediate the conversions between these 3 kinds of register -- fp_a2r,
+ fp_a2st, fp_r2a, fp_r2st, etc...
+
+ As we translate we maintain the invariant that the top of the stack
+ is real register 0 if real register 0 is occupied and is real
+ register 1 otherwise.  This choice makes handling loads more
+ efficient.  If we know that the next instruction is a load, then
+ whenever practical we try to pop the stack.  The load instruction
+ will pop it if we don't first.  We use the fp_is_next_load function
+ to determine whether the next FP instruction is in fact a load or
+ not.
+
+ Whenever we come to a choice point, we do the least work
+ possible. Thus moving a dead src into a new destination is a no-op
+ that simply remaps alloc_to_real, and real_to_alloc appropriately.  If
+ we must move an object we make an effort to return it to its home
+ location. The reason for not freeing objects early is that we want
+ to facilitate fxch instructions -- these are the only instructions
+ that pair.  We go to quite an extreme in this regard.  For example I
+ choose to issue an fxch followed by a fst rather than a pop followed
+ by a load.  Because we aggressively use fxch we may have to free many
+ dead objects at the end of the block, and furthermore return many of
+ them to their home locations.
+
+Across blocks we maintain the invariant that each alloc'd register i
+maps to the real register i (its home location is i), and all other
+stack slots are empty.  After translating a block we must re-establish
+the invariant.
+
+  */
+
+
+  // Setup the environment for translating a function.
+static void fp_trans_init_fn(cg_env env) {
+
+  FP_DEBUG_PRN1("\n>>>>> %s \n",env.fn.name);
+
+  _ all_live = env.assignment_info.all_live;
+  _ num_blocks = size(all_live);
+  _ places = env.assignment_info.assignment;
+  
+  // Compute FP liveness information.
+  int fps_all_live[][] = new_array(num_blocks,{:int});
+  for(_ blk = 0; blk < num_blocks; blk++) {    
+    _ lives = env.assignment_info.all_live[blk];
+    _ num_insts = size(lives);
+    int fps_lives[] = new_array(num_insts,0);
+
+    for(_ inst = 0; inst < num_insts; inst++) {
+      _ fps_live = 0;
+      for(_ x = Set::elements(lives[inst]); x!=null; x=x.tl) {
+	_ v = x.hd;
+	switch places[v] {
+	case Fpreg(i): fps_live |= (1 << i);
+	default: ;
+	}
+      }
+      fps_lives[inst] = fps_live;
+    }
+    fps_all_live[blk] = fps_lives;
+  }
+
+  // Compute predecessor bitmaps -- used to discover zombie registers.
+  _ blocks = env.fn.blocks;
+  _ fps_preds = new_array(num_blocks,0);
+  for(_ blk_num = 0; blk_num < num_blocks; blk_num++) {
+    _ blk = Xarray::get(blocks,blk_num);
+    _ pred_bm = 0;
+    _ preds = blk.pred;
+    _ num_preds = Xarray::length(preds);
+    for(_ p = 0; p < num_preds; p++) {
+      _ pred = Xarray::get(preds,p);
+      _ pred_live = fps_all_live[pred.num];
+      pred_bm |= pred_live[size(pred_live) - 1];
+    }
+    fps_preds[blk_num] = (num_preds == 0) ? fps_all_live[blk_num][0] : pred_bm;
+  }
+
+  // Now compute the initial fp_env for each block.
+  // This is the default that will be used.  In some instances this default
+  // will be overwritten with a new starting state.
+  _ fp_envs = new_array(num_blocks,^fp_env({:int},{:int},0,false));
+  for(_ blk_num = 0; blk_num < num_blocks; blk_num++) {
+    _ alloc_to_real = new_array(NUM_REAL_FP_REGS,-1);
+    _ real_to_alloc = new_array(NUM_REAL_FP_REGS,-1);
+    _ fps_live      = fps_all_live[blk_num][0];
+    _ fps_pred      = fps_preds[blk_num];
+    for(_ i=0; i < NUM_REAL_FP_REGS; i++) {
+      _ k      = (fps_live & (1 << i)) != 0;
+      _ k_pred = (fps_pred & (1 << i)) != 0;
+      if(k)      alloc_to_real[i] = i;
+      if(k_pred) real_to_alloc[i] = k ? i : -2;
+    }
+    
+    fp_envs[blk_num] = ^fp_env(alloc_to_real,
+			       real_to_alloc,
+			       0,
+			       false);
+  }  
+
+  env.fps_live = fps_all_live;
+  env.fp_envs = fp_envs;
+
+  // The environment is initially empty, until after the prologue.
+
+  env.fp_env = ^fp_env(new_array(NUM_REAL_FP_REGS,-1),
+		       new_array(NUM_REAL_FP_REGS,-1),
+		       1, // Top of stack == 1 since the stack is empty.
+		       true);
+  env.fp_envs[0] = env.fp_env; // After the prologue this is the state we 
+  // should be in.
+}
+
+// Initialize the translation of a single block.
+// XXX this is wrong.  We must free stack slots that are live in fps_pred
+// but not in fps_live.
+static void fp_trans_init_block(cg_env env) {
+
+  FP_DEBUG_PRN1("Block = %d\n",env.il_block);
+
+  _ fp_env          = env.fp_envs[env.il_block];  
+  fp_env.emitted    = true;
+
+  _ all_empty = true;
+  _ r2a = fp_env.real_to_alloc;
+  for(_ i=0; i < NUM_REAL_FP_REGS;i++) {
+    if(r2a[i] != -1) {
+      all_empty = false;
+      break;
+    }
+  }
+
+  // Reestablish invariant that if 0 is empty top of stack is 1.
+  if(r2a[0] < 0) {
+    if(!all_empty) {
+      if(r2a[0] == -2)  // We must free zombies in st0
+	fp_ffree(env,0);
+      EMIT_FP(Fincstp);
+    }
+    fp_env.st0 = 1;
+  }
+}
+
+ static void fp_trans_init_inst(cg_env env) {
+   // Before translating a fp instruction we throw out dead registers from
+   // alloc_to_real.
+   _ alloc_to_real = env.fp_env.alloc_to_real;
+   _ bm_live = env.fps_live[env.il_block][env.il_inst];
+
+   for(_ i = 0 ; i < NUM_REAL_FP_REGS; i++) {
+     if((bm_live & (1 << i)) == 0) alloc_to_real[i] = -1;
+   }
+
+   FP_DEBUG_PRN1("%d: init.............................\n",env.il_inst);
+   FP_DEBUG_ENV;
+ }
+
+ static void fp_trans_end_block(cg_env env, bool before, bool retn) {
+   // Restore the invariant.  Free whatever is necessary.
+   // Most of the time trans_end_block is executed 
+   // before the transfer but for Call it is executed afterwards.
+   // hence the bool.
+
+   // If this is a return put any live register at the end in ST0.
+
+   if(!before) 
+     env.il_inst++; // il_inst usually gives liveness before the transfer.
+   fp_trans_init_inst(env);
+
+   _ r2a = env.fp_env.real_to_alloc;
+   _ a2r = env.fp_env.alloc_to_real;
+   _ st0 = env.fp_env.st0;
+
+   // We might not want to be this aggressive about using Fxch since it may
+   // cause unnecessarily many Free operations.
+
+   _ i = 0;
+   while(i < NUM_REAL_FP_REGS) {
+     _ c = r2a[i];
+     if(c > 0 && c != i && a2r[c] == i) { // value in i should be in c.
+       if(i!=0) { // Put value in i into 0
+	 // If the top of the stack is 1 we will load c into 0 and restart.
+	 if(env.fp_env.st0 == 1) fp_fld (env,ST(i),true); 
+	 else                    fp_fxch(env,i);	 
+       } 
+       else { // Put value in 0 home.
+	 if(r2a[c] >= 0) fp_fxch(env,c);
+	 else            fp_fst(env,ST(c),false,true);
+       }
+       // Restart at 0 in either case above.
+       i = 0;
+       continue;
+     }
+     i++;
+   }
+   
+   // Everything should be in its home location except ST0.
+   // We do it last because everything else passes through it.
+   if(a2r[0] > 0) {
+     if(env.fp_env.st0 == 1) fp_fld (env,ST(a2r[0]),true);
+     else                    fp_fxch(env,a2r[0]);
+   }
+
+   // Free all unused stack slots.
+   _ all_empty = true;
+   for(_ i = 0; i < NUM_REAL_FP_REGS; i++) {
+     if(a2r[i] >= 0) all_empty = false;
+     else if(r2a[i] != -1) {
+       // We must free zombie registers at the end of the block.
+       fp_ffree(env,i);
+     }
+   }
+
+   // Make sure st0 == 0.
+   st0 = env.fp_env.st0;
+   if(st0 == 1) {
+     if(!all_empty) {
+       if(retn) { // If its return and st0 == 0 then our work is done.
+	 if(a2r[1] < 0) { // If the return is in ST(1) and st0 = ST(1) nothing to do.
+	   for(_ i = 2; i < NUM_REAL_FP_REGS; i++) {
+	     if(a2r[i] >= 0) {
+	       fp_fld(env,ST(a2r[i]),true);
+	       break;
+	     }
+	   }
+	 }
+       }
+       else EMIT_FP(Fdecstp);
+     }
+     env.fp_env.st0 = 0;
+   }
+   else if(st0 != 0) BUG("Top of stack is not 0 or 1");
+
+   FP_DEBUG_PRN0("end block:\n");
+   FP_DEBUG_ENV;
+   FP_DEBUG_PRN0("++++++++++++++++++++++++++++++++++++++\n");
+ }
+
+////////////////////////////// FP register conversions ////////////////////////
+// Conversions between alloced registers to real registers, and to stack slots
+static int fp_a2r(cg_env env, int i) {
+  _ alloc_to_real = env.fp_env.alloc_to_real;
+  return alloc_to_real[i];
+}
+
+static int fp_r2a(cg_env env, int i) {
+  _ real_to_alloc = env.fp_env.real_to_alloc;
+  
+  return real_to_alloc[i];
+}
+
+// Real register to stack_slot
+static int fp_r2st(cg_env env, int i) {
+  _ st0 = env.fp_env.st0;
+
+  return ((i + NUM_REAL_FP_REGS - st0) % NUM_REAL_FP_REGS);
+}
+
+static int fp_a2st(cg_env env, int i) {
+  _ r = fp_a2r(env,i);
+  if(r<0) return r;
+
+  return fp_r2st(env,r);
+}
+
+// A real register is allocated if alloc_to_real maps something to that
+// real register (not just if real_to_alloc contains a positive entry)
+static bool fp_real_allocd(cg_env env, int r) {
+  _ a = fp_r2a(env,r);
+
+  if(a<0) return false;
+
+  _ r2 = fp_a2r(env,a);
+  
+  if(r2!=r) return false;
+
+  return true;
+}
+
+// A real register is occupied if its not empty.
+static bool fp_real_occupied(cg_env env, int r) {
+  return (fp_r2a(env,r) >= 0);
+}
+
+static void fp_env_pop(cg_env env) {
+  env.fp_env.st0 = (env.fp_env.st0 + 1) % NUM_REAL_FP_REGS;
+}
+
+static void fp_env_push(cg_env env) {
+  env.fp_env.st0 = (env.fp_env.st0 + NUM_REAL_FP_REGS - 1) % NUM_REAL_FP_REGS;
+}
+
+// Add the allocated register a to the environment and map it to the real
+// register r.
+static void fp_env_add(cg_env env, int a, int r) {
+  _ alloc_to_real = env.fp_env.alloc_to_real;
+  _ real_to_alloc = env.fp_env.real_to_alloc;
+
+  // If some allocd register thinks it is in r, remove it.
+  _ ra = real_to_alloc[r];
+  if(ra >= 0 && alloc_to_real[ra] == r) alloc_to_real[ra] = -1;
+
+  alloc_to_real[a] = r;
+  real_to_alloc[r] = a;
+}
+
+// Is the allocated register a live on entry to this instruction or on exit?
+static bool fp_is_live(cg_env env, int a, bool before) {
+  _ lv = env.fps_live[env.il_block][env.il_inst + (before ? 0 : 1)];
+  
+  if(a<0) return false;
+  return ((lv & (1 << a)) != 0);
+}
+
+// Return true if there is a load following this instruction.
+// If there is we will pop the stack, otherwise we won't.
+// We could memoize this information, instead I just recompute it.
+static bool fp_is_next_load(cg_env env) {
+
+  _ i = env.il_inst + 1;
+  _ blk = Xarray::get(env.fn.blocks,env.il_block);
+  _ insts = blk.insts;
+  _ num_insts = Xarray::length(insts);
+  for(; i < num_insts; i++) {
+    _ inst = Xarray::get(insts,i);
+
+    if(!is_fp_inst(env.fn,inst)) continue;
+    switch inst {
+    case SelectField *(_,_,_): return true;
+    case ArraySub *(_,_,_): return true;
+    case Nullop (_): return true;
+    case Copy *(d,s): return (fp_operand2loc(env,s) < 0);
+    default: return false;
+    }
+  }
+  return false;
+}
+
+// Check that the fp_env is well-formed.
+void fp_env_check(cg_env env) {
+  _ real_to_alloc = env.fp_env.real_to_alloc;
+  _ alloc_to_real = env.fp_env.alloc_to_real;
+  _ st0           = env.fp_env.st0;
+
+  if(st0 != 0 && st0 != 1) {
+    printf("st0 = %d\n",st0);
+    fflush(tal_stdout);
+    BUG("Unexpected st0.");
+  }
+
+  if(st0 == 0 && real_to_alloc[0] < 0) {
+    printf("Warning: ST(0) == Real(0) but Real(0) is empty.\n");
+    fflush(tal_stdout);
+    BUG("Bad ST(0)");
+  }
+
+  if(st0 == 1 && real_to_alloc[0] >= 0) {
+    printf("ST(0) == Real(1) but Real(1) is occupied with %d.\n", 
+	   real_to_alloc[0]);
+    fflush(tal_stdout);
+    BUG("Bad ST(0)");
+  }
+
+  for(_ i = 0; i < NUM_REAL_FP_REGS; i++) {
+    _ i_r = alloc_to_real[i];
+    if(i_r >= 0 && real_to_alloc[i_r] != i) {
+      printf("Alloc %d -> Real %d -> Alloc %d\n",i,i_r,real_to_alloc[i_r]);
+      fflush(tal_stdout);
+      BUG("Unexpected mapping.");
+    }
+  }
+}
+
+static void fp_env_print(cg_env env) {
+  _ fp_env = env.fp_env;
+  _ a2r = fp_env.alloc_to_real;
+  _ r2a = fp_env.real_to_alloc;
+  _ st0 = fp_env.st0;
+
+  for(_ i = 0; i< NUM_REAL_FP_REGS; i++) {
+    if(a2r[i] < 0) {
+      if(i == st0) printf(" >");
+      else printf("  ");
+    } else {
+      if(i == st0) printf(">!");
+      else printf(" !");
+    }
+
+    if(r2a[i] >= 0) {
+      _ k = a2r[r2a[i]];
+      if(k == i)
+	printf("(%d)",r2a[i]);
+      else if (k < 0)
+	printf(" %d ", r2a[i]);
+      else 
+	printf("%d?%d",r2a[i],k);
+    } else if(r2a[i]==-2) printf(" Z ");
+    else printf(" _ ");
+  }
+  printf("\n");
+  fflush(tal_stdout);
+}
+
+////////////////////////////// FP Instruction Emulation ///////////////////////
+// Static emulation of floating point instructions.
+// These functions emit the specified instruction and update the environment
+// If the function is a nop we don't emit it.
+
+// register number i refers to the real register number -- not the stack slot.
+static void fp_fxch(cg_env env, int i) {
+              
+  FP_DEBUG_PRN1("fp_fxch(%d)+\n",i);
+
+  _ alloc_to_real = env.fp_env.alloc_to_real;
+  _ real_to_alloc = env.fp_env.real_to_alloc;
+  _ st0 = env.fp_env.st0;
+
+  _ sti = fp_r2st(env,i);
+
+  if(sti == 0) {
+      FP_DEBUG_ENV;
+      return;
+  }
+
+  EMIT_FPS(Fxch,ST(sti));
+
+  _ sti_a = real_to_alloc[i];
+  _ st0_a = real_to_alloc[st0];
+  real_to_alloc[i]   = st0_a;
+  real_to_alloc[st0] = sti_a;
+
+  if(sti_a < 0 || st0_a < 0) BUG("Fxch applied to empty registers.");
+
+  if(alloc_to_real[sti_a] == i)
+    alloc_to_real[sti_a] = st0;
+
+  if(alloc_to_real[st0_a] == st0)
+    alloc_to_real[st0_a] = i;
+
+  FP_DEBUG_ENV;
+}
+
+// If mov is true we move the alloc'd value to the new top of 
+// the stack.  Otherwise we don't.
+static void fp_fld(cg_env env, fpargs a, bool mov) {
+  _ alloc_to_real = env.fp_env.alloc_to_real;
+  _ real_to_alloc = env.fp_env.real_to_alloc;
+
+  if(env.fp_env.st0 == 0) BUG("Cannot laod when ST(0) is occupied.");
+
+  switch a {
+  case FPstack(i):
+    _ sti = fp_r2st(env,i);
+    _ sti_a = fp_r2a(env,i);
+    
+    fp_env_push(env);
+    _ st0 = env.fp_env.st0;
+    
+    if(sti_a < 0) BUG("FLD of empty slot.");
+    
+    a = ^.FPstack(sti);
+    
+    //    if(st0 == sti) { EMIT_FP(Fdecstp); return; }
+    
+    real_to_alloc[st0] = sti_a;
+    
+    if(mov) alloc_to_real[sti_a] = st0;
+    
+  case FPgenop(_): fp_env_push(env);
+  case FPstack2(_): BUG("Unexpected fpargs");
+  }
+  EMIT_FPS(Fld,a);  
+}
+
+// Free the real register i.
+static void fp_ffree(cg_env env, int i) {
+  _ alloc_to_real = env.fp_env.alloc_to_real;
+  _ real_to_alloc = env.fp_env.real_to_alloc;
+
+  _ sti = fp_r2st(env,i);
+  _ sti_a = fp_r2a(env,i);
+
+  EMIT_FPS(Ffree,ST(sti));
+
+  real_to_alloc[i] = -1;
+  if(sti_a >= 0) {
+    if(alloc_to_real[sti_a] == i) alloc_to_real[sti_a] = -1;
+  }
+}
+
+// Store st0 into argument a. (The argument is given in real registers.)
+// If mov is true we move the alloc to the new destination.
+static void fp_fst(cg_env env, fpargs a, bool pop, bool mov) {
+  _ alloc_to_real = env.fp_env.alloc_to_real;
+  _ real_to_alloc = env.fp_env.real_to_alloc;
+  _ st0 = env.fp_env.st0;
+  _ st0_a = fp_r2a(env,st0);
+
+  switch a {
+  case FPstack(i): FP_DEBUG_PRN4("%d: fp_fst(a = %d, %s,%s)+\n",
+				 env.il_inst,
+				 i,
+				 (pop ? "pop" : "   "), 
+				 (mov ? "mov" : "   "));
+  case FPgenop(_):  FP_DEBUG_PRN3("%d: fp_fst(a = m, %s,%s)+\n",
+				  env.il_inst,
+				  (pop ? "pop" : "   "), 
+				  (mov ? "mov" : "   "));
+  default: BUG("Inappropriate argument for Fst.");
+  }
+
+  if(st0_a < 0) BUG("fp_fst an unoccupied real register.");
+
+  switch a {
+  case FPstack(i):
+    _ sti = fp_r2st(env,i);
+
+    if(sti == st0 && !pop) {
+      fp_ffree(env,i);
+      FP_DEBUG_ENV;
+      return;
+    }
+
+    real_to_alloc[i] = real_to_alloc[st0];
+    if(mov) alloc_to_real[st0_a] = i;
+
+    a = ^.FPstack(sti);
+
+  case FPgenop *(_,gop):
+    if(mov) alloc_to_real[st0_a] = -1;
+  default: BUG("Inappropriate argument to Fst.");
+  }
+
+  if(pop) {
+    real_to_alloc[env.fp_env.st0] = -1;
+    fp_env_pop(env);
+    EMIT_FPS(Fstp,a);
+  } else EMIT_FPS(Fst,a);
+
+  FP_DEBUG_ENV;
+}
+
+// pop the stack.
+static void fp_pop(cg_env env) {
+  _ st0 = env.fp_env.st0;
+  _ r2a = env.fp_env.real_to_alloc;
+
+  r2a[st0] = -1;
+  fp_env_pop(env);
+
+  EMIT_FPS(Fstp,ST(0));
+}
+
+// dest_loc is alloc'd register.
+static void fp_load_mem(cg_env env, int dest_loc, fpargs src_g) {
+
+  FP_DEBUG_PRN1("fp_load_mem(dest = %d)\n",dest_loc);
+
+  _ st0 = env.fp_env.st0;
+
+  if(st0 == 0) {
+    // Pop and save whatever is in 0.
+    _ st0_a = fp_r2a(env,st0);
+    if(st0_a < 0) BUG("Real 0 empty, but top of stack == 0.");
+
+    _ st0_r = fp_a2r(env,st0_a);
+    if(st0_r == st0) { // The top of the stack is the official copy of st0_a
+      st0_a = fp_get_non_allocd(env);
+      
+      fp_fst(env,ST(st0_a),true,true); // st0 into st0_a
+    } else fp_pop(env);
+  }
+  
+  fp_fld(env,src_g,false);
+  fp_env_add(env,dest_loc,env.fp_env.st0);
+
+  FP_DEBUG_ENV;
+
+}
+
+// Returns a real register that is not currently occupied.
+// Might be better to pick an occupied but not allocated one rather
+// than the first one we come across.
+static int fp_get_non_allocd(cg_env env) {
+  for(_ i = 0; i < NUM_REAL_FP_REGS; i++) {
+    if(!fp_real_allocd(env,i))
+      return i;
+  }
+  BUG("All registers are allocated.");
+}
+
+// Put whatever is in st0 somewhere unoccupied.
+// May change the value in the register st0 if keep is false.
+// (Does not make st0 unoccupied after this!!!)
+static void fp_remove_st0(cg_env env, bool keep) {
+
+  FP_DEBUG_PRN1("fp_remove_st0(%s)+\n",(keep ? "keep" : "    "));
+
+  _ st0 = env.fp_env.st0;
+  
+  if(!fp_real_allocd(env,st0)) {
+      FP_DEBUG_ENV;
+      return;
+  }
+
+  _ st0_a = fp_r2a(env,st0);
+
+  _ i = !fp_real_allocd(env,st0_a) ? st0_a : fp_get_non_allocd(env);
+  _ i_a = fp_r2a(env,i);
+
+  if(keep || i_a < 0) { 
+    // If its unoccupied or we must preserve ST(0), just store.
+    fp_fst(env,ST(i),false,true);
+  } else { 
+    // If its occupied and we don't have to preserve ST(0), just exchange.
+    fp_fxch(env,i);
+  }
+
+  FP_DEBUG_ENV;
+}
+
+// Take a source location and put it home.  Leave ST(0) unchanged, unless that
+// is the home location (of course).
+// home == the real register which has the same number as the 
+// allocated register. 
+// NO LONGER USED.
+static void fp_put_home(cg_env env, int src_loc) {
+
+  FP_DEBUG_PRN1("fp_put_home(src = %d)+\n",src_loc);
+  FP_DEBUG_ENV;
+
+  _ src_r = fp_a2r(env,src_loc);
+
+  if(src_r == src_loc) return; //We're done.
+
+  if(src_r<0) BUG("fp_put_home: Cannot return home a non-existent value.");
+
+  _ st0 = env.fp_env.st0;
+
+  _ restore_st0 = -1;
+
+  if(src_r != st0) { // We first put the src in st0.
+    restore_st0 = src_r;
+    fp_fxch(env,src_r);
+    if(src_loc == st0) return;
+  }
+
+  // The value to go in src_loc is in ST0
+  // If the src_location is allocated we have to move
+  // the imposter out of there.
+
+  _ src_allocd = fp_real_allocd(env, src_loc);
+  
+  if(src_allocd) {
+    // the real src_loc contains an allocated value (the imposter) and 
+    // the allocd src_loc is in the top of the stack.
+
+    // XXX - This could be improved to eliminate the recursive call in favor 
+    // of a generic remove routine. 
+
+    _ imposter = fp_r2a(env,src_loc);
+    fp_fxch(env,src_loc);
+    fp_put_home(env,imposter); 
+    if(imposter == st0) // The imposter's home is the top of the stack!
+      fp_remove_st0(env,false);
+    fp_fxch(env,src_loc);
+  }
+  
+  fp_fst(env,ST(src_loc),false,true); // Don't pop!
+
+  if(restore_st0 > 0) fp_fxch(env,restore_st0);
+}
+
+// Given an allocated register but its contents in ST(0)
+// (What I really mean by ST(0) is real register 0!)
+// If this value must be saved ensure that it would survive a pop
+// either by making sure its been copied home, or by keeping a copy elsewhere.
+// If saved the saved version should be in the mapping from alloc_to_real.
+static void fp_put_st0(cg_env env, int src_loc, bool save) {
+  
+  FP_DEBUG_PRN3("%d: fp_put_st0(src = %d, %s)\n",
+		env.il_inst,src_loc, save ? "save" : "    ");
+
+  _ src_r = fp_a2r(env,src_loc);
+  _ st0 = env.fp_env.st0;
+
+  if(src_r < 0) BUG("Alloc'd register not mapped.");
+
+  if(st0 == 1) {
+    fp_fld(env,ST(src_r),false);  // Load pushes so that value is always saved.
+    FP_DEBUG_ENV;
+    return; 
+  }
+
+  if(src_r != st0) { // Its not on the top of the stack.
+    // if(fp_real_allocd(env,st0)) fp_remove_st0(env,false);
+    fp_fxch(env,src_r);
+    src_r = st0;
+  }
+
+  if(save) {
+    fp_remove_st0(env,true);
+  }
+
+  FP_DEBUG_ENV;
+  
+}
+
+// Locations are given as allocated registers.
+static void fp_mov(cg_env env, int dest_loc, int src_loc) {
+  // If the src is dead, just rename to the destination.
+  // If the src is in ST(0) but shouldn't be, restore it and call ST(0) dest.
+  // If the src is in ST(0) and should be, store a copy in dest
+  // If the src is buried in the stack, put it in ST(0), and start over.
+  _ src_r = fp_a2r(env,src_loc);
+
+  if(!fp_is_live(env,src_loc,false)) {
+    if(src_r < 0) BUG("Live alloc'd register has no home.");
+    fp_env_add(env,dest_loc,src_r);
+    return;
+  }
+
+  // We put the value in ST(0), but the official copy is kept elsewhere.
+  fp_put_st0(env,src_loc,true);
+
+  fp_env_add(env,dest_loc,env.fp_env.st0);
+
+  /*
+  // Have to copy top of the stack into dest.
+  _ dest_occupied = fp_real_occupied(env,dest_loc);
+
+  _ pop = fp_is_next_load(env);
+
+  if(dest_occupied) fp_fxch(env,dest_loc);
+  else fp_fst(env,ST(dest_loc),pop,false);
+
+  fp_env_add(env,dest_loc,dest_loc);
+  */
+}
+
+static void fp_empty_stack(cg_env env) {
+  _ real_to_alloc = env.fp_env.real_to_alloc;
+
+  for(_ i = 0; i < NUM_REAL_FP_REGS; i++) {
+    // -2 frees the zombie stack slots -- they may or may not be dead.
+    if(real_to_alloc[i] >= 0 || real_to_alloc[i] == -2) fp_ffree(env,i);
+  }
+
+  env.fp_env.st0 = 0; // Its empty so we don't need to issue any instrucitons.
+}
+
+////////////////////////////// Actual FP translation ///////////////////////////
+// Use translate copy for FtoD and DtoF translation.
+// Which means that the types of destination and source may not be the same.
+static void trans_fp_copy(cg_env env,cf_operand cf_dest,cf_operand cf_src) {
+
+  fp_trans_init_inst(env);
+  // destination is FP, and source should be too.
+  int dest_loc = fp_operand2loc(env,cf_dest);
+  int  src_loc = fp_operand2loc(env,cf_src);
+
+  FP_DEBUG_PRN3("%d: trans_fp_copy+ %d <= %d\n",env.il_inst,dest_loc,src_loc);
+
+  if(dest_loc == src_loc) {
+    if(dest_loc < 0) BUG("Regalloc should ensure at least one in memory!");
+    FP_DEBUG_ENV;
+    return; // Nothing to do.
+  }
+
+  if(dest_loc < 0) {
+    // destination is in memory. (source is not)
+    _ pop = fp_is_next_load(env);
+    _ keep = fp_is_live(env,src_loc,false);
+    fp_put_st0(env,src_loc,pop && keep);
+
+    _ dest_arg = fp_operand2genop(env,cf_dest);
+    fp_fst(env,dest_arg,pop,true);
+
+  } else if (src_loc < 0) {
+    // source is in memory. (destination is not)
+    _ src_g = fp_operand2genop(env,cf_src);
+    
+    fp_load_mem(env,dest_loc, src_g);
+
+  } else {
+    // both in fp registers.
+    fp_mov(env,dest_loc,src_loc);
+  }
+
+  FP_DEBUG_ENV;
+}
+
+static void trans_fp_nullop(cg_env env, 
+			    Popsyntax::primop p, cf_operand cf_dest) {
+  fp_trans_init_inst(env);
+
+ _ op;
+ switch p {
+ case PiF      : op = ^.Fldpi;
+ case Log2_eF  : op = ^.Fldl2e;
+ case Log2_10F : op = ^.Fldl2t;
+ case Log10_2F : op = ^.Fldlg2;
+ case Loge_2F  : op = ^.Fldln2;
+ case OneF     : op = ^.Fld1;
+ case ZeroF    : op = ^.Fldz;
+ default: BUG("Invalid nullary operator."); 
+ }
+
+ _ st0 = env.fp_env.st0;
+ 
+ if(st0 == 0) {
+   fp_remove_st0(env,false);
+   fp_pop(env); // pop the stack.
+ }
+
+ EMIT(FPnoargs(op));
+
+ _ dest_loc = fp_operand2loc(env,cf_dest);
+ fp_env_push(env);
+ if(dest_loc < 0) BUG("destination of nullary operator is in memory.");
+ fp_env_add(env, dest_loc, env.fp_env.st0);
+}
+
+// For the usual unary operators.
+// Result replaces argument on top of stack.
+static void trans_fp_unop(cg_env env, fpnoargs op, 
+			  cf_operand cf_dest, cf_operand cf_src) {
+
+  fp_trans_init_inst(env);
+
+  _ dest_loc = fp_operand2loc(env,cf_dest);
+  _ src_loc  = fp_operand2loc(env,cf_src);
+
+  // Both must be in fp registers.
+  if(dest_loc < 0 || src_loc < 0) 
+    BUG("Operand to unary operator is in memory.");
+
+  _ keep_src = (src_loc != dest_loc) && fp_is_live(env,src_loc,false);
+
+  fp_put_st0(env,src_loc,keep_src);
+
+  EMIT(FPnoargs(op));
+
+  fp_env_add(env,dest_loc,env.fp_env.st0);
+}
+
+// Tangent is unusual.
+// It puts the result in ST(0) and then pushes a 1.0 onto the stack.
+static void trans_fp_tan(cg_env env, cf_operand cf_dest, cf_operand cf_src) {
+
+  fp_trans_init_inst(env);
+
+  _ dest_loc = fp_operand2loc(env,cf_dest);
+  _ src_loc = fp_operand2loc(env,cf_src);
+
+  if(dest_loc < 0 || src_loc < 0) 
+    BUG("Operand to tangent is in memory.");
+
+  _ keep_src = fp_is_live(env,src_loc,false);
+
+  fp_put_st0(env,src_loc,keep_src);
+
+  // Now we have to clear st0-1 (stmax below)
+  _ st0 = env.fp_env.st0;
+  _ stmax = (st0 + NUM_REAL_FP_REGS -1) % NUM_REAL_FP_REGS;
+
+  if(fp_real_occupied(env,stmax)) {
+    if(fp_real_allocd(env,stmax)) {
+      _ dest = fp_get_non_allocd(env);
+
+      // Now we push the stack, and store/pop the top of the stack into the 
+      // selected destination.
+
+      if(dest==0) BUG("Top of the stack should be allocated!");
+
+      EMIT_FP(Fdecstp);
+      fp_env_push(env);
+      fp_fst(env,ST(dest),true,true);
+    } 
+    else fp_ffree(env,stmax);
+  }
+ 
+  EMIT_FP(Fptan);
+  EMIT_FPS(Fstp,ST(0)); // Pop the stack WITHOUT updating env.
+
+  fp_env_add(env,dest_loc,env.fp_env.st0);
+}
+
+static void trans_fp_itofd(cg_env env, cf_operand cf_dest, cf_operand cf_src) {
+  fp_trans_init_inst(env);
+
+  // Make sure src is in memory
+  // Make sure destination is allocated to a fp register.
+  // Issue Fild.
+
+  _ dest_loc = fp_operand2loc(env,cf_dest);
+
+  FP_DEBUG_PRN2("%d: trans_fp_itofd+ into %d\n",env.il_inst,dest_loc);
+  if(dest_loc < 0) BUG("Destination of cast to float/double is not a FP reg");
+  
+  _ src_g = operand2genop(env,cf_src);
+
+  // XXX - we should handle the register and immediate
+  // case by pushing the value on the (regular) 
+  // stack, loading it from there and then popping.
+  _ src_pushed_on_stack = false;
+  switch src_g {
+  case Reg(r):
+    src_pushed_on_stack = true;
+    _ src_g2 = prjr(esp,0);
+    EMIT(Push(^coerce(src_g,^list(^.Subsume(cbyte4()), null))));
+    src_g = src_g2;
+  case Immed(i): // Should do this statically, but for now!
+    src_pushed_on_stack = true;
+    _ src_g2 = prjr(esp,0);
+    EMIT(Push(^coerce(src_g,^list(^.Subsume(cbyte4()), null))));
+    src_g = src_g2;
+  default: ;
+  }
+
+  if(env.fp_env.st0 == 0) {
+    fp_remove_st0(env,false);
+    fp_pop(env);
+  }
+  
+  EMIT_FPS(Fild,FP32(src_g));
+  fp_env_push(env);
+  fp_env_add(env,dest_loc,env.fp_env.st0);
+
+  if(src_pushed_on_stack)
+    EMIT(ArithBin(^(^arithbin.Add, gesp, ^genop.Immed(4))));
+
+}
+
+static void trans_fp_fdtoi(cg_env env, cf_operand cf_dest, cf_operand cf_src) {
+  fp_trans_init_inst(env);
+
+  _ dest = operand2genop(env,cf_dest);
+  _ src_loc = fp_operand2loc(env,cf_src);
+
+  if(src_loc < 0) BUG("Source of cast to int must be in FP stack.");
+
+  // If the destination is on the stack write it their, otherwise we 
+  // push it on to ESP and then load it into the appropriate register.
+  _ keep = fp_is_live(env,src_loc,false);
+  _ pop = fp_is_next_load(env);
+
+  fp_put_st0(env,src_loc,keep && pop);
+  _ dest_reg = null;
+  switch dest {
+  case Reg(r): 
+    dest_reg = ^Opt(dest);
+    dest = prjr(esp,0);
+    // Push the stack.
+    EMIT(Push(^coerce(^.Immed(0),null)));
+  case Immed(_): BUG("Destination of fp cast is an immediate.");
+  default: ;
+  }
+
+  if(pop) {
+    EMIT_FPS(Fistp,FP32(dest));
+    fp_env_pop(env);
+  }
+  else EMIT_FPS(Fist,FP32(dest));
+
+  if(dest_reg != null) {
+    _ d = dest_reg.v;
+    EMIT(Mov(^(d,^coerce(dest,null))));
+    EMIT(ArithBin(^(^arithbin.Add, gesp, ^genop.Immed(4))));
+  }
+}
+
+static void trans_fp_relop(cg_env env, Popsyntax::primop op, cf_operand cf_dest,
+			   cf_operand cf_src1, cf_operand cf_src2) {
+  fp_trans_init_inst(env);
+  condition c    = relop2condition(op);
+  _ flip = trans_fp_comparison(env, cf_src1, cf_src2);
+
+  if(flip) c = flip_condition(c);
+
+  _ dest = operand2genop(env,cf_dest);
+
+  EMIT(Mov  (^(dest, tal_false()))); // TAL made me do it!
+  EMIT(Setcc(^(c, dest)));
+}
+
+// Special binary operators whose arguments must be in ST(0) and ST(1).
+// The results pop the stack, leaving the result in the new ST(0).
+static void trans_fp_restricted_binop(cg_env env, fpnoargs op, 
+				      cf_operand cf_dest, cf_operand cf_src1,
+				      cf_operand cf_src2) {
+
+  fp_trans_init_inst(env);
+
+  _ src1_loc = fp_operand2loc(env,cf_src1);
+  _ src2_loc = fp_operand2loc(env,cf_src2);
+  _ dest_loc = fp_operand2loc(env,cf_dest);
+
+  if(src1_loc < 0) BUG("src1 is in memory.");
+  if(src2_loc < 0) BUG("src2 is in memory.");
+  if(dest_loc < 0) BUG("dest is in memory.");
+
+  // The plan:
+  // 1. Move src1 into st0
+  // 2. Move src2 into stmax (the register one preceding st0)
+  // Perform the operation
+  // Update the environment.
+
+  _ keep_src1 = fp_is_live(env,src1_loc,false);
+  fp_put_st0(env,src1_loc, keep_src1);
+  
+  _ st0 = env.fp_env.st0;
+  _ stmax = (st0 + NUM_REAL_FP_REGS - 1) % NUM_REAL_FP_REGS;
+  
+  if(fp_real_occupied(env,stmax)) {
+    if(fp_real_allocd(env,stmax)) {
+      _ dest = fp_get_non_allocd(env);
+      
+      _ dest_st = (dest + stmax) % NUM_REAL_FP_REGS;
+      EMIT_FP(Fdecstp);
+      fp_env_push(env);
+      fp_fst(env,ST(dest_st),true,true);
+    } 
+    else fp_ffree(env,stmax);
+  }
+    
+  EMIT_FPS(Fld,ST(fp_a2st(env,src2_loc)));
+  EMIT(FPnoargs(op));
+
+  fp_env_add(env,dest_loc,env.fp_env.st0);
+
+}
+
+// fprem takes its arguments from ST(0) and ST(1) and overwrites ST(0).
+// It does not pop the stack!
+static void trans_fp_frem(cg_env env, cf_operand cf_dest, cf_operand cf_src1,
+			  cf_operand cf_src2) {
+  fp_trans_init_inst(env);
+
+  _ src1_loc = fp_operand2loc(env,cf_src1);
+  _ src2_loc = fp_operand2loc(env,cf_src2);
+  _ dest_loc = fp_operand2loc(env,cf_dest);
+
+  if(src1_loc < 0) BUG("src1 in memory.");
+  if(src2_loc < 0) BUG("src2 in memory.");
+  if(dest_loc < 0) BUG("dest in memory.");
+
+  // put src1 in ST(0)
+  _ keep_src1 = fp_is_live(env,src1_loc,false);
+  fp_put_st0(env,src1_loc, keep_src1);
+
+  // put src2 in ST(1)
+  _ src2_r = fp_a2r(env,src2_loc);
+  _ src2_live = fp_is_live(env,src2_loc,false);
+
+  // If its not already in ST(1)...
+  if(src2_r != 1) {
+    EMIT_FP(Fincstp);
+    fp_env_pop(env);
+    
+    if(fp_real_occupied(env,1)) {
+      // ST(1) is occupied.
+      fp_fxch(env,src2_r);
+    }
+    else {
+      // ST(1) is empty
+      EMIT_FP(Fincstp);
+      fp_env_pop(env);
+      fp_fld(env,ST(src2_r),true);
+    }
+
+    EMIT_FP(Fdecstp);
+    fp_env_push(env);
+  }
+
+  // At this point ST(0) and ST(1) contain the right values.
+  EMIT_FP(Fprem1);
+  fp_env_add(env,dest_loc,env.fp_env.st0);
+}
+
+static void trans_fp_arithop(cg_env env, Popsyntax::primop op, 
+			     cf_operand cf_dest, cf_operand cf_src1,
+			     cf_operand cf_src2) {
+  fp_trans_init_inst(env);
+
+  _ dest_loc = fp_operand2loc(env,cf_dest);
+  _ src1_loc = fp_operand2loc(env,cf_src1);
+  _ src2_loc = fp_operand2loc(env,cf_src2);
+  
+  if(dest_loc < 0) BUG("FP destination of binop is in memory.");
+
+  _ pop = fp_is_next_load(env); // Should we pop?
+  _ reverse = false; // Should we use the reverse version of the binop?
+  _ fpargs;
+  _ result_r; // Real register to put result in.
+
+  if(src1_loc < 0 || src2_loc < 0) {
+    // One of the sources is in memory.  The other must go into ST(0).
+    _ cf_mem  = (src1_loc < 0) ? cf_src1  : cf_src2;
+    _ fp_loc  = (src1_loc < 0) ? src2_loc : src1_loc;
+     
+    reverse = (src1_loc < 0);
+    
+    _ mem_gop = operand2genop(env,cf_mem);
+
+    _ save_fp = (dest_loc != fp_loc) && fp_is_live(env,fp_loc,false);
+
+    fp_put_st0(env,fp_loc,save_fp);
+
+    if(sizeof_typ(operand_type(env.fn,cf_mem)) == 8)
+      fpargs = FP64(mem_gop);
+    else 
+      fpargs = FP32(mem_gop);
+
+    result_r = env.fp_env.st0;    
+    pop = false; // Can't pop in this case.
+  } 
+  else {
+    // Both sources and the destination are in the FP stack.
+    // One source (src_st0) must go in st0, the other anywhere.
+    // The result will clobber one of them.
+    // Both arguments can be in the same register!!
+    
+    // First we choose one to put in st0.
+    _ src1_r = fp_a2r(env,src1_loc);
+    _ src2_r = fp_a2r(env,src2_loc);
+    
+    _ src_st0;
+    if     (src1_r == 0) src_st0 = src1_loc;
+    else if(src2_r == 0) src_st0 = src2_loc;
+    else {
+      // Neither of them is unfortunately in st0 already.
+      // If we want to pop we want the result not to be in st0.
+      // But if a destination and a source were coalesced we'd like to use that
+      // information.
+      
+      src_st0 = (dest_loc == src2_loc) ? src2_loc : src1_loc;
+      
+      // But if we should pop, then we reverse our choice.
+      if(pop)
+	src_st0 = (src_st0 == src1_loc) ? src2_loc : src1_loc;
+    }    
+    
+    // At this point we have chosen src_st0, but not yet put it there!
+    
+    // Now pick which one to clobber.
+    _ src_other = (src_st0 == src1_loc) ? src2_loc : src1_loc;
+    _ st0_result; // Should the result go in st0? 
+
+    // if we must save src_other than it is always the best choice to clobber
+    // st0! (Because moves always pass through st0, its hard to save st_other.)
+    
+    if(dest_loc != src_other && fp_is_live(env,src_other,false))
+      st0_result = true;
+    else if(dest_loc == src_st0)
+      st0_result = true;
+    else if (dest_loc == src_other) 
+      st0_result = false;
+    else {
+      // The register allocator didn't coalesce the destination and the 
+      // other operands so the result should go in st0.
+      st0_result = true;
+    }
+
+    if(st0_result) pop = false; // Cannot pop the result we're computing.
+
+    // Our choices guarantee that we don't have to save src_other, only src_st0.
+    _ save_src_st0 = ((pop || st0_result) && 
+		      (dest_loc != src_st0) && 
+		      fp_is_live(env,src_st0,false));
+    // Put src_st0 in st0.
+    fp_put_st0(env,src_st0,save_src_st0);
+
+    // Explanation of the hideous tests below:
+    // Bool in FPstack2 controls whether we get ST(0),ST(i) or ST(i),ST(0)
+    // Former when true, latter when false.
+    // Reverse controls whether the computation of x,y results in x op y
+    // or y op x.
+    // So if st0_result == true then we should set reverse exactly when
+    // src_other == src1_loc. If st0_result == false, we should use the
+    // reverse operator exactly when src_other != src1_loc.  
+    _ src_other_st = fp_a2st(env,src_other);
+    if(src_other_st < 0) { 
+      FP_DEBUG_PRN2("src_other = %d, src_st0 = %d\n",src_other,src_st0);
+      FP_DEBUG_ENV;
+      BUG("src < 0");
+    }
+    fpargs = ^.FPstack2(^(st0_result, src_other_st));
+    reverse = ((src_other == src1_loc) == st0_result); 
+    result_r = st0_result ? 0 : fp_a2r(env,src_other);
+  }
+  // Can only pop if the result does not go in ST(0). 
+  _ fp_bop = fp_bop_trans(op,pop,reverse);
+  
+  EMIT(FPsomeargs(^(fp_bop,fpargs)));
+  
+  fp_env_add(env,dest_loc,result_r);
+  if(pop) fp_env_pop(env);
+}
+
+ static fpsomeargs fp_bop_trans(Popsyntax::primop op, bool pop, bool rev) {
+   switch op {
+   case  PlusF: return pop ? ^.Faddp : ^.Fadd;
+   case TimesF: return pop ? ^.Fmulp : ^.Fmul;
+   case MinusF: return rev ? (pop ? ^.Fsubrp : ^.Fsubr) : 
+                             (pop ? ^.Fsubr : ^.Fsub);
+   case   DivF: return rev ? (pop ? ^.Fdivrp : ^.Fdivr) : 
+                             (pop ? ^.Fdivp : ^.Fdiv);
+   default: BUG("Not a binary FP operator.");
+   }
+ }
+
+static void trans_fp_load(cg_env env, cf_operand cf_dest, fpargs src_gop){
+  fp_trans_init_inst(env);
+
+ _ dest_loc = fp_operand2loc(env,cf_dest);
+
+ if(dest_loc < 0) BUG("Desination of select field not in a register.");
+
+ fp_load_mem(env,dest_loc,src_gop);
+}
+
+static void trans_fp_store(cg_env env, fpargs dest_gop, cf_operand cf_src){
+
+  fp_trans_init_inst(env);
+
+  _ src_loc = fp_operand2loc(env,cf_src);
+
+  if(src_loc < 0) BUG("Src of FP assignfield not assigned a register.");
+
+  _ src_live = fp_is_live(env,src_loc,false);
+  _ pop = fp_is_next_load(env);
+
+  fp_put_st0(env,src_loc,src_live && pop);
+  fp_fst(env,dest_gop,pop,true);
+
+}
+
+// Cyclone +
+
+/*
+  rtcg_forget is broken.  By looking at the liveness information for o
+  we implicitly assume there are no copies of this template pointer.
+  Unfortunately, the register allocator may choose to spill a template
+  pointer and thus create copies.  */
+void rtcg_forget(cg_env env,int rgn,int tptr,cf_operand o) {
+
+  _ block_liveness = env.assignment_info.all_live[env.il_block];
+  _ after_live = block_liveness[env.il_inst + 1];
+
+  _ tptr = operand2tptr(env,o);
+  _ fn = env.fn;
+  _ ops = fn.all_operands;
+  _ num_ops = Xarray::length(ops);
+  for(int i=0;i<num_ops;++i) {
+    _ typ = Xarray::get(ops,i).typ;
+    switch typ {
+    case TemplPtr(x): 
+      if(x==tptr && Set::member(after_live,i))
+	return; //Its live so we can't forget it.      
+    default: ;
+    }
+  }
+
+  // If we get here, it is not live and we can forget the template pointer.
+
+  _ filled = Dict::lookup_opt(env.filled,tptr);
+  
+  if(filled == null) {
+    BUG("Forgetting a template pointer no longer in the environment.");
+  }
+  else {
+    _ tptr = operand2tptr(env,o);
+    _ templ = Xarray::get(env.fn.template_pointers,tptr);
+    if (List::length(filled.v) != Xarray::length(templ.holes)) {
+      printf("Function = %s\n", env.fn.name);
+      Popilanalyze::print_liveness(Popilanalyze::ilf,
+				   env.assignment_info.all_live);
+      Popilprint::prn_fun(env.fn);
+      
+      BUG("Forgetting a template that still contains unfilled holes.");
+    }
+  }
+  
+
+  EMIT(CgForget(^(tid_region(rgn),tid_tptr(tptr))));
+  // Also make this template not active.
+  
+  // Not strictly necessary but conceptually we should probably
+  // remove the template from the filled dictionary too.
+  env.filled = Dict::delete_present(env.filled,tptr);
+}
+
+// Cyclone -
+
+static <int,*(int[],int)>dict 
+  rm_initialized(cg_env env, int x, *(int[],int)pr, 
+		 <int,*(int[],int)>dict ans) {
+  if (Bitvec::all_set(pr.1,pr.2)) {
+    // must only forget name if it's live
+//     if(Set::member(env.assignment_info.all_live[env.il_block][env.il_inst],x))
+//       EMIT(Coerce(^coerce(operand2genop(env,^cf_operand.Local(x)),
+// 			  ^list(^coercion.Forgetname,null))));
+    return Dict::delete(ans, x);
+  }
+  return ans;
+}
+static *(int[],int) copy_pr(*(int[],int) src) {
+  return ^(Bitvec::new_copy(src.1),src.2);
+}
+
+//NEW STUFF
+// given an env and to 'to' block, return unrefinement virtual insts
+// for every refined var in the env that is live and is not refined in 'to'
+<instruction>list trans_unrefine(cg_env env, cf_block to){
+  _ refs = Dict::to_list(env.refined_locals);
+  <instruction>list virts = null;
+  cf_block blk = Xarray::get(env.fn.blocks, env.il_block);
+  _ live = env.assignment_info.all_live[to.num][0];
+  for(_ iter = refs; iter != null; iter = iter.tl){
+    if(Set::member(live,iter.hd.1) && 
+       !Dict::member(to.refined_locals, iter.hd.1)){
+      genop g = operand2genop(env, ^cf_operand.Local(iter.hd.1));
+      _ c = unrefineTyp(env, iter.hd.1, iter.hd.2);
+      // printf("emitting coerce of %d\n", iter.hd.1);
+      virts = ^list(^instruction.Coerce(^coerce(g, c)), virts);
+    }
+  }
+  return virts;
+}
+  
+
+void trans_transfer(cg_env env, optimized_jump oj) {
+
+  _ blk = Xarray::get(env.fn.blocks, env.il_block);
+
+  switch blk.trans {
+  case Abort:
+    fp_trans_end_block(env,true,false); // Re-establish inter-block FP invariant!
+    EMIT(Mov(^(geax,^coerce(^genop.Addr(nullFailureLabel()),null))));
+    EMIT(Jmp(^coerce(geax, null)));;
+
+  case Uncond(d): 
+    // XXX - not strictly necessary in this case, unless successor has
+    // multiple predecessors.
+    fp_trans_end_block(env,true,false); // Re-establish inter-block FP invariant!
+    trans_jump(env,d,oj,null);
+  case Raise(v): 
+    fp_trans_end_block(env,true,false); // Re-establish inter-block FP invariant!
+
+    <coercion>list cs = null;
+    //NEW STUFF
+    //make sure packet is actually packed
+    switch v{ 
+    case Local(i):
+     if(Dict::member(env.refined_locals, i)){
+    	cf_refinement ref = Dict::lookup(env.refined_locals, i);
+    	cs = List::append(unrefineTyp(env, i, ref), cs);
+     }
+    default: ;
+    }
+
+    move(env, geax, operand2genop(env,v), cs);
+    EMIT(Mov(^(gesp,^coerce(gebp,null))));
+    EMIT(Retn(null));
+  case Retn(vo): 
+    //Note: currently don't have to unrefine params on return b/c we copy
+    //parameters elsewhere, but we'll have to when we're less naive about params
+    //Note: we don't currently share epilogues, even if a function has
+    //a gazillion return statements
+
+    fp_trans_init_inst(env);
+
+    // move return val into eax if necessary, and coerce as necessary
+    if(vo != null) {
+      if(is_fp_op(env.fn,vo.v)) {
+	_ vo_loc = fp_operand2loc(env,vo.v); // fp_trans_end_block puts theo nly live variable in ST0
+	if(vo_loc < 0) {
+	  BUG("FP return value in memory, not ST0.");
+	}
+      } else {
+	genop          vplace = operand2genop(env, vo.v);
+	<coercion>list cs     = rollOperand  (env, vo.v);
+	move(env, geax, vplace, cs);
+      }
+    }
+
+    fp_trans_end_block(env,true,true); // Re-establish inter-block FP invariant!
+      
+    // re-install handler as necessary
+    if(in_handler(env))
+      EMIT(Mov(^(gebp,^coerce(prjr(esp,4), null))));
+    // pop local vars off stack
+    int amount_to_pop = 4 * env.stack_desc.save_start;
+    if(amount_to_pop > 0)
+      EMIT(ArithBin(^(^arithbin.Add, gesp,^genop.Immed(amount_to_pop))));
+    // re-install callee save registers
+    if(USE_CALLEE_SAVE) {
+      if(env.edi_used) EMIT(Pop(gedi));
+      if(env.esi_used) EMIT(Pop(gesi));
+      if(env.ebx_used) EMIT(Pop(gebx));
+    }
+
+    Popprofile::leave_fun(env);
+
+    switch env.fn.convention {
+    case Cdecl: EMIT(Retn(null));
+    case Stdcall:
+      _ param_sz = get_param_size(env.fn);
+      EMIT(Retn(^Opt(param_sz)));
+    }
+
+  case Call(x):  
+    trans_call(env,oj,x.1,x.2,x.3,x.4);
+  case TailCall *(fn_op,targs,args):
+    _ callee_convention;
+    switch operand_type(env.fn,fn_op) {
+    case Fn *(c,_,_,_): callee_convention = c;
+    default: BUG("Tail call to operand of non-function type.");
+    }
+
+    if(in_handler(env) ||
+       callee_convention != ^cf_convention.Stdcall)
+      return trans_tailcall_unopt(env,fn_op,targs,args);
+    
+    _ caller_convention = env.fn.convention;
+
+    trans_tailcall_opt(env,fn_op,targs,args);
+
+  case Cond *(d_true,d_false,op1,op2,relop):  
+    _ flip = false;
+    if(is_fp_relop(relop)) {
+      // Setup floating point invariants for new transfer.
+      fp_trans_init_inst(env);
+      flip = trans_fp_comparison(env,op1,op2);
+    } else trans_comparison(env, op1, op2);
+    condition c  = relop2condition(relop);
+
+    if(flip) c = flip_condition(c); //FP
+
+    bool flip_condition = false;
+    switch d_true {
+    case Known(b_true):
+      switch oj {
+      case None: ;
+      case Fallthru(bn): if(bn==b_true.num) flip_condition = true;
+      case Smash(bn):    if(bn==b_true.num) flip_condition = true;
+      }
+    default: ; // oj should be None here!;
+    }
+
+    fp_trans_end_block(env,true,false); // Re-establish inter-block FP invariant!
+
+    if(flip_condition) {
+      trans_jcc (env, d_false, negate_condition(c), null);
+      trans_jump(env, d_true, oj, null);
+    } else {
+      trans_jcc (env, d_true, c, null);
+      trans_jump(env, d_false, oj, null);
+    }
+  case NullBranch *(op,d_notnull,d_null) :
+    genop g = operand2genop(env, op);
+    // if the operand is refined, the middle-end missed an optimization, but
+    // we'll be defensive
+    switch op {
+    case Local(y):
+      if(Dict::member(env.refined_locals, y)) 
+	EMIT(Coerce(^coerce(g, unrefineOperand(env,op))));
+    default: ;
+    }
+    bool jump_notnull = false;
+    switch d_notnull {
+    case Known(b_notnull):
+      switch d_null {
+	case Known(b_null):
+	  switch oj {
+	  case None: ;
+	  case Fallthru(bn): if(bn==b_notnull.num) jump_notnull = true;
+	  case Smash(bn):    if(bn==b_null.num) jump_notnull = true;
+	  }
+      case Unknown(_): ;
+      }
+    case Unknown(_): ;
+    }
+    // gotta do type refinement
+    id    name = op2cname(env, op);
+    EMIT(Nameobj(^(name, g)));
+    EMIT(Cmp(^(^coerce(g,null), ^coerce(^genop.Immed(0),null))));
+
+    fp_trans_end_block(env,true,false); // Re-establish inter-block FP invariant!
+
+    if(jump_notnull) {
+      trans_jcc (env, d_notnull, ^condition.NotEq, ^Opt(op));
+      trans_jump(env, d_null, oj,               ^Opt(op));
+    } else {
+      trans_jcc (env, d_null   , ^condition.Eq,    ^Opt(op));
+      trans_jump(env, d_notnull, oj,               ^Opt(op));
+    }
+
+  case NumSwitch *(op,cases,def): 
+    // now with jump trees, leaving types off no matter what for now
+    genop g = operand2genop(env, op); // broken if an immediate!!
+                // quicksort on the array would be faster
+    fp_trans_end_block(env,true,false); // Re-establish inter-block FP invariant!
+
+    *(int,cf_dest) arms[] =List::to_array(List::merge_sort(int_cmp_fst,cases));
+    jump_tree(env, 
+	      ^jump_tree_env(^coerce(g,null), arms, ^Opt(def), op, 
+	                     ^condition.GreaterEq, no_refine_f),
+	      true, 0, size(arms), true);
+
+  case SumSwitch *(op,cases1,cases2,def): 
+    // note we assume for an union, the void a value tags are sequential and
+    // start at 1!!!
+    // later we'd like to use a reg for the tag
+    genop g = operand2genop(env, op); // must be a register!
+    fp_trans_end_block(env,true,false); // Re-establish inter-block FP invariant!
+
+    // decide whether we need to deal with voids or values or both
+    string       typname = operand_type(env.fn,op).Named.1;
+    cf_uniondecl ud      = Dict::lookup(env.fn.file.unions,typname);
+    int num_void_cases  = List::length(ud.fields.1);
+    int num_value_cases = List::length(ud.fields.2);
+
+                // quicksort on the arrays would be faster
+    *(int,cf_dest) void_arms[]  = 
+      List::to_array(List::merge_sort(int_cmp_fst, cases1));
+    *(int,cf_dest) value_arms[] =  
+      List::to_array(List::merge_sort(int_cmp_fst, cases2));
+    int  num_void_arms       = size(void_arms);
+    int  num_value_arms      = size(value_arms);
+    bool void_left_default   = num_void_arms  > 0 && void_arms[0].1 != 1;
+    bool value_left_default  = num_value_arms > 0 && value_arms[0].1 != 1;
+    bool void_right_default  = 
+      num_void_arms > 0 && void_arms[num_void_arms-1].1 != num_void_cases;
+    bool value_right_default = 
+      num_value_arms > 0 && value_arms[num_value_arms-1].1 != num_value_cases;
+    <cf_operand>jump_tree_env void_jtenv = 
+      ^jump_tree_env(^coerce(g,null), void_arms, def, op, 
+                     ^condition.AboveEq, void_refine_f);
+    <cf_operand>jump_tree_env value_jtenv =
+       ^jump_tree_env(^coerce(prjr(g.Reg,0),null), value_arms, def, op,
+                      ^condition.AboveEq, value_refine_f);
+
+    // gotta do type refinement
+    id name = op2cname(env, op);
+    EMIT(Nameobj(^(name, g)));
+    if(num_void_cases != 0 && num_value_cases != 0) {
+      id  voids  = Id::id_new("voids");
+      EMIT(Cmp(^(^coerce(g,null), 
+                 ^coerce(^genop.Immed(min_pointer_integer),null))));
+      if(num_value_arms==0) {
+ 	trans_jcc(env, def.v, ^condition.AboveEq, ^Opt(op));
+	jump_tree(env, void_jtenv, 
+		  void_left_default, 0, num_void_arms, void_right_default);
+      }
+      else if(num_void_arms==0) {
+	trans_jcc(env, def.v, ^condition.Below, ^Opt(op));
+	jump_tree(env, value_jtenv,
+		  value_left_default, 0, num_value_arms, value_right_default);
+      }
+      else {
+	EMIT(Jcc(^(^condition.Below,^coerce(voids,null),null)));
+	jump_tree(env, value_jtenv,
+		  value_left_default, 0, num_value_arms, value_right_default);
+	<instruction>xarray voids_insts = Xarray::create(4,^instruction.Nop);
+	Xarray::add(env.other_blocks, ^(voids, null, voids_insts));
+	<instruction>xarray old_insts = env.current_instrs;
+	env.current_instrs = voids_insts;
+	jump_tree(env, void_jtenv, 
+		  void_left_default, 0, num_void_arms, void_right_default);
+	env.current_instrs = old_insts;
+      }
+    } else if(num_void_cases != 0) 
+      jump_tree(env, void_jtenv, 
+		void_left_default, 0, num_void_arms, void_right_default);
+    else 
+      jump_tree(env, value_jtenv,
+		value_left_default, 0, num_value_arms, value_right_default);
+  case ExnSwitch(x): // as in SumSwitch, we should use a reg for the tag
+    fp_trans_end_block(env,true,false); // Re-establish inter-block FP invariant!
+
+    genop    g       = operand2genop(env,x.1); // should be a register!
+    id       name    = op2cname(env,x.1);
+    EMIT(Unpack (^(exnname_arg_var(),g.Reg,^coerce(g,null))));
+    EMIT(Nameobj(^(name, g)));
+    for(<*(id,cf_dest)>list arms = x.2; arms != null; arms = arms.tl) {
+      _ arm_id = arms.hd.1;
+      _ arm_block;
+      switch(arms.hd.2) {
+      case Known(b)  : arm_block = b;
+      case Unknown(_) : BUG("popiltal.pop: Templates unimpl.")
+      }
+      EMIT(Cmp(^(^coerce(prjr(g.Reg,0), null),
+                 ^coerce(^genop.Addr(arm_id),null))));
+      // can't use trans_jcc b/c we may need to pack up the packet
+      <coercion>list cs = ^list(^coercion.Forgetname,null);
+      if(!Dict::member(arm_block.refined_locals, x.1.Local))
+	cs = List::append(unrefineTyp(env, x.1.Local,
+				    ^cf_refinement.ExceptionVariant(arm_id)),
+			  cs);
+      <instruction>list virts = ^list(^instruction.Coerce(^coerce(g,cs)), null);
+      EMIT(Jcc(^(^condition.Eq, jcc_dest(env, arm_block), virts)));
+    }
+    <coercion>list pack_up = 
+       List::append(unrefineTyp(env, x.1.Local,
+
+				^cf_refinement.UnknownException),
+		    ^list(^coercion.Forgetname,null));
+    EMIT(Coerce(^coerce(g, pack_up)));
+
+    trans_jump(env, x.3, oj, null);
+  
+  case NullCheck *(oper,dest):
+    genop g = operand2genop(env, oper);
+
+    fp_trans_end_block(env,true,false); // Re-establish inter-block FP invariant!
+
+    // if the operand is refined, the middle-end missed an optimization, but
+    // we'll be defensive
+    switch oper {
+    case Local(y):
+      if(Dict::member(env.refined_locals, y)) 
+	EMIT(Coerce(^coerce(g, unrefineOperand(env,oper))));
+    default: ;
+    }
+    id name = op2cname(env,oper);
+    EMIT(Nameobj(^(name, g)));
+    EMIT(Cmp(^(^coerce(g,null),^coerce(^genop.Immed(0),null))));
+    trans_check(env, nullFailureLabel(), ^condition.Eq, oper);
+    
+    trans_jump (env, dest, oj, ^Opt(oper));
+
+  case UnionCheck(x):
+    genop g = operand2genop(env, x.1); 
+
+    fp_trans_end_block(env,true,false); // Re-establish inter-block FP invariant!
+
+    // if the operand is refined, the middle-end missed an optimization, but
+    // we'll be defensive
+    if(Dict::member(env.refined_locals, x.1.Local))
+      EMIT(Coerce(^coerce(g, unrefineOperand(env,x.1))));
+
+    // gotta do type refinement
+    id name = op2cname(env, x.1);
+    EMIT(Nameobj(^(name, g)));
+    if(x.3) {
+      // void case
+      EMIT(Cmp(^(^coerce(g,null),^coerce(^genop.Immed(x.2),null))));
+      trans_check(env, unionFailureLabel(), ^condition.NotEq, x.1);
+      trans_jump (env, x.4, oj, ^Opt(x.1));
+    } else {
+      // value case
+      string       typname = operand_type(env.fn,x.1).Named.1;
+      cf_uniondecl ud      = Dict::lookup(env.fn.file.unions,typname);
+      int num_void_cases   = List::length(ud.fields.1);
+      if (num_void_cases > 0) {
+	EMIT(Cmp(^(^coerce(g,null), ^coerce(^genop.Immed(min_pointer_integer),
+                                            null))));
+	trans_check(env, unionFailureLabel(), ^condition.Below, x.1);
+      }
+      EMIT(Cmp(^(^coerce(prjr(g.Reg,0),    null), 
+                 ^coerce(^genop.Immed(x.2),null))));
+      trans_check(env, unionFailureLabel(), ^condition.NotEq, x.1);
+      trans_jump (env, x.4, oj, ^Opt(x.1));
+    }
+  }
+}
+
+static int trans_call_prologue(cg_env env, cf_operand fn_op, 
+			       <cf_typ>list tparams, 
+			       <cf_operand>list params) {
+  // push the operands, refined ones must be unrefined
+  // struct and union variables must be rolled
+  int i=0;
+  int param_size = 0; // Size of stack space allocated for the parameters.
+  for(<cf_operand>list ps = List::rev(params); ps != null; ps = ps.tl, ++i) {
+    cf_operand     p  = ps.hd;
+    <coercion>list cs = rollOperand(env, p);
+    // trouble is earlier pushes screw with esp,
+    // but not with ebp which is used when within a handler.
+    // also, after pushing, we must not access through ebp since it is
+    // not messed with by pushing!
+    
+    if(is_fp_op(env.fn,p)) {
+      // Setup floating point invariants for new transfer.
+      fp_trans_init_inst(env);
+      
+      _ scale = sizeof_typ(operand_type(env.fn,p));
+      
+      _ p_loc = fp_operand2loc(env,p);
+      _ in_memory = false;
+
+      if(p_loc < 0) {
+	// Its in memory, so load it into the floating point stack.
+	in_memory = true;
+	_ p_gop = fp_operand2genop_adjust(env,p,param_size);
+	
+	p_loc = fp_get_non_allocd(env);
+	fp_load_mem(env,p_loc,p_gop);
+      }
+      // Push esp
+      EMIT(ArithBin(^(^arithbin.Sub, gesp, ^genop.Immed(scale))));
+      param_size += scale;
+      
+      _ keep = false;
+      if(!in_memory) {
+	// If this parameter occurs more than once we have to keep it in 
+	// the floating point stack until the last occurence.
+	for(_ qs = ps.tl; qs != null; qs = qs.tl) {
+	  if(cf_operand_cmp(qs.hd,p) == 0) {
+	    keep = true;
+	    break;
+	  }
+	}
+      }
+      fp_put_st0(env,p_loc,keep);
+      _ dest_arg = (scale == 8) ? FP64(prjr(esp,0)) : FP32(prjr(esp,0));
+      fp_fst(env,dest_arg,true,false);
+    } else {
+      genop g = operand2genop_adjust(env, p,param_size);
+      EMIT(Push(^coerce(g, cs)));
+      param_size += 4;
+    }
+  }
+  int num_params = i;
+  
+  // empty the FP stack -- nothing survives across the call..
+  fp_empty_stack(env);
+  
+  // do the call
+  genop g = operand2genop_adjust(env, fn_op,param_size);
+  
+  if(env.current_template!=null) { // Calls must indirect through a register.
+    switch fn_op {
+    case Global(i):
+      EMIT(Mov(^(geax,^coerce(g,null))));
+      g=geax;
+    default: ;
+    }
+  }
+  EMIT(Call(^coerce(g,env2call_inst(env,tparams,List::length(params)))));
+
+  return param_size;
+}
+
+static void trans_call(cg_env env, optimized_jump oj, <cf_operand>Opt retn_op,
+		       cf_operand fn_op, 
+		       <cf_typ>list tparams, <cf_operand>list params) {
+
+  _ param_size = trans_call_prologue(env,fn_op,tparams,params);
+
+  _ convention;
+  switch operand_type(env.fn,fn_op) {
+  case Fn *(c,_,_,_): convention = c;
+  default: BUG("Call to operand of non function type.");
+  }
+  
+  bool handler = in_handler(env);
+  _ pop_sz;
+  switch convention {
+  case Cdecl:   pop_sz = param_size;
+  case Stdcall: pop_sz = 0;
+  }
+  if(handler) pop_sz += 4;
+  
+  if(pop_sz != 0)
+    EMIT(ArithBin(^(^arithbin.Add,gesp,^genop.Immed(pop_sz))));
+  
+  if(handler) {
+    cf_block       blk = Xarray::get(env.fn.blocks,env.il_block);
+    <coercion>list cs  = branch_tapp(env,blk.handler.v);
+    EMIT(Push    (^coerce(^genop.Addr(blk.handler.v.label),cs)));
+    EMIT(Mov     (^(gebp, ^coerce(gesp,null))));
+  }
+  
+  // move result if necessary
+  if(retn_op != null) {
+    _ result = retn_op.v;
+    if(is_fp_op(env.fn,result)) {
+      // The floating point stack is empty, except for the returned result
+      // We must put this in its home location.
+      _ result_loc = fp_operand2loc(env,result);
+      if(result_loc < 0) {
+	// We have to write the result to memory.
+	fp_env_add(env,0,0); // Bogus entry to reflect return value in ST(0).
+	_ result_gop = operand2genop(env,result);
+	_ result_arg;
+	if(operand_type(env.fn,result) == ^cf_typ.Double)
+	  result_arg = FP64(result_gop);
+	else 
+	  result_arg = FP32(result_gop);
+	fp_fst(env,result_arg,true,false);
+      } else {
+	fp_env_add(env,result_loc,0);
+      }
+    } else {
+      genop          vplace = operand2genop(env, retn_op.v);
+      <coercion>list cs     = unrollOperand(env, retn_op.v);
+      move(env, vplace, geax, cs);
+      track_assignment(env,retn_op.v);
+    }
+  }
+  
+  // The floating point stack should be empty at this point!
+  // Nothing survives across the call.
+  fp_trans_end_block(env,false,false); // Re-establish inter-block FP invariant!
+  
+  // still fairly kludgy and brittle
+  _ dest = Xarray::get(Xarray::get(env.fn.blocks,env.il_block).succ,0);
+  
+  trans_jump(env,^cf_dest.Known(dest), oj, null);
+  
+}
+
+static void trans_tailcall_unopt(cg_env env, cf_operand callee_op, 
+				 <cf_typ>list targs, <cf_operand>list args) {
+  _ param_size = trans_call_prologue(env,callee_op,targs,args);
+
+  // Now we've done the call.  All we have to do now is return.
+  _ convention;
+  switch operand_type(env.fn,callee_op) {
+  case Fn *(c,_,_,_): convention = c;
+  default: BUG("Call to operand of non function type.");
+  }
+  
+  bool handler = in_handler(env);
+  _ pop_sz;
+  switch convention {
+  case Cdecl:   pop_sz = param_size;
+  case Stdcall: pop_sz = 0;
+  }
+  
+  if(in_handler(env)) {
+    // We delay the pop, until we've collected everything that must be
+    // popped off the stack.
+    EMIT(Mov(^(gebp,^coerce(prjr(esp,pop_sz + 4),null))));
+  }
+
+  pop_sz += 4 * env.stack_desc.save_start;
+  if(pop_sz != 0)
+    EMIT(ArithBin(^(^arithbin.Add,gesp,^genop.Immed(pop_sz ))));
+  if(USE_CALLEE_SAVE) {
+    if(env.edi_used) EMIT(Pop(gedi));
+    if(env.esi_used) EMIT(Pop(gesi));
+    if(env.ebx_used) EMIT(Pop(gebx));
+  }
+  
+  Popprofile::leave_fun(env);
+  
+  switch env.fn.convention {
+  case Cdecl: EMIT(Retn(null));
+  case Stdcall:
+    _ param_sz = get_param_size(env.fn);
+    EMIT(Retn(^Opt(param_sz)));
+  }
+}
+
+struct <a>param_desc {
+  int dest; // Final position on stack (0 = shallowest)
+  a   src; // Current location: instantiate a with register, or stack offset.
+  <coercion>list cs;
+  bool word_sz;
+}
+
+// This environment contains the information needed for parameter placement.
+struct param_env {
+  < <int>param_desc >list stack_params;
+  < <reg>param_desc >list reg_params;
+  < <int>param_desc >list fpreg_params;
+  int stack_adjust; // stack adjustment.
+  <reg>list               free_regs;
+  <int>list               free_fpregs;
+}
+
+bool place_free(param_env penv, int offset) {
+  for(_ x = penv.stack_params; x!=null; x=x.tl) {
+    if((                 offset ==  x.hd.src) || 
+       (!x.hd.word_sz && offset == (x.hd.src - 4))) return false;
+  }
+  return true;
+}
+
+bool add_reg_free(param_env penv, reg r) {
+  for(_ x = penv.reg_params; x!=null; x=x.tl) {
+    if(x.hd.src == r) return false;
+  }
+  penv.free_regs = ^list(r,penv.free_regs);
+  return true;
+}
+
+bool add_fpreg_free(param_env penv, int f) {
+  for(_ x = penv.fpreg_params; x!=null; x=x.tl) {
+    if(x.hd.src == f) return false;
+  }
+  penv.free_fpregs = ^list(f,penv.free_fpregs);
+  return true;
+}
+
+// Returns false if the parameter cannot be placed in its desired location
+bool place_reg_param(cg_env env,param_env penv, <reg>param_desc p) {
+  if(!place_free(penv,p.dest)) return false;
+  _ gdest = prjr(esp,p.dest + penv.stack_adjust);
+  EMIT(Mov(^(gdest,^coerce(^genop.Reg(p.src),p.cs))));
+
+  penv.reg_params = List::rmq(penv.reg_params,p);
+  add_reg_free(penv,p.src);
+  return true;
+}
+
+bool place_fpreg_param(cg_env env, param_env penv, <int>param_desc p) {
+  if(!place_free(penv,p.dest)) return false;
+  if(!p.word_sz && !place_free(penv,p.dest-4)) return false;
+
+  penv.fpreg_params = List::rmq(penv.fpreg_params,p);
+  _ keep = !add_fpreg_free(penv,p.src);
+  
+  _ gdest = prjr(esp,p.dest + penv.stack_adjust);
+
+  fp_trans_init_inst(env);
+  fp_put_st0(env,p.src,keep);
+  fp_fst(env,(p.word_sz ? FP32(gdest) : FP64(gdest)),true,false);
+
+  return true;				
+}
+// WARNING: assume param_desc contains at least one free register of the
+// appropriate type.
+bool place_stack_param(cg_env env,param_env penv, <int>param_desc p) {
+  if(p.dest == p.src) {
+    penv.stack_params = List::rmq(penv.stack_params,p);
+    return true;
+  }
+
+  if(!place_free(penv,p.dest)) return false;
+  if(!p.word_sz && !place_free(penv,p.dest-4)) return false;
+
+  _ gsrc  = prjr(esp, p.src + penv.stack_adjust);
+  _ gdest = prjr(esp,p.dest + penv.stack_adjust);
+  if(p.word_sz) {
+    if(penv.free_regs==null) {
+      FAIL("place_stack_param: expect at least one free register.");
+    }
+    _ gfr   = ^genop.Reg(penv.free_regs.hd); 
+
+    EMIT(Mov(^(gfr,^coerce(gsrc,p.cs))));
+    EMIT(Mov(^(gdest,^coerce(gfr,null))));
+  } 
+  else {
+    // Must setup environment before calling place_stack_param
+    // so that only the registers containing arguments are live in the
+    // environment.  This should be the case by default.
+    fp_trans_init_inst(env);
+
+    _ fr = penv.free_fpregs.hd;
+
+    fp_load_mem(env,fr,FP64(gsrc));
+    fp_put_st0(env,fr,false);
+    fp_fst(env,FP64(gdest),true,false);
+  }
+
+  penv.stack_params = List::rmq(penv.stack_params,p);
+
+  return true;
+}
+
+// Push a register parameter onto the stack, updating penv appropriately.
+static void push_reg_param(cg_env env, param_env penv, <reg>param_desc p) {
+  penv.reg_params = List::rmq(penv.reg_params,p);
+  penv.stack_adjust +=4;
+  _ d = ^param_desc(p.dest,-penv.stack_adjust,null,p.word_sz);
+  penv.stack_params = ^list(d,penv.stack_params);
+  EMIT(Push(^coerce(^genop.Reg(p.src),p.cs))); // Do the coercions here.
+}
+
+static void push_fpreg_param(cg_env env, param_env penv, <int>param_desc p) {
+  penv.fpreg_params = List::rmq(penv.fpreg_params,p);
+  _ scale = p.word_sz ? 4 : 8;
+  penv.stack_adjust += scale;
+  
+  _ d = ^param_desc(p.dest,-penv.stack_adjust,null,p.word_sz);
+  penv.stack_params = ^list(d,penv.stack_params);
+
+  EMIT(ArithBin(^(^.Sub,gesp,^.Immed(scale))));
+  
+  _ keep = !add_fpreg_free(penv,p.src);
+  
+  fp_trans_init_inst(env);
+  fp_put_st0(env,p.src,keep);
+  fp_fst(env,
+	 (p.word_sz ? FP32(prjr(esp,0)) : FP64(prjr(esp,0))),
+	 true,false);
+}
+
+// Pick a stack parameter and move it somewhere else.
+static void move_stack_param(cg_env env, param_env penv) {
+
+  if(penv.stack_params == null) return;
+  
+  _ sp = penv.stack_params.hd;
+  penv.stack_params = penv.stack_params.tl;
+  
+  _ gsrc = prjr(esp, sp.src + penv.stack_adjust);
+
+  if(sp.word_sz) {
+    // Must ensure that there is at least one free register at all times.
+    if(penv.free_regs != null && penv.free_regs.tl != null) {
+      _ r = penv.free_regs.hd;
+      penv.free_regs = penv.free_regs.tl;
+      
+      EMIT(Mov(^(^genop.Reg(r),^coerce(gsrc,sp.cs))));
+
+      _ d = ^param_desc(sp.dest,r,null,true);
+      penv.reg_params = ^list(d,penv.reg_params);
+    }
+    else {
+      // Perform a stack-to-stack move.
+      EMIT(Push(^coerce(gsrc,sp.cs)));
+
+      penv.stack_adjust +=4;
+      sp.cs = null;
+      sp.src = penv.stack_adjust;
+      penv.stack_params = ^list(sp,penv.stack_params);
+    }
+  }
+  else {
+    if(penv.free_fpregs != null && penv.free_fpregs.tl != null) {
+      _ r = penv.free_fpregs.hd;
+      penv.free_fpregs = penv.free_fpregs.tl;
+
+      fp_trans_init_inst(env);
+      fp_load_mem(env,r,FP64(gsrc));
+
+      _ d = ^param_desc(sp.dest,r,sp.cs,sp.word_sz);
+      penv.fpreg_params = ^list(d,penv.fpreg_params);
+    }
+    else {
+      // Perform a stack-to-stack move.
+      _ fr = penv.free_fpregs.hd;
+
+      EMIT(ArithBin(^(^.Sub,gesp,^.Immed(8))));
+      penv.stack_adjust += 8;
+
+      fp_trans_init_inst(env);
+      fp_load_mem(env,fr,FP64(gsrc));
+      fp_put_st0(env,fr,false);
+
+      _ dest_arg = FP64(prjr(esp,0));
+      fp_fst(env,dest_arg,true,false);
+
+      sp.src = -penv.stack_adjust;
+
+      penv.stack_params = ^list(sp,penv.stack_params);
+    }
+  }
+}
+
+static bool exists_double_stack_param(param_env penv) {
+  for(_ x = penv.stack_params; x!=null; x=x.tl) {
+    if(!x.hd.word_sz) return true;
+  }
+  return false;
+}
+
+static void trans_tailcall_opt(cg_env env, cf_operand callee_op,
+				   <cf_typ>list targs, <cf_operand>list args) {
+  // Summarize the parameters.
+  _ stack_params = null;
+  _ reg_params = null;
+  _ fpreg_params = null;
+  _ const_global_params = null; // Same as params except globals or constants
+    // Place constant and global parameters last.
+  _ param_sz = 0;
+
+  for(_ x = args; x!=null; x=x.tl) {
+    _ hd = x.hd;
+    _ word_sz = (sizeof_typ(operand_type(env.fn,hd)) == 4);
+    _ cs = rollOperand(env,hd);
+
+    // +4 below is for return address.
+    switch hd {
+    case Local(i):
+      _ pl = env.assignment_info.assignment[i];
+      switch pl {
+      case Stackslot(i):
+	_ pd = ^param_desc(param_sz + 4, slot2offset(env,i),cs,word_sz);
+	stack_params = ^list(pd,stack_params);
+      case Reg(r):
+	_ pd = ^param_desc(param_sz + 4, r                 ,cs,word_sz);
+	reg_params   = ^list(pd,reg_params);
+      case Fpreg(f):
+	_ pd = ^param_desc(param_sz + 4, f                 ,cs,word_sz);
+	fpreg_params = ^list(pd,fpreg_params);
+      }
+    default:
+      _ pd = ^param_desc(param_sz + 4, hd, cs, word_sz);
+      const_global_params = ^list(pd,const_global_params);
+    }
+
+    param_sz += (word_sz ? 4 : 8);
+  }
+
+  // print_stack_desc(tal_stdout,env.stack_desc);
+
+  // Add the return address to the stack parameters.  It too must be
+  // moved into the right place.
+  stack_params = 
+    ^list(^param_desc(0,4 * (env.stack_desc.param_start - 1),null,true),stack_params);
+
+  // Compute the amount to adjust the stack.
+  _ stack_remains; // Bytes to remain on the stack.
+  switch env.fn.convention {
+  case Cdecl  : stack_remains = get_param_size(env.fn);
+  case Stdcall: stack_remains = 0;
+  }
+
+  // -4 for return address.
+  _ stack_adjust = 
+    4 * (env.stack_desc.param_start + env.stack_desc.param_words) - 
+    stack_remains - param_sz-4;
+  
+  // NOTE: stack_adjust may be negative in which case we grow the stack by
+  // the specified number of bytes.
+
+  // Now pick the larger of the current stack or the new stack.
+  // old_stack_adjust = amount we adjusted the current stack.
+  // stack_adjust = amount to shrink current stack when we're done.
+
+  _ old_stack_adjust = 0;
+  if(stack_adjust < 0) {
+    old_stack_adjust = -stack_adjust;
+    stack_adjust = 0;
+    EMIT(ArithBin(^(^.Sub,gesp,^.Immed(old_stack_adjust)))); 
+  }
+
+  // Make offsets in the stack_params list correspond to current stack offsets
+  for(_ x=stack_params; x!=null; x=x.tl) {
+    _ d = x.hd;
+
+    d.dest += stack_adjust;
+    d.src += old_stack_adjust;
+  }
+
+  if(stack_adjust != 0) {
+    for(_ x=reg_params; x!=null;x=x.tl)
+      x.hd.dest += stack_adjust;
+    for(_ x=fpreg_params; x!=null; x=x.tl) 
+      x.hd.dest += stack_adjust;
+  }
+  
+  // Invariants at this point:
+  //  stack_params = a list (desired offset, current offset, size in bytes)
+  //    reg_params = a list (desired offset, current reg   , size in bytes)
+  //  fpreg_params = a list (desired offset, current fpreg , size in bytes)
+  // 
+  // All stack offsets are correct with respect to the current stack.
+  // For our purposes the only occupied registers are those in reg_params,
+  // or fpreg_params and (of course) ESP, EBP, and whichever of the 
+  // callee-save registers (EDI,ESI and EBX) are used.
+
+  // To do the copy may have to push onto our new stack.
+  _ free_regs = ^list(^.Eax,
+                ^list(^.Ecx,
+		^list(^.Edx,null)));
+
+  for(_ x = reg_params; x!=null; x=x.tl) {
+    _ r = x.hd.src;
+    free_regs = List::rmq(free_regs,r);
+  }
+
+  _ free_fpregs = null;
+  for(_ i = 0; i < NUM_REAL_FP_REGS; i++) {
+    free_fpregs = ^list(i,free_fpregs);
+  }
+
+  for(_ x = fpreg_params; x!=null; x=x.tl) {
+    _ r = x.hd.src;
+    free_fpregs = List::rmq(free_fpregs,r);
+  }
+
+  _ penv = ^param_env(stack_params,
+		      reg_params,
+		      fpreg_params,
+		      0,
+		      free_regs,
+		      free_fpregs);
+
+  // If the call is through a local or temporary make sure that temporary
+  // is either in eax, and eax is not free henceforth, or safe on the stack.
+  <genop>Opt fn_place = null;
+  switch callee_op {
+  case Local(i):
+    _ gop = operand2genop_adjust(env,callee_op,old_stack_adjust);
+
+    if(List::memq(penv.free_regs,eax)) {
+      EMIT(Mov(^(geax,(^coerce(gop,null)))));
+      penv.free_regs = List::rmq(penv.free_regs,eax);
+      fn_place = ^Opt(geax);
+    }
+    else {
+      EMIT(Push(^coerce(gop,null)));
+      penv.stack_adjust+=4;
+      fn_place = ^Opt(prjr(esp,-penv.stack_adjust));
+    }
+  default: ;
+  }
+
+  // Restore callee-save registers.
+  if(env.num_callee_used != 0) {
+    
+    _ ebx_offset = 0, esi_offset = 0, edi_offset = 0;
+    _ offset = 4*env.stack_desc.save_start + old_stack_adjust;
+
+    if(env.edi_used) {
+      edi_offset = offset;
+      offset+=4;
+      }
+    if(env.esi_used) {
+      esi_offset = offset;
+      offset+=4;
+    }
+    if(env.ebx_used) {
+      ebx_offset = offset;
+      offset+=4;
+    }
+    
+    for(_ x = reg_params; x!=null; x=x.tl) {
+      _ r = x.hd.src;
+      _ r_offset = 0;
+      switch r {
+      case Ebx: if(!env.ebx_used) continue;
+      case Esi: if(!env.esi_used) continue;
+      case Edi: if(!env.edi_used) continue;
+      default: continue;
+      }
+
+      if(!place_reg_param(env,penv,x.hd)) { // Place the register if we can.
+	// Move r into a free register if possible while leaving at least
+	// one free register for later moves.
+	// Otherwise push the value in the callee-save register onto the stack.
+	//
+	// XXX - inefficiency here.
+	// Note: different parameters may talk about the same value. In this
+	// case, we may push it twice. To fix this problem we need to track a
+	// mapping from reg to reg.
+	if(penv.free_regs != null && penv.free_regs.tl != null) {
+	  _ r2 = penv.free_regs.hd;
+	  penv.free_regs = penv.free_regs.tl;
+	  EMIT(Mov(^(^genop.Reg(r2),^coerce(^genop.Reg(r),null))));
+	  x.hd.src = r2;
+	}
+	else push_reg_param(env,penv,x.hd);
+      }
+    }
+
+    if(env.ebx_used) {
+      EMIT(Mov(^(gebx,^coerce(prjr(esp,ebx_offset+penv.stack_adjust),null))));
+    }
+    if(env.edi_used) {
+      EMIT(Mov(^(gedi,^coerce(prjr(esp,edi_offset + penv.stack_adjust),null))));
+    }
+    if(env.esi_used) {
+      EMIT(Mov(^(gesi,^coerce(prjr(esp,esi_offset + penv.stack_adjust),null))));
+    }
+  }
+  
+  // All the callee-save registers have been restored.
+  // penv.free_regs contains an accurate list of the registers that are not
+  // occupied by parameters to the function. 
+
+  // Now enter the main loop to place the remaining parameters.
+  while(true) {
+    if(penv.reg_params != null) {
+      for(_ x = penv.reg_params; x!=null; x=x.tl) {
+	place_reg_param(env,penv,x.hd);
+      }
+	if(penv.free_regs == null) { // We failed to place anything.
+	  // Need at least one register for below.
+	  push_reg_param(env,penv,penv.reg_params.hd);
+	}
+    }
+
+    if(penv.fpreg_params != null) {
+      for(_ x = penv.fpreg_params; x!=null; x=x.tl) {
+	place_fpreg_param(env,penv,x.hd);
+      }
+
+      if((penv.free_fpregs == null) &&
+	 (exists_double_stack_param(penv))) {
+	push_fpreg_param(env,penv,penv.fpreg_params.hd);
+      }
+    }
+
+    _ progress = 0;
+    for(_ x = penv.stack_params; x!=null; x=x.tl) {
+      if(place_stack_param(env,penv,x.hd)) progress++;
+    }
+
+    if(penv.stack_params == null && 
+       penv.reg_params   == null &&
+       penv.fpreg_params == null) break;
+
+    if(progress == 0) {
+      // If no progress has been made, there is a cycle, and we 
+      // must move a stack value anywhere else.
+      move_stack_param(env,penv);
+    }
+  }
+  
+  // Now all the non-constant and non-global parameters have been put in
+  // their place.  All that remains is to finish the global or constant ones.
+  for(_ x = const_global_params; x!=null; x=x.tl) {
+    _ p = x.hd;
+
+    if(is_fp_op(env.fn,p.src)) {
+      fp_trans_init_inst(env);
+
+      _ gop = fp_operand2genop_adjust(env,p.src,
+				      old_stack_adjust + penv.stack_adjust);
+      
+      _ fr = penv.free_fpregs.hd;
+      fp_load_mem(env,fr,gop);
+      fp_put_st0(env,fr,false);
+      _ gdest = prjr(esp,p.dest + penv.stack_adjust);
+      fp_fst(env,FP64(gdest),true,false);
+    }
+    else {
+      _ gop = operand2genop_adjust(env,p.src,
+				   old_stack_adjust + penv.stack_adjust);
+      move(env, prjr(esp,p.dest + penv.stack_adjust), gop, p.cs);
+    }
+  }
+
+  fp_empty_stack(env);
+
+  _ g;
+  if(fn_place != null) {
+    switch fn_place.v {
+    case Prjr *(x,o,_):
+      EMIT(Mov(^(geax,^coerce(prjr(x.op,o + penv.stack_adjust),null))));
+      g = geax;
+    default: g = fn_place.v;
+    }
+  }
+  else {
+    g = operand2genop(env,callee_op);
+  }
+
+  // All the arguments are in place.  Now collapse the stack.
+  _ pop_sz = stack_adjust + penv.stack_adjust;
+
+  if(pop_sz != 0)
+    EMIT(ArithBin(^(^.Add,gesp,^.Immed(pop_sz))));
+
+  if(env.current_template != null) {
+    switch callee_op {
+    case Global(i):
+      EMIT(Mov(^(geax,^coerce(g,null))));
+      g = geax;
+    default: ; // Do nothing.
+    }
+  }
+
+  fp_trans_end_block(env,true,true); // Re-establish inter-block FP invariant!
+  
+  Popprofile::leave_fun(env); // XXX - untested!!!!
+
+  // Now we are ready to JUMP!!!
+  EMIT(Jmp(^coerce(g,env2tailcall_inst(env,targs,List::length(args)))));
+
+  // Nothing more to do.
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// Floating Point transfers
+
+// Setup the condition codes! 
+// Don't issues the actual jump.
+// Return true if we reverse the direction of the comparison.
+ static bool trans_fp_comparison(cg_env env, cf_operand src1, cf_operand src2) {
+   // Compare the two operands and set the condition codes.
+   _ src1_loc = fp_operand2loc(env,src1);
+   _ src2_loc = fp_operand2loc(env,src2);
+
+   if(src1_loc < 0 || src2_loc < 0) BUG("FP comp.: operand not in register.");
+
+   _ src1_r = fp_a2r(env,src1_loc);
+   _ src2_r = fp_a2r(env,src2_loc);
+   _ pop = fp_is_next_load(env);
+
+   _ flip;
+   _ other_loc;
+
+   if(src2_r == 0) {
+     flip = true;
+     other_loc = src1_loc;
+   } else {
+     flip = false;
+     fp_put_st0(env,src1_loc,pop && fp_is_live(env,src1_loc,true));
+     other_loc = src2_loc;
+   }
+
+   _ arg = ^.FPstack2(^(true,fp_a2st(env,other_loc)));
+
+   if(pop) EMIT_FPS(Fcomip,arg);
+   else EMIT_FPS(Fcomi,arg);
+
+   return flip;
+ }
+
+static void forget_names(cg_env env,<cf_operand>Opt to_forget, int dest_num) {
+
+  if(to_forget != null) {
+    <instruction>list l = 
+       forget_iff_live(env, env.assignment_info.all_live[dest_num][0],
+		       to_forget.v.Local);
+    if(l!=null)
+      Xarray::add(env.current_instrs, l.hd);
+  }
+}
+
+static void trans_jump(cg_env env, cf_dest dest, optimized_jump oj, 
+		       <cf_operand>Opt to_forget) { 
+  // note the way we do refinement right now, there won't be another alias
+  // to this name.  But if there was, we're fine so long as we don't use it!
+
+  switch dest {
+  case Known(b)  :  // Non-RTCG case.
+    _ dest_blk = b; 
+    _ dest_num = dest_blk.num;
+    
+    forget_names(env,to_forget,dest_num);
+    
+    //NEW STUFF
+    for(_ instrs = trans_unrefine(env,b); instrs != null; instrs = instrs.tl)
+      Xarray::add(env.current_instrs, instrs.hd);     
+    
+    switch oj {
+    case None: ;
+    case Fallthru(bn): 
+      if(dest_num == bn) {
+	if(Bitvec::get(env.label_types, bn))
+	  EMIT(Fallthru(fallthru_arg(env,dest_blk)));
+	return;
+      }
+    case Smash(bn):
+      if(dest_num == bn)
+	return;
+    }
+
+    EMIT(Jmp(absjump_dest(env,dest_blk)));
+
+    
+  // Cyclone +
+  case Unknown(h) :  // RTCG case.
+    _ templ = env.current_template;
+    if(templ==null) BUG("Jump hole found but not in a template.")
+
+    _ hi = hole_info(env.fn,h);
+    _ dest_blk;
+    switch(hi) {
+    case Jmp(bs):
+      if(bs==null) BUG("Unfillable hole")
+      else dest_blk = bs.hd; // Pick any one as a model.
+
+      forget_names(env,to_forget,dest_blk.num);
+
+      env.hole_cons[h] = env2code_type_hole(env,h);
+
+      EMIT(CgHoleJmp(^(templ.name,
+		       ^coerce(hole2id(templ,h), branch_tapp(env, dest_blk)))));
+    case Terminal(ts): 
+      if(ts==null) BUG("Unfillable Terminal hole.")
+      dest_blk = ts.hd.entry;
+
+      forget_names(env,to_forget,dest_blk.num);
+
+      env.hole_cons[h] = env2code_type_hole(env,h);
+
+      // We must store the env so that we can merge later.
+      env.template_post_envs = Dict::insert(env.template_post_envs,templ,
+					    copy_cg_env(env));
+
+      // Terminal holes must always fallthru.
+      EMIT(Fallthru(fallthru_arg(env,dest_blk)));
+      return;
+    case Value(_): BUG("Value hole found where jump hole expected.")
+    }
+    // Cyclone -
+  }
+}
+
+static void trans_jcc(cg_env env, cf_dest dest, condition c, 
+		      <cf_operand>Opt to_forget) {
+  switch dest {
+  case Known(b)  : 
+    _ dest_blk = b;
+    _ dest_num = dest_blk.num;
+    
+    <instruction>list virts = null;
+    
+    if(to_forget != null)
+      virts = forget_iff_live(env, env.assignment_info.all_live[dest_num][0],
+    			      to_forget.v.Local);
+    //NEW STUFF
+    List::append(virts, trans_unrefine(env, b));
+
+    EMIT(Jcc(^(c, jcc_dest(env, dest_blk), virts)));
+    
+ case Unknown(h) :  // RTCG case.
+   _ templ = env.current_template;
+   if(templ==null) BUG("Jump hole found but not in a template.");
+
+   _ hi = hole_info(env.fn,h);
+ 
+   _ dest_blk;
+   switch(hi) {
+   case Jmp(bs):
+     if(bs==null) {
+       _ msg = sprintf("Unfillable hole %d in %s", 
+		       h, Id::id_to_string(templ.name));
+       BUG(msg);
+     }
+     else dest_blk = bs.hd; // Pick any successor as a model.
+     
+   case Terminal(ts): // FMS: Is this possible?
+     if(ts==null) BUG("Unfillable Terminal hole.");
+     dest_blk = ts.hd.entry;
+     
+   case Value(_): BUG("Value hole found where jump hole expected.");
+   }
+   
+   _ dest_num = dest_blk.num;
+   
+    <instruction>list virts = null;
+    if(to_forget != null)
+      virts = forget_iff_live(env, env.assignment_info.all_live[dest_num][0],
+			      to_forget.v.Local);
+
+   // Record the fact that this hole was emitted as a jcc hole.
+   _ fn_name = env.fn.name;
+
+   _ jcc_holes;
+   try {
+     jcc_holes = Dict::lookup(env.jcc_holes,fn_name);
+   } handle y switch y {
+   case Dict::Absent: BUG("jcc_holes 1");
+   }
+
+   Bitvec::set(jcc_holes,h);
+
+   env.hole_cons[h] = env2code_type_hole(env,h);
+
+   EMIT(CgHoleJcc(^(c, 
+		    templ.name,
+		    ^coerce(hole2id(templ,h), 
+			    branch_tapp(env, dest_blk)),
+		    virts)));
+   // Cyclone -
+  }
+}  
+
+// Only use this for destinations that are guaranteed to be outside of a 
+// template.
+static void trans_check(cg_env env, id eq_dest, condition c, cf_operand check) {
+  <instruction>list virts = null;
+  if(in_handler(env))
+    switch check {
+    case Local(y):
+      virts = ^list(^instruction.Coerce(^coerce(operand2genop(env, check),
+					    ^list(^coercion.Forgetname,null))),
+                    null);
+    default: ;
+  }
+
+  if(env.current_template != null) {
+    _ beyond = Id::id_new("beyond");
+    
+    EMIT(Jcc(^(negate_condition(c), ^coerce(beyond,null),null)));
+    if(virts!=null) EMIT_INSTRUCTION(virts.hd);
+    EMIT(Mov(^(geax,^coerce(^.Addr(eq_dest),null))));
+    EMIT(Jmp(^coerce(geax,null)));
+    EMIT(Label(beyond));
+  } 
+  else EMIT(Jcc(^(c, ^coerce(eq_dest,null), virts)));
+}
+
+static <instruction>list forget_iff_live(cg_env env,
+					 <varName>Set::set live, varName v) {
+  if(Set::member(live,v))
+    return ^list(^instruction.Coerce(^coerce(operand2genop(env,
+						       ^cf_operand.Local(v)),
+					     ^list(^coercion.Forgetname,null))),
+                 null);
+  else
+    return null;
+}
+
+static struct <a>jump_tree_env {
+  // we don't put the cg_env in here b/c of the EMIT hack
+  <genop>coerce    gc;
+  *(int,cf_dest)   arms[];
+  <cf_dest>Opt     default_dest;
+  a                refiner_env;
+  condition        brancher;
+  <cf_operand>Opt  new_refiner(a,int); // pass -1 for default
+}
+static <cf_operand>Opt no_refine_f(cf_operand y, int x) { 
+  return null; 
+}
+static <cf_operand>Opt void_refine_f(cf_operand il_var, int case_num) {  
+  return ^Opt(il_var);
+}
+static <cf_operand>Opt value_refine_f(cf_operand il_var, int case_num) {  
+  return ^Opt(il_var);
+}
+static void jump_tree<a>(cg_env env, <a>jump_tree_env jt_env,
+			 bool left_default, int  left_bdry, 
+			 int  right_bdry,   bool right_default) {
+  // used by NumSwitch and SumSwitch (separately for void and value cases)
+  // in the latter case, we rely crucially on not putting types on the labels
+  // of the tree
+  // JUMP_TREE_THRESHOLD should at least be two or array bounds errors may
+  // result.
+  *(int,cf_dest)arms[] = jt_env.arms;
+  <genop>coerce  gc     = jt_env.gc;
+  if(right_bdry - left_bdry < JUMP_TREE_THRESHOLD) {
+    <cf_operand>Opt new_refiner(a,int) = jt_env.new_refiner;
+    a               refiner_env        = jt_env.refiner_env;
+    bool            default_needed     = left_default || right_default;
+    for(int i=left_bdry; i < right_bdry-1; ++i) {
+      *(int,cf_dest) pr        = arms[i];
+      int             case_num = pr.1;
+      default_needed = default_needed || case_num != arms[i+1].1-1;
+      EMIT(Cmp(^(gc, ^coerce(^genop.Immed(case_num), null))));
+
+      trans_jcc(env, pr.2, ^condition.Eq, new_refiner(refiner_env,case_num));
+    }
+    *(int,cf_dest) pr       = arms[right_bdry-1];
+    int            case_num = pr.1;
+    if(default_needed) {
+      EMIT(Cmp(^(gc, ^coerce(^genop.Immed(case_num), null))));
+      trans_jcc(env, pr.2, ^condition.Eq, new_refiner(refiner_env, case_num));
+      trans_jump(env, jt_env.default_dest.v, ^optimized_jump.None, 
+		 new_refiner(refiner_env, -1));
+    } else
+      trans_jump(env, pr.2, ^optimized_jump.None, 
+		 new_refiner(refiner_env,case_num));
+  } else {
+    int  middle_bdry     = left_bdry + ((right_bdry - left_bdry) >>> 1); 
+    int  middle_case_num = arms[middle_bdry].1;
+    bool middle_default  = middle_case_num != arms[middle_bdry-1].1 + 1;
+    id   greater_label   = Id::id_new("jt");
+    <instruction>xarray greater_insts = Xarray::create(4, ^instruction.Nop);
+    Xarray::add(env.other_blocks, ^(greater_label, null, greater_insts));
+    EMIT(Cmp(^(gc, ^coerce(^genop.Immed(middle_case_num), null))));
+    EMIT(Jcc(^(jt_env.brancher, ^coerce(greater_label,null),null)));
+    jump_tree(env, jt_env, 
+	      left_default, left_bdry, middle_bdry, middle_default);
+    <instruction>xarray old_insts = env.current_instrs;
+    env.current_instrs = greater_insts;
+    jump_tree(env, jt_env,
+	      false, middle_bdry, right_bdry, right_default);
+    env.current_instrs = old_insts;
+  }
+}
+
+static void trans_arith(cg_env env, arithbin op, 
+			genop dest, genop src1, genop src2) {
+  // if dest and src2 are the same for Minus, the register allocator is broken
+  if(genop_compare(dest,src2) == 0) 
+    EMIT(ArithBin(^(op, dest, src1)));
+  else if (genop_compare(dest,src1) == 0)
+    EMIT(ArithBin(^(op, dest, src2)));
+  else {
+    EMIT(Mov(^(dest, ^coerce(src1,null))));
+    EMIT(ArithBin(^(op, dest, src2)));
+  }
+}  
+
+// Replaces cast! Similar but factors out float and double.
+static void trans_resize(cg_env env,
+			 bool src_signed,
+			 Popsyntax::size_of dest_sz,
+			 Popsyntax::size_of src_sz,
+			 genop dest,
+			 genop src) {
+     <coercion>list cs = null;
+     switch src {
+     case Immed(x): cs = ^list(^coercion.Subsume(cbyte4()),null);
+     default:       ;
+     }
+     // if src is not a register, this is an ordinary move ???
+     switch src {
+     case Reg(x): ;
+     default:     move(env, dest, src, cs); return;
+     }
+
+     // figure out which is wider
+     if (Popsyntax::size_leq(dest_sz,src_sz)) {
+       // destination is at least as narrow as source --
+       //    do the move, then mask if destination is strictly narrower
+       move(env, dest, src, null);
+       if (!Popsyntax::size_leq(src_sz,dest_sz)) {
+	 // other compiler switches on the source, but weird elaborator
+	 // games are being played -- this may not be right!!!
+	 int mask;
+	 switch dest_sz {
+	 case B1: mask = 0xFF;
+	 case B2: mask = 0xFFFF;
+	 case B4: BUG("cast destination wider than 4 bytes")
+	 }
+	 EMIT(ArithBin(^(^arithbin.And, dest, ^genop.Immed(mask))));
+       }
+     } else {
+       // destination is wider than source -- do a movpart
+       reg_part p1, p2;
+       switch dest_sz {
+       case B1: BUG("bad logic in Movpart")
+       case B2: p1 = ^reg_part.RPx;
+       case B4: p1 = ^reg_part.RPe;
+       }
+       switch src_sz {
+       case B1: p2 = ^reg_part.RPl;
+       case B2: p2 = ^reg_part.RPx;
+       case B4: BUG("bad logic in Movpart")
+       }
+       EMIT(Movpart(^(!src_signed, dest, p1, src, p2)));
+     }
+}
+static void trans_relop(cg_env env, Popsyntax::primop op, 
+			genop dest, cf_operand left, cf_operand right) {
+  condition c    = relop2condition(op);
+  trans_comparison(env, left, right);
+  EMIT(Mov  (^(dest, tal_false()))); // TAL made me do it!
+  EMIT(Setcc(^(c, dest)));
+}
+static void trans_shift(cg_env env, arithsr op, 
+			genop dest, genop src1, genop src2) {
+  switch src2 {
+  case Immed(x): 
+    move(env,dest,src1,null);
+    EMIT(ArithSR(^(op, dest, ^Opt(x))));
+  case Reg(x):   
+    // this order bad when src1 is ecx, so allocator prevents it
+    move(env,gecx,src2,null);
+    move(env,dest,src1,null);
+    EMIT(ArithSR(^(op, dest, null)));
+  default:       BUG("shift arg not in CL");
+  }
+}
+static void trans_divmod(cg_env env, bool is_signed, genop ans,
+			 genop dest, genop src1, genop src2) {
+  // src2 cannot be a global (enforced by register allocator)
+  id up_id = Id::id_new("a");
+  id division_by_zero_error_label = Id::id_of_string("_division_by_zero_error");
+  move(env,geax,src1,null);
+  bool do_check = true;
+  bool is_immed = false;
+  switch src2 {
+  case Immed(i): // kludge b/c x86 doesn't allow div by constant
+    do_check = (i==0); 
+    is_immed = true;
+    EMIT(Push(^coerce(src2,null)));
+    src2 = prjr(esp,0);
+  case Reg(r):   EMIT(Unpack (^(up_id, r, ^coerce(src2,null))));
+  default:       EMIT(Sunpack(^(up_id, src2)));
+  }
+  if(do_check) {
+    EMIT(Cmp(^(^coerce(src2,null),^coerce(^genop.Immed(0),null))));
+    if(env.current_template == null) 
+      EMIT(Jcc(^(^condition.BelowEq,
+      ^coerce(division_by_zero_error_label,null),null)));
+    else {
+      _ beyond = Id::id_new("beyond");
+      EMIT(Jcc(^(^condition.Above,^coerce(beyond,null),null)));
+      EMIT(Mov(^(geax,^coerce(^.Addr(division_by_zero_error_label),null))));
+      EMIT(Jmp(^coerce(geax,null)));
+      EMIT(Label(beyond));
+    }
+  }
+  if(is_signed) {
+    EMIT(Conv(^conv.Cdq));
+    EMIT(ArithMD(^(^arithmd.Idiv, src2)));
+  } else {
+    EMIT(Mov(^(gedx, ^coerce(^genop.Immed(0),null))));
+    EMIT(ArithMD(^(^arithmd.Div, src2)));
+  }
+  if(is_immed)
+    EMIT(ArithBin(^(^arithbin.Add, gesp, ^genop.Immed(4))));
+  move(env,dest,ans,null);
+}
+static void trans_comparison(cg_env env, cf_operand left, cf_operand right) {
+  <coercion>list coercer(cg_env,cf_operand) = unrefineOperand;
+  switch left  { case Global(x): coercer = rollOperand; default: ;}
+  switch right { case Global(x): coercer = rollOperand; default: ;}
+  EMIT(Cmp(^(^coerce(operand2genop(env,left),  coercer(env,left)),
+             ^coerce(operand2genop(env,right), coercer(env,right)))));
+}
+static condition relop2condition(Popsyntax::primop op) {
+  switch op {
+  case Eq:   return ^condition.Eq;
+  case Neq:  return ^condition.NotEq;
+  case Gt:   return ^condition.Greater;
+  case GtU:  return ^condition.Above;
+  case Lt:   return ^condition.Less;
+  case LtU:  return ^condition.Below;
+  case Gte:  return ^condition.GreaterEq;
+  case GteU: return ^condition.AboveEq;
+  case Lte:  return ^condition.LessEq;
+  case LteU: return ^condition.BelowEq;
+  case EqF:  return ^condition.Eq;
+  case NeqF: return ^condition.NotEq;
+  case GtF:  return ^condition.Above;
+  case GteF: return ^condition.AboveEq;
+  case LtF:  return ^condition.Below;
+  case LteF: return ^condition.BelowEq;
+  default:   BUG("op not a relop");
+  }
+}
+////////////////////////// Stack Management /////////////////////////////
+// Try to consolidate all stack invariants here so that the rest
+// of the code is simple.
+
+static void update_stack_desc(cg_env env) {
+
+  _ sd               = env.stack_desc;
+  _ total_slots      = env.assignment_info.num_slots;
+  _ double_slots     = env.assignment_info.double_slots;
+  _ callee_save_used = env.num_callee_used;
+
+  // printf("%s: update stack description \n",env.fn.name);
+  // printf("total_slots = %d, double_slots = %d, callee_save_used = %d\n",
+  //	 total_slots,double_slots,callee_save_used);
+
+  sd.total_slots   = total_slots;
+  sd.double_slots  = double_slots;
+  sd.save_words    = callee_save_used + 1; // +1 for return
+  sd.handler_start = 0;
+  sd.handler_words = env.fun_has_handler ? 2 : 0;
+
+  _ param_words  = 0;
+  _ all_operands = env.fn.all_operands;
+  for(_ x = env.fn.params; x!=null; x=x.tl) {
+    _ info = Xarray::get(all_operands,x.hd);
+    param_words += (sizeof_typ(info.typ)/4);
+  }
+  sd.param_words = param_words;
+
+  _ word_slots = total_slots - double_slots;
+  _ param_double_slots = (param_words - word_slots) / 2;
+  if(param_double_slots <= 0) sd.param_slots = param_words;
+  else                        sd.param_slots = param_words - param_double_slots;
+
+  _ total_words = total_slots + double_slots;
+
+  sd.slot_slots = total_slots - sd.param_slots;
+  sd.slot_words = total_words - param_words;
+  sd.slot_start = sd.handler_start + sd.handler_words;
+  
+  sd.save_start = sd.slot_start + sd.slot_words;
+  if( (sd.param_words > word_slots && sd.save_words % 2 != 0) ||
+      (sd.param_words <= word_slots && (sd.save_words + word_slots) %2 != 0))
+    sd.save_start++;
+  
+  sd.param_start = sd.save_start + sd.save_words;
+
+  switch env.fn.convention {
+  case Cdecl:
+    sd.retargs = (sd.param_words != 0) ? 
+      ccons(pcjunk(4 * sd.param_words),cempty()) : cempty();
+  case Stdcall:
+    sd.retargs = cempty();
+  }
+
+  sd.return_address_con  = null;
+
+  // print_stack_desc(tal_stdout,sd);
+
+}
+
+static void emit_function_prologue(cg_env env) {
+ // emit a function prologue:
+  //   * save handler on input (unnecessary if we don't have any handlers)
+  //   * Move parameters to registers (should delay load to assist allocation)
+  //        (unrolling non-abstract Named types as we do so)
+  //   * Save callee-save registers if any
+  
+  _ fn = env.fn;
+
+  // Push used callee-save register.
+  if(USE_CALLEE_SAVE) {
+    if(env.ebx_used) EMIT(Push(^coerce(gebx,null)));
+    if(env.esi_used) EMIT(Push(^coerce(gesi,null)));
+    if(env.edi_used) EMIT(Push(^coerce(gedi,null)));
+  }
+
+  // Create full frame.
+  _ stack_desc = env.stack_desc;
+  _ amount_to_push = 4 * stack_desc.save_start;
+  if(amount_to_push > 0) 
+    EMIT(ArithBin(^(^arithbin.Sub, gesp, ^genop.Immed(amount_to_push))));
+
+   <int>Opt eax_var = null; // must be last so doesn't get clobbered
+   con ebx_con = callee_save1_con();
+   con esi_con = callee_save2_con();
+   con edi_con = callee_save3_con();
+
+   // The stack-slot assignment from the register allocator ensures
+   // that word-sized parameters, if they are assigned to the stack,
+   // do not have to be moved.  Doubles may have to be moved.  We copy
+   // the parameters from shallowest to deepest.
+   
+   _ params = null;
+   for(_ l = fn.params; l!=null; l=l.tl) {
+    _              op_num    = l.hd;
+    cf_idinfo      info      = Xarray::get(fn.all_operands,op_num);
+
+    params = ^list(^(op_num,info),params);
+   }
+
+   _ params = List::merge_sort(less_eq_param,params);
+   
+   int offset = 4 * stack_desc.param_start;
+   _ placed_params = null; // List of (offset from ESP, operand number).
+   _ has_double_params = false;
+   for( _ l = params; l!=null; l=l.tl) {
+     _ op_num = l.hd.1;
+     _ typ = l.hd.2.typ;
+     placed_params = ^list(^(offset,op_num),placed_params);
+
+     _ sz = sizeof_typ(typ);
+     offset += sz;
+     if(sz == 8) has_double_params = true;
+   }
+
+   _ error = false;
+   // Do the memory to memory copies first.
+   for(_ l = placed_params; l!=null; l=l.tl) {
+     _ offset = l.hd.1; // Where the parameter is initially.
+     _ op_num = l.hd.2;
+
+     switch env.assignment_info.assignment[op_num] { 
+     case Stackslot(s): 
+       _ op     = ^.Local(op_num);
+       _ cs     = unrollOperand(env,op);
+       int dest_offset = slot2offset(env,s);
+
+       if(dest_offset != offset) {
+	 if(operand_type(fn,op) == ^cf_typ.Double) {
+	   // Floats do not need special treatment.  Only doubles.
+	   fp_load_mem(env,0,FP64(prjr(esp,offset)));
+	   fp_fst(env,FP64(prjr(esp,dest_offset)),true,false);
+	 } else { 
+	   printf("Moving word sized param? \n");
+	   printf("slot = %d, dest_offset = %d, offset = %d\n",s,dest_offset,offset);
+	   error = true;
+	   /*
+	   EMIT(Mov(^(geax,                   ^coerce(prjr(esp,offset), cs))));
+	   EMIT(Mov(^(prjr(esp, dest_offset), ^coerce(geax,             null))));
+	   */
+	 }
+       } else if(cs!=null)
+	 EMIT(Coerce(^coerce(prjr(esp,offset), cs)));
+
+    default: ;
+    }     
+   }
+
+   if(error) {
+     print_stack_desc(tal_stdout, env.stack_desc);
+     Popilprint::suppress_output = false;
+     Popilprint::prn_fun(env.fn);
+     BUG("Moved word sized param.");
+   }
+
+   // Now load the parameters that go into registers.
+   for(_ l = placed_params; l!=null; l=l.tl) {
+     _ offset = l.hd.1;
+     _ op_num = l.hd.2;
+
+     switch env.assignment_info.assignment[op_num] { 
+     case Reg(r): 
+       _ op     = ^.Local(op_num);
+       _ cs     = unrollOperand(env,op);
+       EMIT(Mov(^(^genop.Reg(r), ^coerce(prjr(esp,offset), cs))));
+       switch r {
+       case Ebx: ebx_con = var2con(env,op_num);
+       case Esi: esi_con = var2con(env,op_num); // Bet this is wrong!
+       case Edi: edi_con = var2con(env,op_num);
+       default: ;
+       }
+     case Fpreg(i):
+       _ op     = ^.Local(op_num);
+       _ typ    = operand_type(fn,op);
+       _ src    = (typ == ^cf_typ.Double ? 
+		   FP64(prjr(esp,offset)) : FP32(prjr(esp,offset)));
+       fp_load_mem(env,i,src);
+     default: ;
+     }
+   }
+
+   // Now update fp_envs[0] to reflect the new state of the floating point
+   // stack.
+   // BRITTLE: Assume first block has no predecessors!!!
+   _ fp_env0 = env.fp_envs[0];
+   fp_env0.real_to_alloc = env.fp_env.real_to_alloc;
+   fp_env0.alloc_to_real = env.fp_env.alloc_to_real;
+   fp_env0.st0 = env.fp_env.st0;
+
+  if(env.fun_has_handler)
+    EMIT(Mov (^(prjr(esp,4), ^coerce(gebp,null))));
+
+  if(stack_desc.double_slots!=0 || has_double_params) {
+    // By default when we create the frame it has con = junk4 :: junk4 :: ...
+    // but if there are doubles we want their part of the stack to have
+    // type junk8 :: junk8 :: ...
+    // This is necessary because the stack abbreviations work in terms of
+    // the number of cons on the stack.
+    // Also we may overwrite a double with two junk4's in some cases.
+    EMIT(Coerce(^coerce(gesp,^list(^.Subsume(env2stack_con(env,false)),null))));
+  }
+
+  if(Bitvec::get(env.label_types, fn.entry.num))
+    if(USE_CALLEE_SAVE)
+      EMIT(Fallthru(List::append(List::map(tyvar2con, fn.tyvars),
+		    ^list(callee_save1_con(),
+	            ^list(callee_save2_con(),
+                    ^list(callee_save3_con(),
+	            ^list(stack1_con(), 
+	            ^list(stack2_con(),
+	            ^list(cap1_con(),
+	            ^list(cap2_con(), null))))))))));
+    else 
+      EMIT(Fallthru(fallthru_arg(env,fn.entry)));
+
+}
+
+// Converts a stack slot into a stack offset in bytes.
+static int slot2offset(cg_env env, int slot) {
+  _ sd = env.stack_desc; 
+
+  _ slot_words = slot + (slot < sd.double_slots ? slot : sd.double_slots);
+  _ slot_offset;
+  if(slot<sd.slot_slots) slot_offset = sd.slot_start + slot_words;
+  else slot_offset = sd.param_start + (slot_words - sd.slot_words);
+  
+  return 4 * slot_offset;
+}
+
+
+//////////////////////// Functions to do TAL-like things ///////////////
+static void track_assignment(cg_env env, cf_operand op) {
+  // don't bother if we're not doing callee-save (and this goes away
+  // with Fallthru hack anyway)
+  if(USE_CALLEE_SAVE)
+    switch op {
+    case Local(x):
+      switch env.assignment_info.assignment[x] {
+      case Stackslot(i): ;
+      case Reg(r):
+	switch r {
+	case Ebx: env.ebx_local = ^Opt(x);
+	case Esi: env.esi_local = ^Opt(x);
+	case Edi: env.edi_local = ^Opt(x);
+	default:  ;
+	}
+      case Fpreg(_): ;
+      }
+    default: ;
+  }
+}
+
+
+#undef EMIT
+
+<<genop>coerce>Opt tal_false_opt = null;
+<<genop>coerce>Opt tal_true_opt  = null;
+<genop>coerce tal_false() {
+  if (tal_false_opt == null)
+    tal_false_opt = 
+      ^Opt(^coerce(^genop.Immed(0),
+                   ^list(^coercion.Tosum(chptr(^list(0,^list(1,null)),
+		                               null, null)),
+		         null)));
+  return tal_false_opt.v;
+}
+<genop>coerce tal_true() {
+  if (tal_true_opt == null)
+    tal_true_opt = 
+      ^Opt(^coerce(^genop.Immed(1),
+                   ^list(^coercion.Tosum(chptr(^list(0,^list(1,null)),
+		                               null, null)),
+		         null)));
+  return tal_true_opt.v;
+}
+
+static coercion tapp(con c) { return ^coercion.Tapp(^annotate.Con(c));}
+static int int_cmp_fst(*(int,cf_dest) p1, *(int,cf_dest) p2) {
+  return intcmp(p1.1,p2.1);
+}
+
+genop operand2genop(cg_env env, cf_operand op) {
+  // if in a handler, we access the stack through Ebp.
+  // This is a hack to please the kludgy verifier.
+  switch op {
+  case Const(i):  
+    return ^genop.Immed(Xarray::get(env.fn.all_consts,i).val);
+  case Local(i):  
+    switch env.assignment_info.assignment[i] {
+    case Reg(r):       return ^genop.Reg(r);
+    case Stackslot(slot): 
+      reg s      = in_handler(env) ? ebp : esp;
+      int offset = slot2offset(env,slot);
+
+      return prjr(s, offset);
+    case Fpreg(i): BUG("Floating point registers cannot be converted.?!");
+    }
+  case Global(i): 
+    if(needs_indirect(operand_type(env.fn,op))) 
+      return ^genop.Prjl(^(^coerce(i,null),0,null));
+    else
+      return ^genop.Addr(i);
+  }
+}
+
+//  If offset stuff has been pushed on the stack (ESP only)
+// return the appropriate genop.
+genop operand2genop_adjust(cg_env env, cf_operand op, int offset) {
+  _ gop = operand2genop(env,op);
+  if(offset == 0) return gop;
+
+  switch gop {
+  case Prjr(x): 
+    if(compare_regs(x.1.op,esp)==0)
+      gop = prjr(esp, x.2+offset);
+  default: ;
+  }
+
+  return gop;
+}
+
+// Operand must be floating point or double and in memory!
+static fpargs fp_operand2genop_adjust(cg_env env, cf_operand op, int offset) {
+  _ gop = operand2genop_adjust(env,op,offset);
+
+  switch operand_type(env.fn,op) {
+  case Float: return FP32(gop);
+  case Double: return FP64(gop);
+  default: BUG("Unexpected type.");
+  }
+}
+
+static fpargs fp_operand2genop(cg_env env, cf_operand op) {
+  return fp_operand2genop_adjust(env,op,0);
+}
+
+// Returns FP register if op is in one or -1 otherwise. 
+// Fails if the operand is not floating point.
+int fp_operand2loc(cg_env env,cf_operand op) {
+  switch op {
+  case Const(i): BUG("Floating point constant?");
+  case Local(i):
+    switch env.assignment_info.assignment[i] {
+    case Reg(_): 
+      if(is_fp_op(env.fn,op)) {
+	BUG("Floating point operand in non-fp register.");
+      } else { BUG("fp_operand2loc called on non-fp operand."); }
+    case Stackslot(_): return -1;
+    case Fpreg(i): return i;
+    }
+  case Global(i): return -1;
+  }
+}
+
+// Given an index into a struct, union,  or tuple
+// return the integer offset and the size of the object to be read.
+// Operand must be Local!
+static *(int,int) op_index2offset_scale(cg_env env, cf_operand op, int index) {
+  _ t = operand_type(env.fn,op);
+
+  switch t {
+  case Exn:
+    if(index == 0) return ^(0,4);
+    // index == 1 here.
+    _ value_sz = 4;
+    _ op_num = op.Local;
+    _ refinement_opt = Dict::lookup_opt(env.refined_locals, op_num);
+    if(refinement_opt != null) {
+      _ exception_id = refinement_opt.v.ExceptionVariant;
+      _ exndecl = Dict::lookup(env.fn.file.exns, exception_id);
+      
+      if(exndecl.typOpt!=null) value_sz = sizeof_typ(exndecl.typOpt.v);
+    }
+    return ^(4, value_sz);
+  case Tuple(fields):
+    _ f = fields[index];
+    return ^(f.offset,sizeof_typ(f.typ));
+  case Named *(nm,_):
+    if (Dict::member(env.fn.file.structs, nm)) {
+      _ sd = Dict::lookup(env.fn.file.structs,nm);
+      _ f = sd.fields[index];
+      return ^(f.offset,sizeof_typ(f.typ));
+    }
+    else if (index==1 && Dict::member(env.fn.file.unions, nm)) {
+      _ op_num = op.Local;
+      _ refinement = Dict::lookup_opt(env.refined_locals,op_num);
+
+      if(refinement!=null) {
+	switch refinement.v {
+	case ValueVariant(i):
+	  _ ud = Dict::lookup(env.fn.file.unions,nm);
+	  _ field_typ = List::assoc(ud.fields.2,i);
+
+	  return ^(4,sizeof_typ(field_typ));
+	default: ;
+	}
+      }
+    }
+    
+    return ^(index * 4, 4);
+  case UnpackedArray *(_,t):
+    _ elt_sz = sizeof_typ(t);
+    return ^(elt_sz * index, elt_sz);
+  case Array(_): // Tuple containing size and pointer to array.
+    return ^(4 * index, 4); 
+  default: BUG("Unexpected type.");
+  }
+}
+
+static mallocarg fields2mallocarg(cf_field fs[]) {
+  int num_fields = size(fs);
+  _   last_field = fs[num_fields - 1];
+  int offset     = last_field.offset;
+  _   last_field_sz = int2scale(sizeof_typ(last_field.typ));
+  _   mfs        = ^list(^.Mbytes(last_field_sz),null);
+
+  for(_ i = num_fields - 2; i >= 0; --i) {
+    _ f = fs[i];
+    _ f_sz = sizeof_typ(f.typ);
+    
+    _ padding = offset - (f.offset + f_sz);
+    if(padding!=0) {
+      mfs = ^list(^.Mbytearray(^(^.Byte1,padding)),mfs);
+    }
+
+    mfs = ^list(^.Mbytes(int2scale(f_sz)),mfs);
+
+    offset = f.offset;
+  }
+
+  return ^.Mprod(mfs);
+}
+
+static scale int2scale(int sz) {
+  switch sz {
+  case 1: return ^.Byte1;
+  case 2: return ^.Byte2;
+  case 4: return ^scale.Byte4;
+  case 8: return ^.Byte8;
+  default: BUG("Unexpected size.");
+  }
+}
+
+static int get_param_size(cf_function fn) {
+  _ params = fn.params;
+  _ sz = 0;
+  for(; params != null; params = params.tl) {
+    _ param = ^.Local(params.hd);
+    sz += sizeof_typ(operand_type(fn,param));
+  }
+  return sz;
+}
+
+static int less_eq_param(*(int,cf_idinfo) x, *(int,cf_idinfo) y) {
+  _ px = x.2.usage.Param.2;
+  _ py = y.2.usage.Param.2;
+
+  return (px - py);
+}
+
+//////////////////////////// Type Translation //////////////////////////
+tg_env trans_typdecls(cf_file file) {
+  // translate abstracts, structs, and unions
+  // since these are type-y things, they're in Poptaltypes.
+  tg_env env = ^tg_env(Xarray::create_empty(),
+		       Xarray::create_empty(),
+		       Xarray::create_empty(),
+		       Xarray::create_empty());
+  Dict::iter_c(trans_abstract, env, file.abstracts);
+  Dict::iter_c(trans_struct,   env, file.structs);
+  Dict::iter_c(trans_union,    env, file.unions);
+  Dict::iter_c(trans_abstype,  env, file.abstypes);
+  return env;
+}
+
+//////////////////////////// Data Translation /////////////////////////////
+void trans_exns(cf_file file, dg_env env) {
+  Dict::iter_c(trans_exn, env, file.exns); // trans_exn in Poptaltypes
+  // KLUDGE -- special cases for builtin exception.
+  /* trans_builtin_exn(env); */ // trans_builtin_exn in Poptaltypes
+}
+void trans_externs(cf_file file, dg_env env) {
+  Dict::iter_c(trans_extern, env, file.extern_vals);
+}
+void trans_globals(cf_file file, dg_env env) {
+  Dict::iter_c(trans_gbl, env, file.globals);
+}
+
+void trans_functions(cf_file file, dg_env d_env) {
+  // stream out each function
+
+  // Must process generated function before generating function.
+  // so that cons from generated function are available when emitting type
+  // for generating functions.
+  // Therefore funs go last, rtcg_funs go first.
+
+  _ funs = get_fun_order(file);
+  if(funs==null) return; // No functions at all.
+
+  Poptalenv::cg_env env = Poptalenv::new_cg_env(funs.hd, d_env.exports);
+  
+    for(_ x = funs; x != null; x=x.tl) {
+      _ fn = x.hd;
+
+      Popprofile::init_fun(fn,d_env);
+
+      Popiltype::type_fun(fn); // Make sure the type information is up to date.
+
+      //printf("%s to TAL...",funs.hd.2.name);
+      env.fn             = fn;
+      //printf("regalloc...");
+      _ ai = Popregalloc::register_allocate(fn);
+      env.assignment_info = ai;
+
+      //printf("trans...");
+      trans_function(env);
+      //printf("Done.\n");
+    }
+
+}
+
+void trans_gbl(dg_env env, id v, cf_globaldecl decl) {
+  data_block data = decl.data;
+  switch decl.scope {
+  case Public: Xarray::add(env.exports, ^(v, data.tipe.v));
+  default:     ;
+  }
+  Xarray::add(env.blocks, data);
+}
+void trans_extern(dg_env env, id v, cf_typ t) {
+  con c = typ2con_roll(t);
+  c = 
+    needs_indirect(t) ? cprod_b(^list(cfield(c,^variance.ReadWrite),null)) : c;
+  Xarray::add(env.imports, ^(v, c));
+}
+
+// Debugging
+
+static void pr_templates(<cf_template>list x) {
+  printf("(");
+  for(;x!=null;x=x.tl) {
+    if(x.hd==null) printf("?, ");
+    else printf("%s, ", Id::id_to_string(x.hd.name));
+  }
+  printf(")\n");
+}

@@ -1,0 +1,43 @@
+#include "core.h"
+#define PR0(x) {printf(x); fflush(tal_stdout); }
+
+?struct fn {
+  int f(int);
+}
+
+void pop_main()
+{
+  fn main_add;
+  int ans;
+  
+  printf("Gen code: ");
+  main_add = ^fn(add_gen(3));
+
+  printf("\nRun code:");
+  ans = main_add.f(4);
+
+  printf("\nAnswer: %d\n", ans);
+ 
+  return;
+}
+
+int add_gen(int i)(int)
+{
+  printf("(add_gen %d)", i);
+  fflush(tal_stdout);
+
+  _ f = codegen(
+		int add(int j)
+		{
+		  cut {
+		    if (i == 0) {
+		      splice return j;
+		    } else {
+		      splice {
+			fn rec_add = ^fn(add_gen(fill(i-1)));
+			return rec_add.f (j + 1);
+		      }
+		    }};
+		});
+  return f;
+}

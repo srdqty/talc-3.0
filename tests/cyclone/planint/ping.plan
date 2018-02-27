@@ -1,0 +1,14 @@
+fun ack() : unit =
+  (print ("Success from: "); print(getSrc()); print("\n"))
+
+fun ping (source:host, destination:host) : unit =
+  if (thisHostIs (destination)) then
+    OnRemote (|ack|(), source, getRB(), defaultRoute)
+  else 
+    OnRemote (|ping|(source, destination), destination, getRB(), defaultRoute)
+
+val entry_fun  : unit = "ping"
+val entry_args : unit = ["cyclone:4001"; "cyclone:4009"]
+val entry_src  : unit = "blah"
+val entry_eval : unit = "cyclone:4001"
+val entry_rb   : unit = 20

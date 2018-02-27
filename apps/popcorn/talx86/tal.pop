@@ -1,0 +1,788 @@
+
+// July update: Includes aliasing, but not Tapp hack or Cyclone
+// Note we may eventually make this a "compiler version" that wouldn't have 
+//   verifier-specific gunk like freevars and normalization info
+
+////////////////////////////////////////////////////////////////////////////
+// Tal in popcorn, file tal.pop                                           //
+// Copyright Greg Morrisett, Dan Grossman                                 //
+// January 1999, all rights reserved                                      //
+// Ported from caml code Copyright June 1998, Morrisett Glew, Walker      //
+////////////////////////////////////////////////////////////////////////////
+
+#include "core.h"
+#include "list.h"
+#include "id.h"
+#include "set.h"
+#include "dict.h"
+
+open Core;
+open List;
+open Id;
+
+prefix Tal;
+open   Tal;
+
+/////////////////// registers /////////////////
+union reg { 
+  void Eax, Ebx, Ecx, Edx, Esi, Edi, Ebp, Esp;
+  id Virt;
+}
+
+static int reg2int(reg r) {
+  switch (r) {
+  case Eax: return 0;
+  case Ebx: return 1;
+  case Ecx: return 2;
+  case Edx: return 3;
+  case Esi: return 4;
+  case Edi: return 5;
+  case Ebp: return 6;
+  case Esp: return 7;
+  case Virt(x): return -1;
+  }
+}
+    
+int compare_regs(reg r1, reg r2) {
+  switch r1 {
+  case Virt(x):
+    switch r2 {
+    case Virt(y): return id_compare(x,y);
+    default:      ;
+    }
+  default: ;
+  }
+  int i = reg2int(r1);
+  int j = reg2int(r2);
+  if (i == j) return(0);
+  if (i < j) return -1; else return 1;
+}
+
+union reg_part { void RPe, RPx, RPh, RPl;}
+
+static int part2int(reg_part p) {
+ switch p {
+ case RPe: return 1;
+ case RPx: return 2;
+ case RPh: return 3;
+ case RPl: return 4;
+ }
+}
+
+int compare_regparts(reg_part p1, reg_part p2) {
+  return part2int(p1)-part2int(p2);
+}
+
+////////////////// kinds ////////////////////////
+union kind { 
+  scale Kbyte; 
+  void  Ktype; 
+  int   Kmemi; 
+  void  Kmem; 
+  void  Kstack; 
+  void  Kint;
+  void  Kbool;
+  *(kind,kind) Karrow; 
+  <kind>list   Kprod;
+  void  Kname; 
+  void  Kcap; 
+  void  Kms;
+}
+
+kind k4byte = new kind.Kbyte(new scale.Byte4);
+
+////////////////// con definition /////////////////////////
+
+union scale{ void Byte1, Byte2, Byte4, Byte8;}
+
+static int scale_to_int(scale s) {
+  switch (s) {
+  case Byte1: return 1;
+  case Byte2: return 2;
+  case Byte4: return 4;
+  case Byte8: return 8;
+  }
+}
+
+union primcon { 
+  scale PCbytes;
+  void  PCfloat32;
+  void  PCfloat64;
+  int   PCjunk; 
+  scale  PCjunkbytes;
+  int   PCint; 
+  void  PCtrue; 
+  void  PCfalse;
+}
+union variance   { void Read, Write, ReadWrite; }
+union log        { void Cadd, Csub, Cmuls, Cmulu, Cand, Cor, Cimp, Ciff, Cnot;
+                   void Clts, Cltu, Cltes, Clteu; }
+union alias_info { void Unique, MayAlias; }
+union con_state  { void NotNorm, Normalized, WeakHead; }
+
+union fpreg { void FPfull, FPempty, FPany; }
+
+struct fpstack { fpreg r[]; }
+
+struct con { 
+  rcon               rcon;
+  con_state          con_state;
+  < <id>Set::set>Opt freevars;
+}
+
+union rcon {
+  // language portion
+  id                    Cvar;
+  *(id,kind,con)        Clam;
+  *(con,con)            Capp;
+  <con>list             Ctuple;
+  *(int,con)            Cproj;
+  // type portion
+  id                    Clab;
+  primcon               Cprim;
+  <*(id,kind,con)>list  Crec;
+  *(id,kind,con)        Cforall;
+  *(id,kind,con,con)    Cexist;
+  con                   Ccode;
+  machine_state         Cms;
+  *(con,con)            Cmsjoin;
+  *(<int>list,<con>Opt,<*(con,variance)>Opt) Chptr;
+  *(con,variance)       Cfield;
+  <con>list             Cprod;
+  <con>list             Csum;
+  *(con,con)            Carray;
+  con                   Csing;
+  // stack portion
+  con                   Csptr;
+  void                  Cempty;
+  *(con,con)            Ccons;
+  *(con,con)            Cappend;
+  // arithmetic and logical portion
+  *(log,<con>list)      Clog;
+  *(con,con)            Cif;
+  // alias portion
+  con                   Cname;
+  <id,*(alias_info,con)>Dict::dict Ccap;
+  <con>list             Cjoin;
+  con                   Ctagof;
+  // Cyclone +
+  *(con,<con>Opt,
+    <*(id,con)>list,
+    <*(id,con)>list)    Ctmpl;
+  id                    Ctptr;
+  *(con,<con>Opt,
+    <*(id,
+       <*(id,con)>list,
+       <*(id,con)>list)
+    >list)              Ctrgn;
+  // Cyclone -
+}
+
+struct machine_state {
+  <reg,con>Dict::dict regs;
+  ccinfo              cc;
+  ccinfo              save_cc;
+  con                 cap;
+  fpstack             fps;
+}
+
+union ccinfo { 
+  void       noinfo;
+  *(con,con) cmp;
+  *(con,con) test;
+}
+
+/////////////////////// con utilities /////////////////////////
+
+// these guys and cvar can be the gatekeepers to sharing cons!
+
+<<id>Set::set>Opt        empty_freevars = null;
+<con>Opt                 empty_cap      = null;
+<<reg,con>Dict::dict>Opt empty_regs     = null;
+
+rcon Cprim (primcon pc) { return(^rcon.Cprim(pc)); }
+con  defcon(rcon r)  { return ^con(r,^con_state.NotNorm,  null); }
+con  wcon  (rcon r)  { return ^con(r,^con_state.WeakHead, null); }
+con  prcon (rcon r)  { 
+  if(empty_freevars == null)
+    empty_freevars = ^Opt(Set::empty(id_compare));
+  return ^con(r,^con_state.Normalized, empty_freevars);
+}
+con cempty_cap() { 
+  if(empty_cap == null)
+    empty_cap = ^Opt(wcon(^rcon.Ccap(Dict::empty(id_compare))));
+  return empty_cap.v;
+}
+
+ccinfo ccinfo_map(con f(con), ccinfo cc) {
+  switch cc {
+  case noinfo:  return cc;
+  case cmp(x):  return ^ccinfo.cmp (^(f(x.1), f(x.2)));
+  case test(x): return ^ccinfo.test(^(f(x.1), f(x.2)));
+  }
+}
+void ccinfo_app<a>(a f(con), ccinfo cc) {
+  switch cc {
+  case noinfo:  ;
+  case cmp(x):  f(x.1); f(x.2);
+  case test(x): f(x.1); f(x.2);
+  }
+}
+
+fpstack fpstack_st0 = ^fpstack({^.FPfull,^.FPempty,^.FPempty,^.FPempty,
+				^.FPempty,^.FPempty,^.FPempty,^.FPempty});
+
+fpstack fpstack_empty() {
+  return ^fpstack({^.FPempty,^.FPempty,^.FPempty,^.FPempty,
+		   ^.FPempty,^.FPempty,^.FPempty,^.FPempty});
+}
+
+bool fpstack_is_empty(fpstack fps) {
+  _ r = fps.r;
+  for(_ i = 0; i < 8; i++) 
+    if(r[i] != ^.FPempty) return false;
+  return true;
+}
+
+void fpstack_set(fpstack fps, int i, fpreg r) {
+  if(i<0 || i>7) raise InvalidArg("fpstack_set");
+  fps.r[i] = r;
+}
+
+fpreg fpstack_get(fpstack fps, int i) {
+  if(i<0 || i>7) raise InvalidArg("fpstack_get");
+  return fps.r[i];
+}
+
+machine_state ms_empty() {
+  if(empty_regs == null) {
+    <reg,con>Dict::dict mt = Dict::empty(compare_regs);
+    empty_regs = ^Opt(mt);
+  }
+  return ^machine_state(empty_regs.v, ^ccinfo.noinfo, ^ccinfo.noinfo, 
+			cempty_cap(),fpstack_empty());
+}
+
+machine_state ms_map(con f(con), machine_state ms) { 
+  // need a closure version
+  return ^machine_state(Dict::map (f, ms.regs),
+			ccinfo_map(f, ms.cc),
+			ccinfo_map(f, ms.save_cc),
+			f(ms.cap),
+			ms.fps);
+}
+void ms_app<a>(a f(con), machine_state ms) { 
+  // need a closure version and a non-void version
+  Dict::map(f, ms.regs);
+  ccinfo_app(f, ms.cc);
+  ccinfo_app(f, ms.save_cc);
+  f(ms.cap);
+}
+con ms_get_reg(machine_state ms,reg r) {
+  return Dict::lookup(ms.regs,r);
+}
+machine_state ms_set_reg(machine_state ms, reg r, con c) {
+  return ^machine_state(Dict::insert(ms.regs,r,c),
+			ms.cc, ms.save_cc, ms.cap, ms.fps);
+}
+machine_state ms_set_regs(machine_state ms,<*(reg,con)>list rcs) {
+  return ^machine_state(Dict::inserts(ms.regs,rcs),
+			 ms.cc, ms.save_cc, ms.cap, ms.fps);
+}
+machine_state ms_del_reg(machine_state ms,reg r) {
+  return ^machine_state(Dict::delete(ms.regs,r),
+			ms.cc, ms.save_cc, ms.cap, ms.fps);
+}
+machine_state ms_del_regs(machine_state ms,<reg>list r) {
+  while (r != null) {
+    ms = ms_del_reg(ms,r.hd);
+    r  = r.tl;
+  }
+  return ms;
+}
+machine_state ms_map_reg(con f(con), machine_state ms) {
+  return ^machine_state(Dict::map(f,ms.regs),
+			ms.cc, ms.save_cc, ms.cap, ms.fps);
+}
+void ms_iter_reg(void f(reg,con), machine_state ms) {
+  Dict::iter(f,ms.regs);
+}
+a ms_fold_reg<a>(a f(reg,con,a), machine_state ms, a accum) {
+  return Dict::fold(f, ms.regs, accum);
+}
+
+fpstack ms_get_fpstack(machine_state ms) {
+  return ms.fps;
+}
+
+machine_state ms_set_fpstack(machine_state ms, fpstack f) {
+  return ^machine_state(ms.regs,ms.cc,ms.save_cc,ms.cap,f);
+}
+
+ccinfo ms_get_cc(machine_state ms){ 
+  return ms.cc; 
+}
+machine_state ms_set_cc(machine_state ms, ccinfo cc) {
+  return ^machine_state(ms.regs, cc, ms.cc, ms.cap, ms.fps);
+}
+machine_state ms_restore_cc(machine_state ms) { 
+  ms.cc = ms.save_cc;
+  return ms;
+}
+con ms_get_cap(machine_state ms) { 
+  return ms.cap; 
+}
+machine_state ms_set_cap(machine_state ms, con c) { 
+  return ^machine_state(ms.regs, ms.cc, ms.save_cc, c, ms.fps);
+}
+machine_state ms_join(machine_state ms1, machine_state ms2) {
+  // See Greg's comments in ML implementation -- cap means not idempotent
+  <reg,con>Dict::dict regs    = Dict::fold(inserter, ms2.regs, ms1.regs);
+  ccinfo              cc      = ms2.cc; 
+  ccinfo              save_cc = ms2.save_cc;
+  switch cc      { case noinfo: cc      = ms1.cc;      default: ; }
+  switch save_cc { case noinfo: save_cc = ms1.save_cc; default: ; }
+  con cap = defcon(^rcon.Cjoin(^list(ms1.cap,^list(ms2.cap,null))));
+  fpstack fps = ms2.fps;
+  return ^machine_state(regs, cc, save_cc, cap,fps);
+}
+static <reg,con>Dict::dict inserter(reg r, con c, <reg,con>Dict::dict d) {
+  return Dict::insert(d, r, c);
+}
+		     
+con pcbytes(scale s) { return(prcon(Cprim(^primcon.PCbytes(s)))); }
+
+// ad hoc sharing -- should help Popcorn compiler until we have real sharing:
+<con>Opt cb8   = null;
+<con>Opt cb4   = null;
+<con>Opt cb2   = null;
+<con>Opt cb1   = null;
+<con>Opt j4    = null;
+<con>Opt j8    = null;
+
+<con>Opt f32   = null;
+<con>Opt f64   = null;
+
+con cbyte8()  { if (cb8==null) cb8=^Opt(pcbytes(^scale.Byte8)); return cb8.v; }
+con cbyte4()  { if (cb4==null) cb4=^Opt(pcbytes(^scale.Byte4)); return cb4.v; }
+con cbyte2()  { if (cb2==null) cb2=^Opt(pcbytes(^scale.Byte2)); return cb2.v; }
+con cbyte1()  { if (cb1==null) cb1=^Opt(pcbytes(^scale.Byte1)); return cb1.v; }
+
+con pcfloat32() { 
+  if(f32==null) f32=^Opt(prcon(Cprim(^.PCfloat32))); 
+  return f32.v; 
+}
+
+con pcfloat64() {
+  if(f64==null) f64=^Opt(prcon(Cprim(^.PCfloat64))); 
+  return f64.v; 
+}
+
+
+con pcjunk4() { 
+  if (j4 ==null) j4 =^Opt(prcon(Cprim(^primcon.PCjunkbytes(^scale.Byte4))));
+  return j4.v; 
+}
+
+con pcjunk8() { 
+  if (j8 ==null) j8 =^Opt(prcon(Cprim(^primcon.PCjunkbytes(^scale.Byte8))));
+  return j8.v; 
+}
+
+con pcjunkbytes(scale sc) { return(prcon(Cprim(new primcon.PCjunkbytes(sc)))); }
+con pcjunk(int i)  { return(prcon(Cprim(new primcon.PCjunk(i)))); }
+con pcint  (int i) { return prcon(Cprim(^primcon.PCint(i))); }
+con pctrue ()      { return prcon(Cprim(^primcon.PCtrue));   }
+con pcfalse()      { return prcon(Cprim(^primcon.PCfalse));  }
+
+con cvar(id v) {
+  return ^con(^rcon.Cvar(v),^con_state.Normalized,
+	      ^Opt(Set::singleton(id_compare,v)));
+}
+con clam   (id v,kind k,con c)         {return wcon  (^rcon.Clam(^(v,k,c))); }
+con capp   (con c1,con c2)             {return defcon(^rcon.Capp(^(c1,c2))); }
+con ctuple (<con>list cs)              {return wcon  (^rcon.Ctuple(cs));     }
+con cproj  (con c,int i)               {return defcon(^rcon.Cproj(^(i,c)));  }
+con clab   (id l)                      {return prcon (^rcon.Clab(l));        }
+con crec   (<*(id,kind,con)>list vkcs) {return wcon  (^rcon.Crec(vkcs));     }
+con cforall(id x,kind k,con c)         {return wcon(^rcon.Cforall(^(x,k,c)));}
+con cms    (machine_state ms)          {return wcon(^rcon.Cms(ms));          }
+con cmsjoin(con c1, con c2)            {return defcon(^rcon.Cmsjoin(^(c1,c2)));}
+con ccode  (con d)                     {return wcon(^rcon.Ccode(d));         }
+con cfield (con c,variance v)          {return wcon(^rcon.Cfield(^(c,v)));   }
+con cprod  (<con>list cs)              {return wcon(^rcon.Cprod(cs));        }
+con csum   (<con>list cs)              {return wcon(^rcon.Csum (cs));        }
+con carray (con cl,con ce)             {return wcon(^rcon.Carray(^(cl,ce))); }
+con csing  (con c)                     {return wcon(^rcon.Csing(c));         }
+con csptr  (con c)                     {return wcon(^rcon.Csptr(c));         }
+con cempty ()                          {return prcon(^rcon.Cempty);          }
+con ccons  (con c1,con c2)             {return wcon(^rcon.Ccons(^(c1,c2)));  }
+con cappend(con c1,con c2)             {return defcon(^rcon.Cappend(^(c1,c2)));}
+
+// Cyclone +
+con  ctmpl(con c1,<con>Opt c2,<*(id,con)>list xc1,<*(id,con)>list xc2) 
+                                 {return wcon(^rcon.Ctmpl(^(c1,c2,xc1,xc2)));}
+con  ctptr(id i)                       {return prcon(^rcon.Ctptr(i));        }
+con  ctrgn(con c1,<con>Opt c2, <*(id,<*(id,con)>list,<*(id,con)>list)>list x)
+                                       {return wcon(^rcon.Ctrgn(^(c1,c2,x)));}
+// Cyclone -
+con cexist(id x,kind k,con c) {
+  return cexist_p(x,k,pctrue(),c);
+}
+con cexist_p(id x, kind k, con p, con c) { 
+  return wcon(^rcon.Cexist(^(x,k,p,c)));
+}
+con chptr(<int>list is,<con>Opt co, <*(con,variance)>Opt tco) {
+  return defcon(^rcon.Chptr(^(is,co,tco)));
+}
+con ccode_ms(machine_state ms) {
+  return ccode(cms(ms));
+}
+con ccode_l(<*(reg,con)>list rcs)      { 
+   return ccode_ms(ms_set_regs(ms_empty(),rcs));
+}
+con cptr(con c) {
+  return chptr(null,^Opt(c),null);
+}
+con cprod_b(<con>list cs) {
+  return(cptr(cprod(cs)));
+}
+con carray_s(id v,con ce) { 
+  con cv = cvar(v);
+  con cf = cfield(csing(cv),new variance.Read);
+  con ca = carray(cv,ce);
+  return(cexist(v,^kind.Kint,cprod_b(new list(cf,new list(ca,null)))));
+}
+con ccap (<id,*(alias_info,con)>Dict::dict d) { return wcon(^rcon.Ccap(d)); }
+con cjoin(<con>list l) { return defcon(^rcon.Cjoin(l)); }
+con cname (con x) { return wcon(^rcon.Cname(x)); }
+con ctagof(con x) { return wcon(^rcon.Ctagof(x)); }
+
+con cif(con c1, con c2)          { return defcon(^rcon.Cif(^(c1,c2))); }
+con clog(log l, <con>list cs)    { return defcon(^rcon.Clog(^(l,cs))); }
+con clog2(log l, con c1, con c2) { return clog(l, ^list(c1, ^list(c2, null))); }
+
+con cadd(<con>list cs)           { return clog(^log.Cadd, cs); }
+con csub(con c1, con c2)         { return clog2(^log.Csub,  c1,       c2); }
+con cmuls(int i, con c2)         { return clog2(^log.Cmuls, pcint(i), c2); }
+con cmulu(int i, con c2)         { return clog2(^log.Cmulu, pcint(i), c2); }
+
+con cand(<con>list cs)       { return clog(^log.Cand, cs); }
+con cor (<con>list cs)       { return clog(^log.Cor, cs); }
+con cnot    (con c)          { return clog(^log.Cnot, ^list(c,null)); }
+con cimplies(con c1, con c2) { return clog2(^log.Cimp, c1, c2); }
+con ciff    (con c1, con c2) { return clog2(^log.Ciff, c1, c2); }
+con clts    (con c1, con c2) { return clog2(^log.Clts, c1, c2); }
+con cltu    (con c1, con c2) { return clog2(^log.Cltu, c1, c2); }
+con cltes   (con c1, con c2) { return clog2(^log.Cltes, c1, c2); }
+con clteu   (con c1, con c2) { return clog2(^log.Clteu, c1, c2); }
+con cgts    (con c1, con c2) { return clts(c2,c1); }
+con cgtu    (con c1, con c2) { return cltu(c2,c1); }
+con cgtes   (con c1, con c2) { return cltes(c2,c1); }
+con cgteu   (con c1, con c2) { return clteu(c2,c1); }
+con ceq(con c1, con c2) { 
+  return cand(^list(clteu(c1,c2),^list(clteu(c2,c2),null))); 
+}
+con cne(con c1, con c2) { 
+  return cor(^list(cltu(c1,c2),^list(cltu(c2,c2),null))); 
+}
+
+
+int min_pointer_integer = 4096; 
+	                        
+bool is_non_pointer_integer(int i) {
+  return(((i & 3) != 0) || (i < min_pointer_integer));
+}
+
+//////////////////// coercions /////////////////
+
+union annotate {
+  con                Con;
+  reg                Reg;
+  *(reg,int)         StackTail;
+  *(reg,int,int,con) StackSlice;
+}
+union coercion {
+  *(con,con)     Pack;
+  annotate       Tapp;
+  con            Roll;
+  void           Unroll;
+  con            Tosum;
+  void           Fromsum;
+  con            RollTosum;
+  *(int,int,con) Toarray; 
+  *(int,int)     Slot;
+  con            Subsume;
+  void           Forgetname;
+  void           Prove;
+}
+
+struct <a>coerce { a op; <coercion>list coercions; }
+
+// genops
+
+union genop {
+  int Immed;
+  reg Reg;
+  id  Addr;
+  *(<reg>coerce, int, <*(scale,reg)>Opt) Prjr;
+  *(<id>coerce,  int, <*(scale,reg)>Opt) Prjl;
+}
+static int genop2int(genop g) {
+  switch g {
+  case Immed(x): return 1;
+  case Reg(x):   return 2;
+  case Addr(x):  return 3;
+  case Prjr(x):  return 4;
+  case Prjl(x):  return 5;
+  }
+}
+int genop_compare (genop g1, genop g2) {
+  // note coercions are ignored!
+  int i1 = genop2int(g1);
+  int i2 = genop2int(g2);
+  if (i1 != i2) return i1-i2;
+  switch g1 {
+  case Immed(i): return i - g2.Immed;
+  case Reg(r):   return compare_regs(r, g2.Reg);
+  case Addr(i):  return id_compare(i, g2.Addr);
+  case Prjr(x):  
+    int d = compare_regs(x.1.op, g2.Prjr.1.op);
+    if (d!=0) return d;
+    return x.2 - g2.Prjr.2;
+  case Prjl(x):
+    int d = id_compare(x.1.op, g2.Prjl.1.op);
+    if (d!=0) return d;
+    return x.2 - g2.Prjl.2;
+  }
+}
+
+////////////////// instructions //////////////////////
+
+union condition {
+  void Above,  AboveEq,    Below,     BelowEq, Eq,          Greater,
+    GreaterEq, Less,       LessEq,    NotEq,   NotOverflow, NotSign, 
+    Overflow,  ParityEven, ParityOdd, Sign;
+}
+
+condition negate_condition(condition c) {
+  switch (c) {
+  case Above:       return ^condition.BelowEq;
+  case AboveEq:     return ^condition.Below;
+  case Below:       return ^condition.AboveEq;
+  case BelowEq:     return ^condition.Above;
+  case Eq:          return ^condition.NotEq;
+  case Greater:     return ^condition.LessEq;
+  case GreaterEq:   return ^condition.Less;
+  case Less:        return ^condition.GreaterEq;
+  case LessEq:      return ^condition.Greater;
+  case NotEq:       return ^condition.Eq;
+  case NotOverflow: return ^condition.Overflow;
+  case NotSign:     return ^condition.Sign;
+  case Overflow:    return ^condition.NotOverflow;
+  case ParityEven:  return ^condition.ParityOdd;
+  case ParityOdd:   return ^condition.ParityEven;
+  case Sign:        return ^condition.NotSign;
+  }
+}
+
+// If we compare b to a instead of a to b what should we use?
+condition flip_condition(condition c) {
+  switch (c) {
+  case Above:       return ^condition.Below;
+  case AboveEq:     return ^condition.BelowEq;
+  case Below:       return ^condition.Above;
+  case BelowEq:     return ^condition.AboveEq;
+  case Eq:          return ^condition.Eq;
+  case Greater:     return ^condition.Less;
+  case GreaterEq:   return ^condition.LessEq;
+  case Less:        return ^condition.Greater;
+  case LessEq:      return ^condition.GreaterEq;
+  case NotEq:       return ^condition.NotEq;
+    // FMS: Not sure about the below?
+  case NotOverflow: return ^condition.Overflow;
+  case NotSign:     return ^condition.Sign;
+  case Overflow:    return ^condition.NotOverflow;
+  case ParityEven:  return ^condition.ParityOdd;
+  case ParityOdd:   return ^condition.ParityEven;
+  case Sign:        return ^condition.NotSign;
+  }
+}
+
+union arithbin { void Adc, Add,  And,   Imul2, Or,  Sbb, Sub, Xor;}
+union arithun  { void Dec, Inc,  Neg,   Not; }
+union arithmd  { void Div, Idiv, Imul1, Mul; }
+union arithsr  { void Rcl, Rcr,  Rol,   Ror,   Sal, Sar, Shl, Shr;}
+union conv     { void Cbw, Cdq,  Cwd,   Cwde;}
+
+union mallocarg { 
+  scale           Mbytes;
+  <mallocarg>list Mprod;
+  *(scale,int)    Mbytearray;
+}
+
+union fpnoargs {
+   void F2xm1, Fabs, Fchs, Fclex, Fnclex, Fcompp, Fucompp, Fcos, Fdecstp;
+   void Fincstp, Finit, Fninit, Fld1, Fldz, Fldpi, Fldl2e, Fldl2t;
+   void Fldlg2, Fldln2, Fnop,Fpatan, Fprem, Fprem1, Fptan, Frndint;
+   void Fscale, Fsin, Fsincos, Fsqrt, Ftst, Fwait, Fxam, Fxtract;
+   void Fyl2x, Fyl2xp1;
+ } 
+
+union fpargs {
+   int            FPstack;
+   *(bool,int)    FPstack2;
+   *(scale,genop) FPgenop;
+ }
+
+union fpsomeargs {
+// generic binary instructions 
+   void Fadd, Fcom, Fdiv, Fdivr, Fmul, Fsub, Fsubr, Fucom, Fxch;
+// integer instructions 
+   void Fiadd, Ficom, Ficomp, Fidiv, Fidivr, Fimul, Fisub, Fisubr;
+// instructions that pop an argument 
+   void Faddp, Fcomp, Fdivp, Fdivrp, Fmulp, Fsubp, Fsubrp, Fucomp;
+// unary load and store instructions 
+   void Fst, Fstp, Fist, Fistp, Fld, Fild;
+// change fp register tag to empty 
+   void Ffree;
+// comparison operations that write condition codes to main unit 
+// implemented only on the pentium pro and better processors 
+   void Fcomi, Fcomip, Fucomi, Fucomip;
+// Store Status Word 
+  void Fstsw, Fnstsw;
+ }
+
+union instruction {
+  *(arithbin,genop,genop)             ArithBin;
+  *(arithun,genop)                    ArithUn;
+  *(arithmd,genop)                    ArithMD;
+  *(arithsr,genop,<int>Opt)           ArithSR;
+  reg                                 Bswap;
+  <genop>coerce                       Call;
+  void                                Clc;
+  void                                Cmc;
+  *(condition,reg,<genop>coerce)      Cmovcc;
+  *(<genop>coerce,<genop>coerce)      Cmp; // slightly ahead of the game here
+  conv                                Conv;
+  *(reg,genop,int)                    Imul3;
+  int                                 Int;
+  void                                Into;
+  *(condition,<id>coerce,<instruction>list) Jcc;
+  *(<id>coerce,<instruction>list)           Jecxz;
+  <genop>coerce                       Jmp;
+  id                                  Label;
+  void                                Lahf;
+  *(reg,genop)                        Lea;
+  *(<id>coerce,<bool>Opt)             Loopd;
+  *(genop,<genop>coerce)              Mov;
+  *(bool, genop, reg_part, genop, reg_part) Movpart;
+  void                                Nop;
+  genop                               Pop;
+  void                                Popad;
+  void                                Popfd;
+  <genop>coerce                       Push;
+  void                                Pushad;
+  void                                Pushfd;
+  <int>Opt                            Retn;
+  void                                Sahf;
+  *(condition,genop)                  Setcc;
+  *(genop,reg,<int>Opt)               Shld;
+  *(genop,reg,<int>Opt)               Shrd;
+  void                                Stc;
+  *(genop,genop)                      Test;
+  *(genop,reg)                        Xchg;
+  *(reg,genop,int,reg,genop)          Asub;
+  *(genop,int,reg,reg,genop)          Aupd;
+  <genop>coerce                       Coerce;
+  <id>coerce                          CoerceName;
+  string                              Comment;
+  <con>list                           Fallthru;
+  *(id,int,<mallocarg>Opt)            Malloc;
+  <*(id,<con>list)>list               Proof;
+  *(id,reg,<genop>coerce)             Unpack;
+  *(id,genop)                         Sunpack;
+  *(id, genop)                        Nameobj;
+  id                                  ForgetUnique;
+  id                                  RemoveName;
+  void                                Rdtsc;
+  // Floating point instructions.
+  fpnoargs                            FPnoargs;
+  *(fpsomeargs,fpargs)                FPsomeargs;
+  // Cyclone +
+  *(id,con)                           CgStart;
+  *(reg,id,reg,id)                    CgDump;
+  *(reg,id,id)                        CgHole;
+  *(id,<id>coerce)                    CgHoleJmp;
+  *(condition, id, <id>coerce, <instruction>list)        
+                                      CgHoleJcc;
+  *(reg,reg,id,id,reg)                CgFill;
+  *(reg,reg,id,id,reg,id,id)          CgFillJmp;
+  *(reg,reg,id,id,reg,id,id)          CgFillJcc;
+  *(id,id)                            CgForget;
+  reg                                 CgEnd;
+  // Cyclone -
+}
+
+////////////// grouping it all together ////////////////
+
+struct code_block
+{ id          id;
+  <con>Opt    tipe;
+  instruction insts[];
+}
+//Cyclone +
+extern struct template {
+  id start_id;
+  con tipe;
+  code_block blocks[];
+}
+// Cyclone -
+union data_item { 
+  <id>coerce  Dlabel;
+  string      Dbytes;
+  int         D2bytes;
+  <int>coerce D4bytes;
+  float       Dfloat32;
+  double      Dfloat64;
+  void        Djunk;
+  void        Dup;
+  void        Ddown;
+}
+
+struct data_block 
+{ id                       id;
+  int                      align;
+  <con>Opt                 tipe;
+  < <data_item>list>coerce data; 
+}
+
+union int_con_def {
+  void AbsCon;
+  con  BoundCon;
+  con  ConcCon;
+}
+
+struct tal_int {
+  *(id,con)              int_abbrevs[];
+  *(id,kind,int_con_def) int_cons   [];
+  *(id,con)              int_vals   [];
+}
+
+struct tal_int_type {
+  <*(id,kind,con)>list it_cons;
+  <*(id,con)>     list it_vals;
+}
+
+struct tal_imp { 
+  string         imports    [];
+  string         exports    [];
+  *(id,con)      imp_abbrevs[];
+  *(id,kind,con) con_blocks [];
+  code_block     code_blocks[];
+  data_block     data_blocks[];
+  // Cyclone +
+  template       templates  [];
+  // Cyclone -
+}
+

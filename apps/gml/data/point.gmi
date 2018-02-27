@@ -1,0 +1,62 @@
+%% Point functions
+{ /f /p
+   p getx f apply
+   p gety f apply
+   p getz f apply
+   point } /mapp
+
+{ /f /p2 /p1 
+   p1 getx p2 getx f apply
+   p1 gety p2 gety f apply
+   p1 getz p2 getz f apply
+   point
+} /map2p
+
+{ { mulf } map2p apply } /mulp
+{ { addf } map2p apply } /addp
+{ { subf } map2p apply } /subp
+{ { clampf } mapp apply } /clampp
+{ /s { s mulf } mapp apply } /scalep
+{ /p2 /p1 
+  p1 getx p2 getx eqf
+  { p1 gety p2 gety eqf { p1 getz p2 getz eqf } { false } if }
+  { false } if } /eqp
+
+%% r theta alpha
+{ /alpha /theta /r
+  theta sin /st
+  r st mulf alpha cos mulf negf
+  r theta cos mulf
+  r st mulf alpha sin mulf
+  point
+} /polar2p
+
+{ /x 
+  x 1.0 x x mulf addf sqrt divf asin
+} /atan
+
+{ /x x 1e-5 lessf { -1e-5 x lessf } { false } if } /near_zero
+
+{ /p
+ p getx /x p gety /y p getz /z
+ x x mulf y y mulf z z mulf addf addf sqrt /r
+ y r divf acos /theta
+ x near_zero apply 
+   { z near_zero apply { 0.0 } { z 0.0 lessf { 90.0 } { 270.0 } if } if } 
+   { z x divf atan apply /a x 0.0 lessf 
+       { a negf } 
+       { a 180.0 addf negf } 
+     if } 
+ if /alpha
+ r theta alpha
+} /p2polar
+
+{ /p /alpha /theta
+  p getx /x p gety /y p getz /z
+  theta cos x mulf theta sin y mulf subf /x1
+  theta sin x mulf theta cos y mulf addf /y1
+  alpha cos x1 mulf alpha sin z mulf addf /x2
+  alpha sin x1 mulf negf alpha cos z mulf addf /z2
+  x2 y1 z2 point 
+} /rotp
+

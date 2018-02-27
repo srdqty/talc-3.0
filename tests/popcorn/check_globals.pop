@@ -1,0 +1,92 @@
+// check_globals.pop
+// Stresses the declaration and initialization of global variables.
+// Requires check_globals2.pop to make sure they are linked correctly.
+
+#include "core.h"
+open Core;
+
+abstract struct Astruct { int x,y; }
+?struct Anoptstruct { Astruct s; int y; }
+union Aunion { void none; Astruct some; }
+
+ int global_x = 5;
+extern int print_x();
+
+
+static int an_int=6;
+static bool a_bool=true;
+static string a_string = "A string";
+static int an_intarray[] = {1,2,3,4,5};
+static Astruct a_struct = new Astruct(1,2);
+static Anoptstruct an_opt_struct = new Anoptstruct(new Astruct(4,5),1);
+static Anoptstruct an_opt_struct2 = null;
+static Aunion a_union = new Aunion.none;
+static Aunion a_union2 = new Aunion.some(new Astruct(3,4));
+static *(int,bool) a_tuple = new (1,false);
+
+void pop_main()
+{
+  print_string("an_int = ");
+  print_int(an_int);
+
+  print_string("\na_string = ");
+  print_string(a_string);
+
+  print_string("\nan_intarray = {");
+  int i;
+  for(i=0;i<5;i++)
+    {
+      print_int(an_intarray[i]);
+      (i!=4) ? print_string(", ") : print_string("}");
+    }
+
+  print_string("\na_struct = (");
+  print_int(a_struct.x);
+  print_string(", ");
+  print_int(a_struct.y);
+  print_string(")");
+
+  print_string("\nan_opt_struct = (");
+  print_string("s = (");
+  print_int(an_opt_struct.s.x);
+  print_string(", ");
+  print_int(an_opt_struct.s.y);
+  print_string("), ");
+  print_string("y = ");
+  print_int(an_opt_struct.y);
+  print_string(")");
+
+  print_string("\na_union = ");
+  print_aunion(a_union);
+  
+  print_string("\na_union2 = ");
+  print_aunion(a_union2);
+
+  print_string("\na_tuple = (");
+  print_int(a_tuple.1);
+  print_string(", ");
+  if(a_tuple.2)
+    print_string("true");
+  else
+    print_string("false");
+  print_string(")");
+  
+  int j = print_x();
+ 
+  print_string("\nglobal_x = ");
+  print_int(j);
+  print_string("\n");
+}
+
+void print_aunion(Aunion a)
+{
+ switch a 
+   {
+   case none: print_string("none");
+   case some(z): print_string("some = (");
+     print_int(z.x);
+     print_string(", ");
+     print_int(z.y);
+     print_string(")");
+   }
+}

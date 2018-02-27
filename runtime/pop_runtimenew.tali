@@ -1,0 +1,127 @@
+; Popcorn Runtime
+;
+; Copyright Greg Morrisett, Neal Glew, Dan Grossman
+;   September 1999, all rights reserved
+;
+; A Popcorn module must import this interface to work.
+; We probably want to change this later but for now.
+
+; This is for the new compiler using callee-save registers
+
+	VAL	_pop_never_null,<code{ ST0?, ST1?, ST2?, ST3?, ST4?, ST5?, ST6?, ST7?}>
+; Default exception handler.
+	VAL 	_pop_exn_handler,<code{ ST0?, ST1?, ST2?, ST3?, ST4?, ST5?, ST6?, ST7?, ESP: sptr (code{ESP: sptr exn::se})::exn::se}>
+	VAL 	_pop_exn_handler_verbose,<code{ST0?, ST1?, ST2?, ST3?, ST4?, ST5?, ST6?, ST7?, ESP: sptr (code{ESP: sptr exn::se})::exn::se}>
+; Array bounds error label.
+; JGM:  note that this was defined in tal.tali too
+	VAL	_array_bounds_error,<code{ ST0?, ST1?, ST2?, ST3?, ST4?, ST5?, ST6?, ST7? }>
+; Division by zero error label.
+	VAL 	_division_by_zero_error,<code{ ST0?, ST1?, ST2?, ST3?, ST4?, ST5?, ST6?, ST7? }>
+
+; Debugging stuff
+
+; a packed exception packet
+	TYPE	<exn =Exist[c:Tm].^*[(^T^rw(c)*[B4^rw])^r,c]>
+; a packed string
+	TYPE	<str =Exist[?sz:Sint].^*[S(?sz)^r,array(?sz,B1^rw)]>
+
+; the exception handler passed to a function
+	TYPE	<H =fn e2:Tcap s2:Ts .\
+ 		code{cap: e2,EAX:exn,ESP:sptr s2,EDI:junk4,ESI:junk4,EBX:junk4}>
+
+; types for function labels
+	; helper for two below
+	TYPE	<Fhelp = fn args:Ts rms:Tms .\
+		  All[a1:T4 a2:T4 a3:T4 s1:Ts s2:Ts e1:Tcap e2:Tcap].\
+		  ((fn m:Tms s:Ts.\
+		    code m & {ESP: sptr(code m & (rms & {ESP: sptr s}))::s})\
+		  {cap: &[e1,e2], EBX:a1,ESI:a2,EDI:a3, EBP: sptr(H e2 s2)::s2}\
+		  (args#s1#(H e2 s2)::s2))>
+	; for functions that return values
+	TYPE	<F = fn ret:T4 args:Ts. Fhelp args {EAX: ret}>
+	; for function that don't return values
+	TYPE	<Fv = fn args:Ts . Fhelp args {}>
+	; for function that return floats
+	TYPE	<Fv = fn args:Ts . Fhelp args {ST0}>
+
+; types for internal labels
+; This gets out of hand because the type of an internal label depends on:
+; * the params, the return type, the spill slots, the register file, and
+;   the partially initialized values
+; * whether it is a handler block
+; * whether it is in a try body
+; * whether the function has a handler in it at all
+; * how many callee-save registers are used by the function
+; We use the following encoding
+;  L       
+;  0,1,2,3 == number of callee registers used.
+;   ,f,v   == normal, floating point, void return value.
+; Therefore L2v is a label in a function returning void that uses 2 callee-save
+; registers.
+
+; STATUS: these all assume the function has no handler, for functions that
+; have handlers, still use the old no abbrev method
+
+	; note we even cleverly use the "override" definition of msjoin
+	TYPE	<Lhelp = fn ebxt:T4-!>T4 esit:T4-!>T4 edit:T4-!>T4 \
+			 saves:T4-!>T4-!>T4-!>Ts \
+		  rms:Tms args:Ts retargs:Ts \
+		  parts:Tcap  spills: Ts regs:Tms.\
+		  All[a1:T4 a2:T4 a3:T4 s1:Ts s2:Ts e1:Tcap e2:Tcap].\
+		  code {cap: &[parts,&[e1,e2]], \
+			EBX: ebxt a1, ESI: esit a2, EDI: edit a3, \
+			EBP: sptr(H e2 s2)::s2, \
+			ESP: ((fn s:Ts. \
+			      sptr(spills#(saves a3 a2 a1)#\
+				   (code {cap:&[e1,e2],\
+					  EBX:a1,ESI:a2,EDI:a3,\
+					  EBP:sptr(H e2 s2)::s2, \
+					  ESP:sptr retargs#s} & rms)::\
+				   args#s)) \
+			      (s1#(H e2 s2)::s2))}\
+			& regs>
+	TYPE	<j4_fun = fn a:T4. junk4>
+	TYPE	<id_fun = fn a:T4. a>
+	TYPE	<LShelp = Lhelp j4_fun j4_fun j4_fun\
+				(fn a3:T4 a2:T4 a1:T4. a3::a2::a1::se)>
+	TYPE	<L3help = Lhelp j4_fun j4_fun j4_fun\
+				 (fn a3:T4 a2:T4 a1:T4. a3::a2::a1::se)>
+	TYPE	<L2help = Lhelp j4_fun j4_fun id_fun\
+				 (fn a3:T4 a2:T4 a1:T4. a2::a1::se)>
+	TYPE	<L1help = Lhelp j4_fun id_fun id_fun\
+				 (fn a3:T4 a2:T4 a1:T4. a1::se)>
+	TYPE	<L0help = Lhelp id_fun id_fun id_fun\
+				 (fn a3:T4 a2:T4 a1:T4. se)>
+
+	TYPE	<L3 = fn parts:Tcap ret:T4 args:Ts rargs:Ts spills:Ts regs:Tms.\
+			 L3help {EAX:ret} args rargs parts spills regs>
+	TYPE	<L3v= fn parts:Tcap args:Ts rargs:Ts spills:Ts regs:Tms.\
+			 L3help {} args rargs parts spills regs>
+	TYPE	<L3f= fn parts:Tcap args:Ts rargs:Ts spills:Ts regs:Tms.\
+			 L3help {ST0} args rargs parts spills regs>
+	TYPE	<L2 = fn parts:Tcap ret:T4 args:Ts rargs:Ts spills:Ts regs:Tms.\
+			 L2help {EAX:ret} args rargs parts spills regs>
+	TYPE	<L2v= fn parts:Tcap args:Ts rargs:Ts spills:Ts regs:Tms.\
+			 L2help {} args rargs parts spills regs>
+	TYPE	<L2f= fn parts:Tcap args:Ts rargs:Ts spills:Ts regs:Tms.\
+			 L2help {ST0} args rargs parts spills regs>
+	TYPE	<L1 = fn parts:Tcap ret:T4 args:Ts rargs:Ts spills:Ts regs:Tms.\
+			 L1help {EAX:ret} args rargs parts spills regs>
+	TYPE	<L1v= fn parts:Tcap args:Ts rargs:Ts spills:Ts regs:Tms.\
+			 L1help {} args rargs parts spills regs>
+	TYPE	<L1f= fn parts:Tcap args:Ts rargs:Ts spills:Ts regs:Tms.\
+			 L1help {ST0} args rargs parts spills regs>
+	TYPE	<L0 = fn parts:Tcap ret:T4 args:Ts rargs:Ts spills:Ts regs:Tms.\
+			 L0help {EAX:ret} args rargs parts spills regs>
+	TYPE	<L0v= fn parts:Tcap args:Ts rargs:Ts spills:Ts regs:Tms.\
+			 L0help {} args rargs parts spills regs>
+	TYPE	<L0f= fn parts:Tcap args:Ts rargs:Ts spills:Ts regs:Tms.\
+			 L0help {ST0} args rargs parts spills regs>
+
+; Free!
+	TYPE	<?freeret = fn e:Tcap aebx:T4 aesi:T4 aedi:T4 aebp:T4 ?s1:Ts. (code{cap: e,EBX:aebx,ESI:aesi,EDI:aedi,EBP:aebp,ESP: sptr ?s1})>
+	VAL	_GC_free,<All[a:Tm n:Tn e:Tcap aebx:T4 aesi:T4 aedi:T4 aebp:T4 s1:Ts].code{CAP: &[e,cap[n!^a]],EBX:aebx,ESI:aesi,EDI:aedi,EBP:aebp,ESP: sptr (?freeret e aebx aesi aedi aebp ((Nm(n))::s1))::(Nm(n))::s1}>
+
+; EOF: pop_runtimenew.tali
+
+

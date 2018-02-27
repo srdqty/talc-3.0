@@ -1,0 +1,10 @@
+#include "string.h"
+
+void pop_main()
+{
+  string s = "Hello world:  -->";
+
+  s = sprintf("char: %c string: %s int: %d\n", 'B', "HERE", 57);
+  
+  printf("%s", s);
+}

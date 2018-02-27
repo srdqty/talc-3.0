@@ -1,0 +1,206 @@
+#include "core.h"
+#include "filename.h"
+#include "list.h"
+#include "hashtable.h"
+
+extern void exit(int);
+extern int tal_load (string, string, string);
+extern <int>Core::Opt cast (string t1, string t2, int x);
+extern void init (int lookup_symbol<a> (string, string), 
+		  void add_symbol<a>(string, string, int));
+
+struct entry {
+   string rep;
+   int value;
+}
+
+// The symbol table is a list of hashtables.  The first table is
+//   for the statically linked files, and the each subsequent table
+//   is for a dynamically-linked file
+<<string,entry>Hashtable::table>List::list symbol_table;
+
+/* dlopen can raise Core::FileOpenError(string)         */
+exception FailsTypeCheck;	    // the file is not well formed
+exception SymbolNotFound(string);   // dlsym can't find the symbol
+exception WrongType(string);        // type of symbol is incorrect
+
+struct handle_t {
+  <<string,entry>Hashtable::table>List::list mod_tab;
+}
+
+void dlinit (int init(int l<a>(string,string), 
+	     void a<a>(string,string,int)))
+{
+  init(lookup_symbol, add_symbol);
+}
+
+/*
+  Invalidate the handle and remove the entries from the
+  symbol table. This is kind hacky as we have to find the
+  entry in the table before the one pointed to by start.   
+*/
+void dlclose(handle_t h)
+{
+  <<string,entry>Hashtable::table>List::list here;
+  <<string,entry>Hashtable::table>List::list next;
+
+  try {
+    if (symbol_table == h.mod_tab)
+      symbol_table = h.mod_tab.tl;
+    else {
+      // look for the handle in the list
+      for (here = symbol_table, next = symbol_table.tl;
+	   next != null;
+	   here = next, next = next.tl) 
+	if (next == h.mod_tab) break;
+
+      // if found, then remove it from the list
+      if (next != null)
+	here.tl = next.tl;
+    }
+  } handle y {
+    Core::print_string ("Internal error in dlclose");
+    exit(1);
+  }
+
+  // Invalidate the handle
+  h.mod_tab = null;
+  return;
+}
+
+// version of dlopen that interprets its argument as TAL code, rather
+// than a filename.  Call this function from dlopen().
+handle_t dlopen_buf (string talbuf, string tobuf)
+{
+  int x;
+  // create the hashtable for this module, and add it to the symtab
+  <string,entry>Hashtable::table tab =
+     Hashtable::create(53,Core::strcmp,Hashtable::hash_string);
+  symbol_table = new List::list(tab,symbol_table);
+
+  handle_t h = ^handle_t(symbol_table);
+  x = tal_load (talbuf, tobuf, "inittype");
+  if (x == 0) {
+    raise FailsTypeCheck();
+  }
+  init(lookup_symbol, add_symbol);
+  return h;
+}
+
+handle_t dlopen (string name) 
+{ 
+  /* use filesystem to find the files */
+  string talname = Core::strconcat(name, ".tal");
+  string toname = Core::strconcat(name, ".to");
+  FILE talfile = Core::file_open (talname, "rb");
+  FILE tofile = Core::file_open (toname, "rb");
+  /* read talfile */
+  int tallen = Core::file_length(talname);
+  string talbuf = Core::new_string(tallen);
+  int tolen = Core::file_length(toname);
+  string tobuf = Core::new_string(tolen);
+  
+  f_string_read(talfile, talbuf, 0, tallen);
+  f_string_read(tofile, tobuf, 0, tolen);
+  Core::file_close (talfile);
+  Core::file_close (tofile);
+  
+  return dlopen_buf(talbuf,tobuf);
+}
+
+// helper function for dlsym, lookup_symbol
+int find <a> (<<string,entry>Hashtable::table>List::list start,
+              <<string,entry>Hashtable::table>List::list stop,
+              string name, string typ) 
+{
+  <<string,entry>Hashtable::table>List::list here = start;
+  <int>Core::Opt ans;
+  while (here != stop) {
+    try {
+      entry h = Hashtable::lookup(here.hd, name);
+      ans = cast(h.rep, typ, h.value);
+      if (ans == null) 	
+	raise WrongType(name);
+      else
+	return ans.v;
+    } handle e {
+      switch e {
+      case Core::Not_found: {
+	here = here.tl;
+      }
+      default: {
+	Core::print_string ("Internal error in find");
+	exit(1);
+      }}
+    }
+  }
+  raise SymbolNotFound(name);
+}
+
+/*
+int dlsym<a> (handle_t x, string name, string typ) {
+  return find (x.start, x.stop, name, typ);
+}
+*/
+
+// to be called during init....
+
+// This function adds symbols to the first hashtable it comes across
+void add_symbol<a> (string name, string typ, int val)
+{
+  <string,entry>Hashtable::table h = symbol_table.hd;
+  Hashtable::insert(h,name,^entry(typ,val));
+  return;
+}
+
+// This function looks for the symbol in each hashtable in the list
+int lookup_symbol<a> (string name, string typ) 
+{
+  return find (symbol_table, null, name, typ);
+}
+
+/*
+void update_symbol<a>(string name, string typ, int val){
+  entry ans = find (symbol_table, null, name, typ);
+  ans.3 = val;
+  return;
+}
+*/
+
+/*
+void print_table () 
+{
+  Core::print_string ("Symbol table contains\n");
+  <<string,entry>Hashtable::table>List::list here = symbol_table;
+  try {
+    while (true) {
+      string s = List::hd(here).name;
+      Core::print_string (s); Core::print_string ("\n");
+      here = List::tl(here);
+    }
+  }
+  handle y {
+    return;
+  }
+  return;
+}
+
+
+void print_handle_table (handle_t t) 
+{
+  Core::print_string ("Handle symbol table contains:\n");
+  <<string,entry>Hashtable::table>List::list here = t.start;
+  try {
+    while (here != t.stop) {
+      string s = List::hd(here).name;
+      Core::print_string (s); 
+      Core::print_string ("\n");
+      here = List::tl(here);
+    }
+  }
+  handle y {
+    return;
+  }
+  return;
+}
+*/

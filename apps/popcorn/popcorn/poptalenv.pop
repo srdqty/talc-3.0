@@ -1,0 +1,468 @@
+
+#include "core.h"
+#include "xarray.h"
+#include "dict.h"
+#include "id.h"
+#include "set.h"
+#include "bitvec.h"
+open Core;
+
+#include "poperr.h"
+#include "popil.h"
+#include "tal.h"
+open Popil;
+open Tal;
+
+prefix Poptalenv;
+open   Poptalenv;
+
+#define list   List::list
+#define id     Id::id
+#define dict   Dict::dict
+#define xarray Xarray::xarray
+
+struct reg_assignment {
+  // what the register allocator passes to the code generator
+  tal_place     assignment[];  // the actual assignment to regs and slots
+  <int>Set::set all_live[][];  // needed for TAL label types
+  int           num_slots;     // number of stack slots used for spills
+  int           double_slots;  // number of doubleword slots
+  int           names[];       // names[i] is TAL name to use for variable i
+                               // (aliases must use same name)
+}
+
+// The stack is partitioned into regions described below.
+// There are optionally two words at the very top of the stack for 
+// the handler if there is a local handler. These are omitted here.
+// 
+// For each region we include the depth at which it starts in words,
+// the number of words consumed by the region, and the number of
+// stack slots consumed by this region (if any).  
+//
+// For alignment reasons there may be padding between regions.
+struct stack_desc {
+  int handler_start, handler_words;
+  int slot_start, slot_words, slot_slots; // Slots following callee-save
+  int save_start, save_words; // Takes no stack slots. Includes return address
+  int param_start, param_words, param_slots;
+  
+  int double_slots;
+  int total_slots;
+
+  con retargs; // Instantiation for return args.
+  <con>Opt return_address_con; // Type of the return address on the stack.
+}
+
+// This environment is used to translate floating point code. 
+// One environment is stored per block.
+// A real register is a zombie if it contains something on some incoming
+// control path but not all control paths.
+struct fp_env {
+  int alloc_to_real[]; // Maps allocated registers to real regs.
+  int real_to_alloc[]; // Maps real registers to allocated, -1 = empty 
+  // -2 = zombie.
+  int st0;
+  bool emitted; // Has this block been emitted yet?
+}
+
+fp_env dummy_fp_env = ^fp_env({:int},{:int},0,false);
+
+// This environment is for the term translation
+struct cg_env {
+  // later put stuff in here for type-sharing (or for prototype do as post pass)
+  // probably need two-way map between cons and abbrevs
+  
+  // this stuff only changes once per function 
+  // set by caller of trans_function
+  cf_function    fn; 
+  reg_assignment assignment_info;
+    // set by trans_function
+  stack_desc     stack_desc; // duplicates some information from assign. info.
+
+  <int,con>dict  handler_types; // block num to label type (handlers only)
+  bool           fun_has_handler; // false if no handlers in fun
+  BITVEC         label_types; // bitvec set if put type on label
+  bool           ebx_used;     // could get rid of since used in order
+  bool           esi_used;
+  bool           edi_used;
+  int            num_callee_used;
+
+  *(string,bool) tyvars[]; // frue = T4, false = Sint.
+  BITVEC      local2tyvars[]; // Given a local return list of free tyvars
+  BITVEC      tyvar_bvs[]; // One bitvector of tyvars per block,
+
+  int fps_live[][]; // Bitmask of occupied FP regs for each instruction.
+                    // used to split critical edges (insert mandatory frees)
+  fp_env fp_envs[]; // One fp_env per block.
+
+  // this stuff changes once per block
+  int                 il_block; // implies current handler too
+  <instruction>xarray current_instrs; // new one for each block
+
+  // this stuff changes as we walk forward through a block
+  int                      il_inst;
+  <int, cf_refinement>dict refined_locals;
+  <int, *(int[],int)>dict  partial_inits;
+  <int>Opt          ebx_local; // these three may go away
+  <int>Opt          esi_local;
+  <int>Opt          edi_local;
+     // some day put array bounds stuff here
+  <*(id,<con>Opt,<instruction>xarray)>xarray other_blocks; // for jump trees
+  // may need some web stuff here to help operand2genop!
+
+  // this stuff is what we're building (note that code_blocks are printed
+  // as they're created for space considerations)
+  <*(id,con)> xarray exports;
+
+  // FP
+  fp_env fp_env; // Environment for the current block.
+
+  // Cyclone +
+  <int,int[]>dict regions; /* For each live region, a bitvector of
+                              template pointers that might be the last
+                              dumped at this point. */
+
+  <int,<int>list>dict   filled; /* For each template pointer, which
+				   holes are filled. */
+
+  cf_template current_template;
+
+  Tal::con hole_cons[]; // Pre-condition for each hole.
+
+  // information tracked across functions.
+
+  <string,BITVEC>dict jcc_holes; // function name --> bitvector(1 = jcc,0 = jmp)
+
+  <cf_template,Tal::con>dict template_cons; // TAL con for each template
+  <cf_template,cg_env>dict template_post_envs;
+  // The environment to use when merging post-conditions.
+
+  // Cyclone -
+}
+
+union tal_place {
+  reg Reg;
+  int Fpreg; // 0 to 7 are the only allowed values!
+  int Stackslot;
+}
+
+int tal_place_cmp(tal_place p1, tal_place p2) {
+  switch p1 {
+  case Reg(r1): 
+    switch p2 { 
+    case Reg(r2): return compare_regs(r1,r2);
+    default:      return 1;
+    }
+  case Stackslot(s1):
+    switch p2 {
+    case Stackslot(s2): return s1-s2;
+    default:            return -1;
+    }
+  case Fpreg(i1):
+    switch p2 {
+    case Fpreg(i2): return i1-i2;
+    case Reg(_): return -1;
+    case Stackslot(_): return 1;
+    }
+  }
+}
+// environment used for type translation
+struct tg_env {
+  <*(id,kind,int_con_def)>xarray export_cons;
+  <*(id,kind,int_con_def)>xarray import_cons;
+  <*(id,kind,con)>        xarray file_cons;
+  <*(id,con)>             xarray file_abbrevs;
+}
+
+// environment used for exception and data translation
+struct dg_env {
+  <data_block>xarray blocks; 
+  <*(id,con)> xarray imports;
+  <*(id,con)> xarray exports;
+}
+
+// Just allocate a convenient empty stack description.
+stack_desc new_stack_desc() {
+    return ^stack_desc(0,0,
+		       0,0,0,
+		       0,0,
+		       0,0,0,
+		       0,0,
+		       Tal::cbyte4(),
+		       null);
+}
+
+stack_desc copy_stack_desc(stack_desc s) {
+  return ^stack_desc(s.handler_start,s.handler_words,
+		     s.slot_start,s.slot_words,s.slot_slots,
+		     s.save_start,s.save_words,
+		     s.param_start,s.param_words,s.param_slots,
+		     s.double_slots,s.total_slots,
+		     s.retargs,s.return_address_con);
+}
+
+cg_env new_cg_env (cf_function fn, <*(id,con)>xarray exports) {
+  return ^cg_env{fn = fn, 
+		 assignment_info = ^reg_assignment({:tal_place},
+						   {:<int>Set::set[]},
+						   0,0,{:int}),
+		 stack_desc = new_stack_desc(),
+		 handler_types = Dict::empty(intcmp), 
+		 fun_has_handler = false, 
+                 label_types = {:int},
+		 ebx_used = false, esi_used = false, edi_used = false, 
+		 num_callee_used = 0, 
+		 tyvars = {: *(string,bool) },
+		 local2tyvars = {: <int>array },
+		 tyvar_bvs = {: BITVEC },
+		 fps_live = {:int[]},
+		 fp_envs = {:fp_env},
+                 il_block = 0, 
+		 current_instrs = Xarray::create_empty(),
+                 il_inst = 0, 
+		 refined_locals = Dict::empty(intcmp), 
+		 partial_inits = Dict::empty(intcmp), 
+		 ebx_local = null, esi_local = null, edi_local = null,
+		 other_blocks = Xarray::create_empty(),
+                 exports = exports,
+		 fp_env = dummy_fp_env,
+		 regions = Dict::empty(intcmp),
+		 filled = Dict::empty(intcmp),
+		 current_template = null,
+		 hole_cons = new_array(Xarray::length(fn.all_holes),
+				       Tal::cbyte1()),
+		 jcc_holes = Dict::empty(strcmp),
+		 template_cons = Dict::empty(cf_template_cmp),
+		 template_post_envs = Dict::empty(cf_template_cmp)};
+}
+
+bool in_handler(cg_env env) {
+  return 
+    env.fun_has_handler &&
+    Xarray::get(env.fn.blocks, env.il_block).handler != null;
+}
+bool is_handler(cg_env env, int blockNum) {
+  return Xarray::get(env.fn.blocks, blockNum).handler_var != null;
+}
+bool handler_changes(cg_env env, int block_num) {
+  // means this block should install a handler, and the top stack should be junk
+  // on entry (unless it's a handler in which case the top slot shouldn't
+  // be there)
+  // this might be a good thing to memoize
+  if(!env.fun_has_handler)
+    return false;
+  cf_block         blk          = Xarray::get(env.fn.blocks, block_num);
+  <cf_block>Opt    this_handler = blk.handler;
+  <cf_block>xarray preds        = blk.pred;
+  int              num_preds    = Xarray::length(preds);
+  for(int i=0; i<num_preds; ++i) 
+    if (this_handler != Xarray::get(preds,i).handler)
+      return true;
+  return false;
+}
+
+/* A shallow copy of cg_env. */
+cg_env copy_cg_env (cg_env e) {
+  return ^cg_env{  fn = e.fn, 
+		     assignment_info  = e.assignment_info,
+		     stack_desc       = copy_stack_desc(e.stack_desc),
+		     handler_types    = e.handler_types, 
+		     fun_has_handler  = e.fun_has_handler, 
+		     label_types      = e.label_types,
+		     ebx_used         = e.ebx_used, 
+		     esi_used         = e.esi_used,
+		     edi_used         = e.edi_used, 
+		     num_callee_used  = e.num_callee_used, 
+		     tyvars           = e.tyvars,
+                     local2tyvars     = e.local2tyvars,
+                     tyvar_bvs        = e.tyvar_bvs,
+		     fps_live         = e.fps_live,
+                     fp_envs          = e.fp_envs,
+		     il_block         = e.il_block, 
+		     current_instrs   = e.current_instrs,
+		     il_inst          = e.il_inst, 
+		     refined_locals   = e.refined_locals, 
+		     partial_inits    = e.partial_inits, 
+		     ebx_local        = e.ebx_local, 
+		     esi_local        = e.esi_local, 
+		     edi_local        = e.edi_local,
+		     other_blocks     = e.other_blocks,
+		     exports          = e.exports,
+		     fp_env           = e.fp_env,
+		     regions          = e.regions,
+		     filled           = e.filled,
+		     current_template = e.current_template,
+		     hole_cons        = e.hole_cons,
+		     jcc_holes        = e.jcc_holes,
+		     template_cons    = e.template_cons,
+		     template_post_envs = e.template_post_envs
+		     };
+}
+
+static <cf_refinement>Opt join_refinement(cf_refinement r1, cf_refinement r2) {
+  
+  switch r1 {
+  case NotNull:
+    switch r2 {
+    case NotNull: return ^Opt(r1);
+    default: ;
+    }
+  case VoidVariant(x):
+    switch r2 {
+    case VoidVariant(y): 
+      if(x==y) return ^Opt(r1);
+    default: ;
+    }
+  case ValueVariant(x):
+    switch r2 {
+    case ValueVariant(y):
+      if(x==y) return ^Opt(r1);
+    default: ;
+    }
+  case ExceptionVariant(i):
+    switch r2 {
+    case ExceptionVariant(j):
+      if(Id::id_compare(i,j)==0) return ^Opt(r1);
+    default: ;
+    }
+  case IsNull:
+    switch r2 {
+    case IsNull: return ^Opt(r1);
+    default: ;
+    }
+  case UnknownUnion:
+    switch r2 {
+    case UnknownUnion: return ^Opt(r1);
+    default: ;
+    }
+  case UnknownException:
+    switch r2 {
+    case UnknownException: return ^Opt(r1);
+    default: ;
+    }
+  }
+
+  return null;
+}
+
+/* Take to environments and join them. 
+   Used in generating type information.
+   Both environments should belong to the same function.
+   When fields cannot be joined they are arbitrarily taken from the left. */
+cg_env join_cg_env(cg_env e1, cg_env e2) {
+
+  // refined_locals, partial_inits,ebx_local, esi_local, edi_local, 
+  // regions, filled.
+
+  // refined_locals
+  // Build a new dictionary containing those refinements in both,
+  // and no others.
+  _ r1 = Dict::to_list(e1.refined_locals);
+  _ r2 = Dict::to_list(e2.refined_locals);
+  _ refined_locals = Dict::empty(intcmp);
+  while(r1!=null && r2!=null) {
+    _ id1 = r1.hd.1;
+    _ id2 = r2.hd.1;
+    if (id1 == id2) {
+      _ ref1 = r1.hd.2;
+      _ ref2 = r2.hd.2;
+      _ ref = join_refinement(ref1,ref2);
+      
+      if(ref!=null) refined_locals = Dict::insert(refined_locals,id1,ref.v);
+    } 
+    else if(id1 < id2) r1 = r1.tl;
+    else r2 = r2.tl;
+  }
+
+  // partial inits
+  // These are always the same at the end of a template so I just choose one.
+  _ partial_inits = e1.partial_inits;
+
+  // Is any local variable in ebx/esi/edi?
+  // Should be the same along both branches so don't change.
+  _ ebx_local = e1.ebx_local;
+  _ esi_local = e1.esi_local;
+  _ edi_local = e1.edi_local;
+
+  // regions
+  // Both dictionaries should have the same domain. Take the union of the range.
+  _ rgn1 = Dict::to_list(e1.regions);
+  _ rgn2 = Dict::to_list(e2.regions);
+  _ regions = Dict::empty(intcmp);
+  while(rgn1!=null && rgn2!=null) {
+    _ id1 = rgn1.hd.1;
+    _ id2 = rgn2.hd.1;
+
+    if(id1==id2) {
+      _ bv1 = rgn1.hd.2;
+      _ bv2 = rgn2.hd.2;
+      _ bv = new_array(size(bv1),0);
+      Bitvec::union_two(bv,bv1,bv2);
+      regions = Dict::insert(regions,id1,bv);
+    } else BUG("Different regions are live!!");
+
+    rgn1 = rgn1.tl;
+    rgn2 = rgn2.tl;
+  }
+
+  if((rgn1==null && rgn2!=null) || (rgn1!=null && rgn2 == null)) {
+    BUG("Expect both regions to be the same length.");
+  }
+
+  // filled
+  // The two lists must be the same or the resulting code won't typecheck.
+  _ filled = e1.filled;
+
+  return ^cg_env { 
+    // Changes once per function. (same in e1 and e2)
+      fn = e1.fn,
+      assignment_info = e1.assignment_info,
+      stack_desc = e1.stack_desc,
+      handler_types = e1.handler_types,
+      fun_has_handler = e1.fun_has_handler,
+      label_types = e1.label_types,
+      ebx_used = e1.ebx_used,
+      esi_used = e1.esi_used,
+      edi_used = e1.edi_used,
+      num_callee_used = e1.num_callee_used,
+      tyvars          = e1.tyvars,
+      local2tyvars    = e1.local2tyvars,
+      tyvar_bvs       = e1.tyvar_bvs,
+      fps_live        = e1.fps_live,
+      fp_envs         = e1.fp_envs,
+      // Changes once per block
+      il_block = e1.il_block, // Current block, only affects liveness computation.
+      current_instrs = e1.current_instrs, //Emitted TAL instrs, don't affect type.
+      // Changes as we walk through the block
+      il_inst = e1.il_inst, // Used to determine liveness information.
+      refined_locals = refined_locals,
+      partial_inits = partial_inits,
+      ebx_local = ebx_local,
+      esi_local = esi_local, 
+      edi_local = edi_local,
+      other_blocks = e1.other_blocks, // ???
+      exports = e1.exports,
+      fp_env = e1.fp_env,
+      regions = regions, // Same regions should be in domain of dictionary.
+      filled = filled, // Should be the same along all branches.
+      current_template = e1.current_template, // Doesn't matter.
+      hole_cons = e1.hole_cons, // Doesn't change.
+      jcc_holes = e1.jcc_holes, // Once per function.
+      template_cons = e1.template_cons, // Set once per file.
+      template_post_envs = e1.template_post_envs
+      };		     
+}
+////////////////////////////////////////////////////////////////////////////////
+// Debugging
+
+void print_stack_desc(FILE f, stack_desc sd) {
+  fprintf(f, "\n---------------------------------\n");
+  fprintf(f, "handler %d - %d\n", sd.handler_start, sd.handler_start + sd.handler_words);
+  fprintf(f, "slots   %d - %d (s=%d)\n", sd.slot_start, sd.slot_start + sd.slot_words, sd.slot_slots);
+  fprintf(f, "save    %d - %d\n", sd.save_start, sd.save_start + sd.save_words);
+  fprintf(f, "params  %d - %d (s=%d)\n", sd.param_start, sd.param_start + sd.param_words, sd.param_slots);
+
+  fprintf(f, "---------------------------------\n");
+  fprintf(f,"total slots = %d, double slots = %d\n",sd.total_slots,sd.double_slots);
+
+}

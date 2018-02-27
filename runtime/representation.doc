@@ -1,0 +1,11 @@
+                        TAL Representation Documentation
+                        ================================
+
+Copyright Greg Morrisett, Neal Glew,
+  January 1999, all rights reserved.
+
+TAL.INC Assumptions
+-------------------
+
++ the labels array_bounds_error and out_of_memory handle array index out of
+  bounds and out of memory errors respectively.

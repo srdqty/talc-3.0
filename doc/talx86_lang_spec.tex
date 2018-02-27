@@ -1,0 +1,413 @@
+\documentclass{article}
+\usepackage{proof}
+\newcommand{\tal}{{\sf TALx86}}
+\title{\tal\ Language Specification}
+\setlength{\oddsidemargin}{0.25in}
+\setlength{\evensidemargin}{0.25in}
+\setlength{\textwidth}{6 in}
+\author{Neal Glew}
+\newenvironment{gramrule}
+  {\begin{flushleft}$\begin{array}{p{0.7in}ll}}
+  {\end{array}$\end{flushleft}}
+\newcommand{\nterm}[1]{{\it#1}}
+\newcommand{\term}[1]{{\it#1}}
+\newcommand{\ts}[1]{\hbox{\tt#1}}
+\newcommand{\alt}{\mathrel{|}}
+\begin{document}
+\maketitle
+There are two kinds of \tal\ compilation units: interfaces and
+implementations.  The \tal\ compiler converts finite sequences of ASCII
+characters into \tal\ compilation units as follows.  First it tokenises the
+character sequence, then it parses the token sequence, and finally it performs
+some context sensitive checks.  To tokenise the characters, the \tal\ compiler
+starts with the first character of the sequence and finds the longest matching
+token as defined in the lexical structure section.  Then it finds the longest
+matching token starting at the character following the first token.  This
+process continues until all characters have been tokenised or a character is
+found that does not start a token.  The latter case is a lexical error.
+Otherwise, whitespace and comment tokens are discarded and an $\term{eof}$
+token is added to the end.  These tokens are the terminal symbols of the
+grammar in the section on grammatical structure and the \tal\ compiler attempts
+to find a parse tree with either $\nterm{int}$ or $\nterm{imp}$ as starting
+symbol respectively for an interface or an implementation.
+\section{Lexical Structure}
+Literal ASCII characters are written in \ts{this} font, ASCII
+character codes are written like this, $10$, and token names are
+written in \term{this} font.  The characters \verb+~+, \verb+\+,
+\ts{/}, \ts{\&}, \ts{\%}, \ts{\#}, and \ts{!}  are currently unused
+but might be used in the future.  The characters 0--8, 14--31, and
+127--255 are illegal.  The characters \ts{<}, \ts{>}, \ts{(}, \ts{)},
+\ts{[}, \ts{]}, \verb+{+, \verb+}+, \ts{|}, \ts{@}, \ts{,}, \ts{.},
+\ts{*}, \ts{+}, \ts{:}, \ts{=}, \verb+^+, and \ts{`} are tokens and the
+character itself denotes the terminal symbol.  The character sequences
+\ts{-!>}, \ts{::}, \ts{<=}, \verb+^r+, \verb+^w+, \verb+^rw+, and
+\verb+^u+ are tokens and the sequences themselves denote the terminal
+symbol.
+\begin{gramrule}
+\term{whitespace} &::=& (32 \alt 9 \alt 11 \alt 12)^+ \\
+\term{eol} &::=& 10 \alt 13 \alt 10\;13 \alt 13\;10 \\
+\term{comment} &::=& \ts{;} [\verb+~+\;10\;13]^* \; \term{eol} \\
+\term{num} &::=& \ts{-}^? [\ts{0}-\ts{9}]^+(\ts{d} \alt \ts{t})^? \\
+&|& [\ts{0}-\ts{9}]^+\;(\ts{b} \alt \ts{y} \alt \ts{o} \alt \ts{q}) \\
+&|& [\ts{0}-\ts{9}][\ts{0}-\ts{9}\;\ts{a}-\ts{f}\;\ts{A}-\ts{F}]^*\;\ts{h} \\
+\term{string} &::=& \ts{"} \; [32\;33\;35-\verb+~+]^* \; \ts{"}
+\end{gramrule}
+Identifiers are tokens that match the following rule and are not reserved
+words.
+\begin{gramrule}
+\term{ident} &::=& [\ts{a}-\ts{z}\;\ts{A}-\ts{Z}\;\ts{\_}\;\ts{\$}\;\ts{?}]
+[\ts{a}-\ts{z}\;\ts{A}-\ts{Z}\;\ts{\_}\;\ts{\$}\;\ts{?}\;\ts{0}-\ts{9}]^*
+\end{gramrule}
+There are three kinds of reserved words: case insensitive, case sensitive, and
+filename keywords.
+
+The case insensitive keywords are any capitilisation of the following
+words, the lowercase version itself denotes the terminal symbol:
+\ts{adc}, \ts{add}, \ts{al}, \ts{and}, \ts{asub}, \ts{aupd},
+\ts{bl}, \ts{bswap}, \ts{btagi}, \ts{btagvar}, \ts{call},
+\ts{cbw}, \ts{cdq}, \ts{cl}, \ts{clc}, \ts{cmc}, \ts{cmova},
+\ts{cmovae}, \ts{cmovb}, \ts{cmovbe}, \ts{cmovc}, \ts{cmove},
+\ts{cmovg}, \ts{cmovge}, \ts{cmovl}, \ts{cmovle}, \ts{cmovna},
+\ts{cmovnae}, \ts{cmovnb}, \ts{cmovnbe}, \ts{cmovnc}, \ts{cmovne},
+\ts{cmovng}, \ts{cmovnge}, \ts{cmovnl}, \ts{cmovnle}, \ts{cmovno},
+\ts{cmovnp}, \ts{cmovns}, \ts{cmovnz}, \ts{cmovo}, \ts{cmovp},
+\ts{cmovpe}, \ts{cmovpo}, \ts{cmovs}, \ts{cmovz}, \ts{cmp}, \ts{code},
+\ts{coerce}, \ts{cwd}, \ts{cwde}, \ts{data}, \ts{db}, \ts{dd},
+\ts{dec}, \ts{div}, \ts{dl}, \ts{dw}, \ts{dword}, \ts{eax}, \ts{ebp},
+\ts{ebx}, \ts{ecx}, \ts{edi}, \ts{edx}, \ts{end}, \ts{esi}, \ts{esp},
+\ts{fallthru}, \ts{idiv}, \ts{imul}, \ts{inc}, \ts{int}, \ts{into},
+\ts{ja}, \ts{jae}, \ts{jb}, \ts{jbe}, \ts{jc}, \ts{je}, \ts{jecxz},
+\ts{jg}, \ts{jge}, \ts{jl}, \ts{jle}, \ts{jmp}, \ts{jna}, \ts{jnae},
+\ts{jnb}, \ts{jnbe}, \ts{jnc}, \ts{jne}, \ts{jng}, \ts{jnge},
+\ts{jnl}, \ts{jnle}, \ts{jno}, \ts{jnp}, \ts{jns}, \ts{jnz}, \ts{jo},
+\ts{jp}, \ts{jpe}, \ts{jpo}, \ts{js}, \ts{jz}, \ts{labeltype},
+\ts{lahf}, \ts{lea}, \ts{loopd}, \ts{looped}, \ts{loopned},
+\ts{malloc}, \ts{mov}, \ts{movsx}, \ts{movzx}, \ts{mul}, \ts{neg},
+\ts{nop}, \ts{not}, \ts{or}, \ts{pop}, \ts{popad}, \ts{popfd},
+\ts{ptr}, \ts{push}, \ts{pushad}, \ts{pushfd}, \ts{rcl}, \ts{rcr},
+\ts{retn}, \ts{rol}, \ts{ror}, \ts{sahf}, \ts{sal}, \ts{sar},
+\ts{sbb}, \ts{seta}, \ts{setae}, \ts{setb}, \ts{setbe}, \ts{setc},
+\ts{sete}, \ts{setg}, \ts{setge}, \ts{setl}, \ts{setle}, \ts{setna},
+\ts{setnae}, \ts{setnb}, \ts{setnbe}, \ts{setnc}, \ts{setne},
+\ts{setng}, \ts{setnge}, \ts{setnl}, \ts{setnle}, \ts{setno},
+\ts{setnp}, \ts{setns}, \ts{setnz}, \ts{seto}, \ts{setp}, \ts{setpe},
+\ts{setpo}, \ts{sets}, \ts{setz}, \ts{shl}, \ts{shld}, \ts{shr},
+\ts{shrd}, \ts{stc}, \ts{sub}, \ts{tal\_struct}, \ts{tal\_ends},
+\ts{test}, \ts{type}, \ts{unpack}, \ts{val}, \ts{xchg}, and \ts{xor}.
+
+The case sensitive keywords are the following character sequences, the sequence
+itself denotes the terminal symbol: \ts{?}, \ts{\_begin\_TAL}, \ts{\_end\_TAL},
+\ts{All}, \ts{array}, \ts{B1}, \ts{B2}, \ts{B4}, \ts{B8},
+\ts{Exist}, \ts{fn}, \ts{junk},
+\ts{pack}, \ts{R}, \ts{rec}, \ts{RL}, \ts{roll}, \ts{S},
+\ts{se}, \ts{Sint}, \ts{slot}, \ts{sptr}, \ts{subsume}, \ts{sum}, \ts{T},
+\ts{T1}, \ts{T2}, \ts{T4}, \ts{T8}, \ts{Tm}, \ts{Ts}, and \ts{unroll}.
+
+There are three filename keywords given below:
+\begin{gramrule}
+\term{include} &::=& \ts{include}\;filename \\
+\term{tal\_export} &::=& \ts{tal\_export}\;filename \\
+\term{tal\_import} &::=& \ts{tal\_import}\;filename \\
+\term{filename} &::=& [32\;9\;11\;12]^+ \; [33-126]^+ \\
+\end{gramrule}
+
+The grammar also refers to terminal symbol \term{cc} which is any
+capatalisation of the character sequences: \ts{a}, \ts{ae}, \ts{b}, \ts{be},
+\ts{c}, \ts{e}, \ts{g}, \ts{ge}, \ts{l}, \ts{le}, \ts{na}, \ts{nae}, \ts{nb},
+\ts{nbe}, \ts{nc}, \ts{ne}, \ts{ng}, \ts{nge}, \ts{nl}, \ts{nle}, \ts{no},
+\ts{np}, \ts{ns}, \ts{nz}, \ts{o}, \ts{p}, \ts{pe}, \ts{po}, \ts{s}, and
+\ts{z}.  In places other than where \term{cc} appears in the grammar these
+character sequences are just identifiers.
+\newpage
+\section{Grammatical Structure}
+\tal's grammar follows.  $\alpha^\beta_\gamma$ means a list of $\beta$
+$\alpha$s seperated by $\gamma$s; $\cdot^*$ means zero or more; $\cdot^+$ means
+one or more; $\cdot^?$ means zero or one; $\alt$ means or.  The
+number superscripts on alternatives indicate precedence 1 being lowest
+100 being highest.  The superscripts $r$ and $l$ indicate right and
+left associativity respectively.
+\subsection{Compilation Units}
+\begin{gramrule}
+\nterm{int} &::=& (\nterm{intitem} \alt \term{eol})^* \; \term{eof} \\
+\nterm{intitem} &::=& \term{include} \; \term{eol} \\
+&|& \ts{type} \; \ts{<} \nterm{label} \ts{:} \nterm{kind} \ts{>}\;\term{eol} \\
+&|& \ts{type} \; \ts{<} \nterm{label} \ts{:} \nterm{kind} \ts{=} \nterm{con}
+     \ts{>}\;\term{eol} \\
+&|& \ts{type} \; \ts{<} \nterm{label} \ts{:} \nterm{kind} \ts{<=} \nterm{con}
+     \ts{>}\;\term{eol} \\
+&|& \ts{val} \; \nterm{label} \ts{,} \ts{<} \nterm{con} \ts{>} \; \term{eol}
+\end{gramrule}
+Strictly speaking, the grammar is more liberal with than the rule given here:
+Export declaration placement is less restricted.  Also the first
+$\term{include}$ must be for the file ``{\tt tal.inc}''.
+\begin{gramrule}
+\nterm{imp} &::=& \term{eol}^* \; \term{include} \; \term{eol}^+ \\
+&& \ts{\_begin\_TAL} \; \term{eol}^+ \\
+&& (\term{tal\_import} \; \term{eol}^+)^* \\
+&& (\term{tal\_export} \; \term{eol}^+)^* \\
+&& (\ts{type} \; \ts< \nterm{label} \ts{=} \nterm{con} \ts{>} \;
+   \term{eol}^+)^* \\ 
+&& ( \; \ts{type} \; \ts< \nterm{label} \ts{:} \nterm{kind} \ts{=} \nterm{con}
+     \ts{>} \; \term{eol}^+ \\
+&& | \; \ts{code} \; \term{eol}^+ \\
+&& \quad (\nterm{label} \ts{:} \; \term{eol}^* \\
+&& \quad \phantom{(} \ts{labeltype} \ts{<} \nterm{con} \ts{>} \;\term{eol}^+ \\
+&& \quad \phantom{(} (\nterm{instruction}\;\term{eol}^+)^* \\
+&& \quad )^* \\
+&& | \; \ts{data} \; \term{eol}^+ \\
+&& \quad (\nterm{label} \ts{:} \; \term{eol}^* \\
+&& \quad \phantom{(} (\ts{labeltype} \ts{<} \nterm{con} \ts{>} \;
+                      \term{eol}^+)^? \\
+&& \quad \phantom{(} (\ts{coerce} \ts{<} \nterm{coerce}[\ts{?}] \ts{>} \;
+                      \term{eol}^+)^? \\
+&& \quad \phantom{(} (\nterm{dataitem}\;\term{eol}^+)^* \\
+&& \quad )^* \\
+&& )^* \\
+&& \ts{\_end\_TAL} \; \term{eol}^+ \\
+&& \ts{end} \; \term{eol}^* \; \term{eof}
+\end{gramrule}
+\subsection{Instructions}
+\begin{gramrule}
+\nterm{instruction} &::=&
+    (\ts{adc} \alt \ts{add} \alt \ts{and} \alt \ts{imul} \alt \ts{or} \alt
+    \ts{sbb} \alt \ts{sub} \alt \ts{xor}) \; \nterm{binop} \\
+&|& \ts{bswap} \; \nterm{reg} \\
+&|& \ts{call} \; \nterm{unaryop\_c} \\
+&|& \ts{cbw} \alt \ts{cdq} \alt \ts{cwd} \alt \ts{cwde} \\
+&|& \ts{clc} \alt \ts{cmc} \alt \ts{stc} \\
+&|& \ts{cmovcc} \; \nterm{reg} \ts{,} \nterm{unaryop\_c} \\
+&|& (\ts{cmp} \alt \ts{test}) \; \nterm{binop} \\
+&|& (\ts{dec} \alt \ts{div} \alt \ts{idiv} \alt \ts{imul} \alt \ts{inc} \alt
+    \ts{mul} \alt \ts{neg} \alt \ts{not}) \; \nterm{unaryop} \\
+&|& \ts{imul} \; \nterm{binaryop} \ts{,} \term{num} \\
+&|& \ts{int} \; \term{num} \\
+&|& \ts{into} \\
+&|& (\ts{jcc} \alt \ts{jecxz} \alt \ts{loopd} \alt \ts{looped} \alt
+    \ts{loopned}) \; \nterm{coerce}[\nterm{label}] \\
+&|& \ts{jmp} \; \nterm{unaryop\_c} \\
+&|& \ts{lea} \; \nterm{reg} \ts{,} \nterm{unaryop} \\
+&|& \ts{lahf} \alt \ts{sahf} \\
+&|& \ts{mov} \; \nterm{unaryop} \ts{,} \nterm{unaryop\_c} \\
+&|& \ts{nop} \\
+&|& \ts{pop} \; \nterm{unaryop} \\
+&|& \ts{popad} \alt \ts{popfd} \\
+&|& \ts{push} \; \nterm{unaryop\_c} \\
+&|& \ts{pushad} \alt \ts{pushdfd} \\
+&|& (\ts{rcl} \alt \ts{rcr} \alt \ts{rol} \alt \ts{ror} \alt \ts{sal} \alt
+    \ts{sar} \alt \ts{shl} \alt \ts{shr}) \; \nterm{unaryop} \ts{,}
+    \nterm{shift} \\
+&|& \ts{retn} \; \term{num}^? \\
+&|& \ts{setcc} \; \nterm{reglow} \\
+&|& (\ts{shld} \alt \ts{shrd}) \; \nterm{unaryop} \ts{,} \nterm{reg} \ts{,}
+    \nterm{shift} \\
+&|& \ts{xchg} \; \nterm{unaryop} \ts{,} \nterm{reg} \\
+\multicolumn{3}{l}{\hbox{TAL specific instructions}} \\
+&|& \ts{asub} \; \nterm{reg} \ts{,}
+    \nterm{coerce}[\nterm{reg}\alt\nterm{label}] (\ts{+} \term{num})^? \ts{,}
+    \term{num} \ts{,} \nterm{reg} \ts{,} \nterm{genop} \\
+&|& \ts{aupd} \; \nterm{coerce}[\nterm{reg}\alt\nterm{label}]
+    (\ts{+} \term{num})^? \ts{,}
+    \term{num} \ts{,} \nterm{reg} \ts{,} \nterm{reg} \ts{,} \nterm{genop} \\
+&|& \ts{btagi} \; \term{cc} \ts{,} \nterm{reg} \ts{,} \term{num} \ts{,}
+    \nterm{coerce}[\nterm{label}] \\
+&|& \ts{btagvar} \; \term{cc} \ts{,} \ts{[} \nterm{reg} \ts{+}
+    \term{num} \ts{]} \ts{,} \term{num} \ts{,} \nterm{coerce}[\nterm{label}] \\
+&|& \ts{coerce} \; \nterm{coerce}[\nterm{reg}] \\
+&|& \ts{fallthru} \; (\ts{<} \nterm{con}^*_{\ts{,}} \ts{>})^? \\
+&|& \ts{malloc} \; \term{num} \ts{,} \nterm{mallocarg} (\ts{,}\ts{<}
+    \nterm{con} \ts{>})^? \\
+&|& \ts{unpack} \; \nterm{convar} \ts{,} \nterm{reg} \ts{,}
+    \nterm{unaryop\_c} 
+\end{gramrule}
+\begin{gramrule}
+\nterm{mallocarg} &::=& \ts{<} \nterm{mallocarg'} \ts{>} \\
+\nterm{mallocarg'} &::=& \ts{[} \nterm{mallocarg'}_{\ts{,}}^* \ts{]} \\
+&|& \ts{:} \nterm{con} \\
+&|& \ts{array} \ts{(} \term{num} \ts{,} (\ts{B1} \alt \ts{B2} \alt
+    \ts{B4} \alt \ts{B8}) \ts {)}
+\end{gramrule}
+\subsection{Operands}
+\begin{gramrule}
+\nterm{unaryop} &::=& (\ts{dword} \; \ts{ptr})^? \; \nterm{genop} \\
+\nterm{unaryop\_c} &::=& (\ts{dword} \; \ts{ptr})^? \;
+    \nterm{coerce}[\nterm{genop}] \\
+\nterm{binop} &::=& \nterm{unaryop} \ts{,} \nterm{unaryop} \\
+\end{gramrule}
+\begin{gramrule}
+\nterm{genop} &::=& \term{num} \\
+&|& \ts{S} \ts{(} \term{num} \ts{)} \\
+&|& \nterm{reg} \\
+&|& \nterm{label} \\
+&|& \ts{[} \nterm{coerce}[\nterm{reg}\alt\nterm{label}] (\ts{+} \term{num})^?
+    \ts{]}
+\end{gramrule}
+\begin{gramrule}
+\nterm{coerce}\hbox{$[\alpha]$} &::=& \alpha \\
+&|& \ts{pack} \ts{(} \ts{<} \nterm{con} \ts{>} \ts{,} \nterm{coerce}[\alpha]
+    \ts{,} \ts{<} \nterm{con} \ts{>} \ts{)} \\
+&|& \ts{tapp} \ts{(} \nterm{coerce}[\alpha] \ts{,} \ts{<}
+    \nterm{con}^+_{\ts{,}} \ts{>} \ts{)} \\
+&|& \ts{roll} \ts{(} \ts{<} \nterm{con} \ts{>} \ts{,} \nterm{coerce}[\alpha]
+    \ts{)} \\
+&|& \ts{unroll} \ts{(} \nterm{coerce}[\alpha] \ts{)} \\
+&|& \ts{sum} \ts{(} \ts{<} \nterm{con} \ts{>} \ts{,} \nterm{coerce}[\alpha]
+    \ts{)} \\
+&|& \ts{rollsum} \ts{(} \ts{<} \nterm{con} \ts{>} \ts{,} \nterm{coerce}[\alpha]
+    \ts{)} \\
+&|& \ts{rec} \ts{(} \nterm{coerce}[\alpha] \ts{)} \\
+&|& \ts{array} \ts{(} \term{num} \ts{,} \term{num} \ts{,}
+    \nterm{coerce}[\alpha] \ts{)} \\
+&|& \ts{slot} \ts{(} \term{num} \ts{,} \term{num} \ts{,}
+    \nterm{coerce}[\alpha] \ts{)} \\
+&|& \ts{subsume} \ts{(} \ts{<} \nterm{con} \ts{>} \ts{,} \nterm{coerce}[\alpha]
+    \ts{)} \\
+\end{gramrule}
+\begin{gramrule}
+\nterm{reg} &::=& \ts{eax} \alt \ts{ebx} \alt \ts{ecx} \alt \ts{edx} \alt
+   \ts{esi} \alt \ts{edi} \alt \ts{ebp} \alt \ts{esp} \alt \ts{R} \ts{(}
+   \term{ident} \ts{)} \\
+\nterm{reglow} &::=& \ts{al} \alt \ts{bl} \alt \ts{cl} \alt \ts{dl} \alt 
+   \ts{RL} \ts{(} \term{ident} \ts{)} \\
+\nterm{shift} &::=& \ts{cl} \alt \term{num}
+\end{gramrule}
+\subsection{Data}
+\begin{gramrule}
+\nterm{dataitem} &::=& \ts{db} \; (\term{num}\alt\term{string})^+_{\ts{,}} \\
+&|& \ts{dw} \; \term{num} \\
+&|& \ts{dd} \; \ts{?} \\
+&|& \ts{dd} \; \ts{S} \ts{(} \term{num} \ts{)} \\
+&|& \ts{dd} \; \term{num} \\
+&|& \ts{tal\_struct} \\
+&|& \ts{tal\_ends}
+\end{gramrule}
+\subsection{Type Constructors and Kinds}
+\begin{gramrule}
+\nterm{con} &::=& \ts{(} \nterm{con} \ts{)} \\
+&|& \nterm{convar} \\
+&|^1& \ts{fn} (\nterm{convar} \ts{:} \nterm{kind})^+ \ts{.} \nterm{con} \\
+&|^{2l}& \nterm{con} \; \nterm{con} \\
+&|& \ts{[} \nterm{con}^*_{\ts{,}} \ts{]} \\
+&|^3& \nterm{con} \ts{.} \term{num} \\
+&|& \ts{`} \nterm{label} \\
+&|& \nterm{primcon} \\
+&|& \ts{rec} \ts{(} (\nterm{convar} \ts{:} \nterm{kind} \ts{.}
+    \nterm{con})^+_{\ts{,}} \ts{)} \\
+&|^4& \ts{All} \ts{[} (\nterm{convar} \ts{:} \nterm{kind})^+ \ts{]} \ts{.} 
+      \nterm{con} \\
+&|^4& \ts{Exist} \ts{[} (\nterm{convar} \ts{:} \nterm{kind})^+ \ts{]} \ts{.} 
+      \nterm{con} \\
+&|& \verb+{+ (\nterm{reg} \ts{:} \nterm{con})^*_{\ts{,}} \verb+}+ \\
+&|^4& \verb+^+ \ts{T} \ts{[} \nterm{num}^+_{\ts{,}} \ts{]} \\
+&|^4& \verb+^+ ( \ts{T} \ts{(} \nterm{num}^+_{\ts{,}} \ts{)} )^? \nterm{con} \\
+&|^4& \verb+^+ \ts{T} (\verb+^r+ \alt \verb+^w+ \alt \verb+^rw+ \alt
+      \verb+^u+) \ts{(} \nterm{con} (\ts{,} \nterm{num})^* \ts{)}
+      \nterm{con} \\
+&|^7& \nterm{con} (\verb+^r+ \alt \verb+^w+ \alt \verb+^rw+ \alt \verb+^u+) \\
+&|& \ts{*} \ts{[} \nterm{con}^*_{\ts{,}} \ts{]} \\
+&|& \ts{+} \ts{[} \nterm{con}^*_{\ts{,}} \ts{]} \\
+&|& \ts{array} \ts{(} \nterm{con} \ts{,} \nterm{con} \ts{)} \\
+&|& \ts{S} \ts{(} \nterm{con} \ts{)} \\
+&|^2& \ts{sptr} \; \nterm{con} \\
+&|& \ts{se} \\
+&|^{6r}& \nterm{con} \ts{::} \nterm{con} \\
+&|^{5r}& \nterm{con} \ts{@} \nterm{con}
+\end{gramrule}
+\begin{gramrule}
+\nterm{primcon} &::=& \ts{B1} \alt \ts{B2} \alt \ts{B4} \alt \ts{B8} \\
+&|& \ts{junk} \; \term{num} \\
+&|& \term{num}
+\end{gramrule}
+\begin{gramrule}
+\nterm{kind} &::=& \ts{(} \nterm{kind} \ts{)} \\
+&|& \ts{T} \\
+&|& \ts{T1} \alt \ts{T2} \alt \ts{T4} \alt \ts{T8} \\
+&|& \ts{Tm} \\
+&|& \ts{Tm} \; \term{num} \\
+&|& \ts{Ts} \\
+&|& \ts{Sint} \\
+&|^r& \nterm{kind} \ts{-!>} \nterm{kind} \\
+&|& \ts{*} \ts{[} \nterm{kind}^*_{\ts{,}} \ts{]} \\
+\end{gramrule}
+\subsection{Miscellanenous}
+\begin{gramrule}
+\nterm{convar} &::=& \term{ident} \\
+\nterm{label} &::=& \term{ident} \\
+\end{gramrule}
+\section{Context Sensitive Checks}
+\paragraph{Dword ptr checks}  \mbox{}\ts{dword ptr} may be used only before a
+memory operand, that is, an operand of the form $\ts{[}\ldots\ts{]}$.
+\ts{dword ptr} must be used before memory operands involving labels rather than
+registers; \ts{dword ptr} must be used in unary operands for the instructions
+\ts{dec}, \ldots, \ts{rcl}, \ldots, \ts{call}, \ts{jmp}, \ts{pop}, and
+\ts{push}; \ts{dword ptr} must be used in binary operands and the \ts{mov}
+instruction where the other operands is an immediate, that is, number or
+singleton.
+\section{Type Checking}
+\subsection{Kinds}
+\subsubsection{Well Formedness}
+\newcommand{\tjk}[1]{\vdash#1}
+All kinds are well formed: \[\infer{\tjk{k}}{}\]
+\subsubsection{Subkinding}
+\newcommand{\tjsk}[2]{\vdash#1\le#2}
+\[
+\infer{\tjsk{\kappa}{\kappa}}{\tjk{\kappa}}
+\qquad
+\infer{\tjsk{\ts{T1}}{\ts{T}}}{}
+\qquad
+\infer{\tjsk{\ts{T2}}{\ts{T}}}{}
+\qquad
+\infer{\tjsk{\ts{T4}}{\ts{T}}}{}
+\qquad
+\infer{\tjsk{\ts{T8}}{\ts{T}}}{}
+\qquad
+\infer{\tjsk{\ts{Tm}\;n}{\ts{Tm}}}{}
+\]
+\[
+\infer{\tjsk{\kappa_{11}\ts{-!>}\kappa_{12}}{\kappa_{21}\ts{-!>}\kappa_{22}}}
+      {\tjsk{\kappa_{21}}{\kappa_{11}} & \tjsk{\kappa_{12}}{\kappa_{22}}}
+\qquad
+\infer{\tjsk{\ts{*}\ts{[}\kappa_{11}\ts{,}\ldots\ts{,}\kappa_{1n}\ts{]}}
+            {\ts{*}\ts{[}\kappa_{21}\ts{,}\ldots\ts{,}\kappa_{2n}\ts{]}}}
+      {\tjsk{\kappa_{1i}}{\kappa_{2i}}}
+\]
+It follows that kinds ordered by subkinding form a partial order and
+that if two kinds have a lower bound or upper bound they have a meet
+or join respectively.
+\subsection{Type Constructors}
+\subsubsection{Well Formedness}
+\newcommand{\tjt}[3]{#1\vdash#2:#3}
+\[
+\infer[(\Delta(\alpha)=\kappa)]{\tjt{\Phi;\Delta}{\alpha}{\kappa}}{}
+\qquad
+\infer[(\Phi(\ell)=\kappa)]{\tjt{\Phi;\Delta}{\ts{`}\ell}{\kappa}}{}
+\]
+\[
+\infer{
+\tjt{\Phi;\Delta}
+    {\ts{fn}\;\alpha_1\ts{:}\kappa_1\;\ldots\;\alpha_n\ts{:}\kappa_n\;\ts{.}
+       \;c}
+    {\kappa_1\ts{-!>}\cdots\ts{-!>}\kappa_n\ts{-!>}\kappa}
+}{
+\tjt{\Phi;\Delta,\alpha_1:\kappa_1,\ldots,\alpha_n:\kappa_n}{c}{\kappa}
+}
+\]
+\[
+\infer{\tjt{\Phi;\Delta}{c_1\;c_2}{\kappa}}
+      {\tjt{\Phi;\Delta}{c_1}{\kappa_1\ts{-!>}\kappa} &
+       \tjt{\Phi;\Delta}{c_2}{\kappa_2} &
+       \tjsk{\kappa_2}{\kappa_1}}
+\]
+\[
+\infer{\tjt{\Phi;\Delta}{\ts{[}c_1\ts{,}\ldots\ts{,}c_n\ts{]}}
+                        {\ts{*}\ts{[}\kappa_1\ts{,}\ldots\ts{,}\kappa_n\ts{]}}}
+      {\tjt{\Phi;\Delta}{c_i}{\kappa_i}}
+\qquad
+\infer[(0\le i<n)]
+      {\tjt{\Phi;\Delta}{c\ts{.}i}{\kappa_i}}
+      {\tjt{\Phi;\Delta}{c}
+                        {\ts{*}\ts{[}\kappa_1\ts{,}\ldots\ts{,}\kappa_n\ts{]}}}
+\]
+\subsubsection{Subtyping}
+\newcommand{\tjst}[3]{#1\vdash#2\le#3}
+\end{document}
+% EOF: talx86_lang_spec.tex

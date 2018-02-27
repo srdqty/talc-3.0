@@ -1,0 +1,114 @@
+#include "bench.h"
+#include "opcodes.h"
+#include "core.h"
+
+extern struct inst { int opcode;
+              int val; }
+
+// extern int unix_time();
+extern int int_time();
+
+static int print_time(int start, int end , int iterations) {
+  printf("%d msec.\n",(end - start)/iterations);
+  return 0;
+}
+
+int p_mem[] = {0, 1, 2, 3};              /* MEM_SIZE */
+int p_stack[] = {0,0,0,0,0,0,0,0,0,0};   /* STACK_SIZE */
+int p_prg_size;
+
+extern void pop_interpret(inst prg[], int, int);
+extern void pop_interpret_gen(inst prg[], int, int)();
+extern void pop_interpret_init();
+extern void sp_funs[]();	         /* specialization cache */
+
+/* if bench != TEST, run iterations times and print out time info */
+
+/* Popcorn */
+void test_pop(int bench, inst pprog[], int iterations)
+{
+  int start_time, end_time, i;
+  
+  /* determine length of program here */
+  for(p_prg_size = 0 ; pprog[p_prg_size].opcode != END ; p_prg_size++)
+    ;
+  printf("Program size: %d\n", p_prg_size);
+  
+  printf("[Popcorn]\n");
+  init_p_state();				/* initialize memory */
+  if (bench == TEST) {
+
+    dump_p_mem();				/* verify memory contents */
+    pop_interpret(pprog, 0, 0);
+    dump_p_mem();
+
+  } else {
+
+    start_time = int_time();
+    for( i = 0; i < iterations; i++)
+      pop_interpret(pprog, 0, 0);	        /* execute "normal" function */
+    end_time = int_time();
+    print_time(start_time, end_time, 1);
+
+  }
+  printf("\n");   
+}
+
+void test_cyclone(int bench, inst pprog[], int iterations)
+{
+  int start_time, end_time, i;
+  void pop_interpret_1() = pop_interpret_gen(pprog, 0, 0);
+  
+  sp_funs = new_array(100, pop_interpret_init);
+
+  /* determine length of program here */
+  for(p_prg_size = 0 ; pprog[p_prg_size].opcode != END ; p_prg_size++)
+    ;
+  printf("Program size: %d\n", p_prg_size);
+
+  printf("[Cyclone]\n");
+
+  if (bench == TEST) {
+    
+    pop_interpret_1 = pop_interpret_gen(pprog, 0, 0); /* specialize function */
+    init_p_state();			              /* initialize memory  */
+    dump_p_mem();		                   /* verify memory contents */
+    pop_interpret_1();
+    dump_p_mem();
+
+  } else {
+    
+    start_time = int_time();
+    for( i = 0; i < iterations / 10; i++)
+      pop_interpret_1 = pop_interpret_gen(pprog, 0, 0);
+    end_time = int_time();
+    printf("Code generation: ");
+    print_time(start_time * 10, end_time * 10, 1);
+    
+    start_time = int_time();
+    for( i = 0; i < iterations; i++)
+      pop_interpret_1();	           /* execute specialized function */
+    end_time = int_time();
+    printf("Code  execution: ");
+    print_time(start_time, end_time, 1);
+  }
+  printf("\n"); 
+}
+
+/* initialize state */
+void init_p_state()
+{
+  p_mem = {0, 10, 20, 30};
+  p_stack = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+}
+
+/* print out memory contents */
+void dump_p_mem()
+{
+  int i;
+
+  for(i = 0 ; i < /* MEM_SIZE */4 ; i++) {
+    printf("Memory: %d ", p_mem[i]);
+  }
+  printf("\n");
+}

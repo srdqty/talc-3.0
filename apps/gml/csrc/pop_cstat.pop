@@ -1,0 +1,19 @@
+
+#include "core.h"
+
+struct timer {
+  int x;
+}
+
+void stat_timer(timer t, unsigned int x1, unsigned int x2, 
+		unsigned int x3, unsigned int x4) {
+  ;
+}
+
+void rtcg_stat_output(FILE f, Cstring f,Cstring s) { ; } 
+
+
+
+
+
+

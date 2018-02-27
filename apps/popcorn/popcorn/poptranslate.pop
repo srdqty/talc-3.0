@@ -1,0 +1,3405 @@
+// poptranslate.pop -- Translate Popsyntax to Pil
+
+// We now get left-to-right evaluation correct.  The problem is
+// if a variable might be assigned to in a right sibling of an expression, then
+// we must make a copy of the variable.  We could just always make a copy,
+// but this is extraordinarily inefficient especially since such 
+// assignment in a right sibling almost never occurs.  We do always copy
+// global variables that are not functions.
+
+// We are compiling constant strings very inefficiently.  The alternative is
+// to add something to the IL. DO THIS!
+
+// We now obey the memory operand restrictions implicit in the IL.
+
+// Notice we are very conservative about refined variables at the point
+// of translation.  We record only the refinement we absolutely have to
+// (on nullable structs, unions, and exceptions) and then immediately do 
+// a projection thus enabled and throw
+// the info way (so we can't be wrong due to an intervening assignment or 
+// something).  It's up to the middle-end to do the dataflow analysis to 
+// actually propagate such things.  Similar approach to array indexing.
+
+/////////////////////////////// Preliminaries ///////////////////////
+#include "core.h"
+#include "list.h"
+#include "dict.h"
+#include "id.h"
+#include "xarray.h"
+#include "bitvec.h"
+open Core;
+open List;
+open Id;
+
+#include "popsyntax.h"
+#include "poptypeenv.h"
+#include "popunify.h"
+#include "popil.h"
+#include "poptaltypes.h"
+#include "popilprint.h" // For debugging purposes.
+open Popsyntax;
+open Popil;
+
+prefix Poptranslate;
+open   Poptranslate;
+
+#define cf_var string
+
+exception Unimplemented(string);
+
+///////////////////////// Generally useful utilities //////////////////
+
+static b snd2<a,b,c>(*(a,b,c) x) {
+  return x.2;
+}
+
+static void jump(cf_block src, cf_block dest) {
+  // translate unconditional normal control transfer, including graph update
+ 
+  src.trans = ^cf_transfer.Uncond(^cf_dest.Known(dest));
+  add_edge(src, dest);
+
+}
+
+static void emit(trans_fun_env ev, cf_instruction inst) {
+  Xarray::add(ev.current_blk.insts, inst);
+}
+static void trans_raise(trans_fun_env ev, cf_operand op) {
+  ev.current_blk.trans = ^cf_transfer.Raise(op);
+  if(ev.current_handler != null)
+    add_edge(ev.current_blk, ev.current_handler.v);
+}
+static cf_block make_block(trans_fun_env fe, id i, <int>Opt handler_var) {
+  return ^cf_block{fn = fe.fn, 
+		   label = i, 
+		   num = Xarray::length(fe.fn.blocks),
+		     // exist_vars = fe.exist_vars,
+		   handler_var = handler_var,
+		   insts = Xarray::create(10, ^cf_instruction.Nop), // updated
+		   trans = ^cf_transfer.Abort,                      // updated
+		   handler = fe.current_handler,
+		   pred = Xarray::create(2, fe.current_blk),       // updated
+		   succ = Xarray::create(2, fe.current_blk),       // updated
+		   refined_locals = Dict::empty(intcmp),                     // updated
+		   ltes = null,
+		   partial_inits = fe.partial_inits,
+		   // Cyclone +
+		   template = null,
+		   regions = fe.regions,     // This information is wrong
+		   filled = fe.filled_holes //  will be replaced.
+		   // Cyclone -
+		   };
+}
+static cf_block create_block(trans_fun_env ev, id i) {
+  cf_block ans = make_block(ev,i,null);
+  Xarray::add(ev.fn.blocks, ans);
+  return ans;
+}
+static cf_block create_handler_block(trans_fun_env ev, id i, int handler_var) {
+  cf_block ans = make_block(ev,i,^Opt(handler_var));
+  Xarray::add(ev.fn.blocks, ans);
+  return ans;
+} 
+static void refine_operand(cf_block blk, cf_operand op, cf_refinement r) {
+  switch op {
+  case Local(i): blk.refined_locals  = Dict::insert(blk.refined_locals,  i, r);
+  default:       BUG("attempt to refine non-local");
+  }
+}
+static bool is_memory(cf_operand op) {
+  // note this is for translation -- it is different after we have spilling
+  switch op {
+  case Global(x): return true;
+  default:        return false;
+  }
+}
+static cf_operand non_memory(trans_fun_env ev, cf_operand op, cf_typ t) {
+  switch op {
+  case Global(x): 
+    cf_operand ans = localoperand(newtemp(ev.fn, t));
+    emit(ev, ^cf_instruction.Copy(^(ans, op)));
+    return ans;
+  default: return op;
+  }
+}
+
+//Cyclone +
+
+// ev is optional and therefore could be null. 
+static trans_fun_env new_fun_env(trans_env ev, cf_file file) {
+
+  cf_function dummy_fun = null;
+  cf_block    dummy_blk = ^cf_block(dummy_fun, id_new(""), 0, 
+				    null,
+				    Xarray::create(1,^cf_instruction.Nop),
+				    ^cf_transfer.Abort,
+				    null, 
+				    Xarray::create_empty(),
+				    Xarray::create_empty(),
+				    Dict::empty(intcmp),
+				    null,
+				    Dict::empty(intcmp),
+				    // Cyclone +
+				    null,
+				    Dict::empty(intcmp),
+				    Dict::empty(intcmp)
+				    // Cyclone -
+				    );
+  dummy_fun = ^cf_function { 
+    file = file, 
+    name = "", 
+    convention = ^cf_convention.Cdecl,
+    is_static = false, 
+    tyvars = null, 
+    exist_tyvars = null, 
+    sing_tyvars = null,
+    arg_typs = null, 
+    ret_typ = null,
+    all_operands = Xarray::create(1,^cf_idinfo(^cf_typ.Bool,^cf_use.Generated)),
+    all_consts = Xarray::create(1,^cf_constinfo(0,^cf_typ.Bool)),
+    params = null,
+    entry = dummy_blk, 
+    blocks = Xarray::create(1,dummy_blk), 
+    df_order = null,
+    // Cyclone +
+    generator = null,
+    templates = null,
+    all_holes = Xarray::create(1,^cf_holeinfo.Terminal(null)),
+    code_regions = Xarray::create_empty(),
+    template_pointers = Xarray::create_empty()
+    // Cyclone -
+  };
+
+  _ dummy_operand = ^cf_operand.Const(0);
+  
+  _ fe = ^trans_fun_env{ global_env            = ev,
+			 fn                    = dummy_fun,
+			 is_main               = false,
+			 parent                = null,
+			 child                 = null,
+			 current_templ         = null,
+			 pred_templates        = null,
+			 succ_templates        = null,
+			 current_blk           = dummy_blk,
+			 partial_inits         = Dict::empty(intcmp),
+			 var_to_local          = Dict::empty(strcmp),
+			 label_to_blks         = Dict::empty(strcmp),
+			 right_siblings_assign = null,
+			 current_handler       = null, 
+			 current_break_dest    = dummy_blk, 
+			 current_continue_dest = dummy_blk,
+			 unboxed_arrays        = Dict::empty(intcmp),
+			 regions               = Dict::empty(intcmp),
+			 filled_holes          = Dict::empty(intcmp),
+			 current_rgn           = dummy_operand,
+			 current_rgn_ops       = Xarray::create_empty(),
+			 current_template_ptr  = dummy_operand,
+			 pending_blks          = null,
+			 templ_ops             = Dict::empty(cf_template_cmp)
+  };
+
+  return fe;
+}
+
+// RTCG requires that we correctly track some information in a
+// control-flow dependent manner.  Surprisingly this was not necessary
+// previously.  Other kinds of types may need this information too, so
+// I tried to write this generically.
+// 
+
+// The control-flow information in ev is correct, use it to initialize
+// block b.
+static void ground_block(trans_fun_env ev, cf_block b) {
+  b.regions = ev.regions;
+  b.filled = ev.filled_holes;
+}
+
+// Type for control-flow dependent state.
+static struct cfg_env {
+  <int,BITVEC>Dict::dict regions;
+  <int,<cf_hole>list>Dict::dict filled;
+}
+
+// Take a snapshot of the current state.
+static cfg_env checkpoint_env(trans_fun_env ev) {
+  return ^cfg_env(ev.regions,ev.filled_holes);
+}
+
+static void restore_env(trans_fun_env ev, cfg_env c) {
+  ev.regions = c.regions;
+  ev.filled_holes = c.filled;
+}
+
+static void restore_block_env(trans_fun_env ev, cf_block b) {
+  ev.regions = b.regions;
+  ev.filled_holes = b.filled;
+}
+
+// Make this block part of the current template.
+static void fix_block(trans_fun_env ev, cf_block b) {
+  if(ev.current_templ != null) {
+    Xarray::add(ev.current_templ.blocks,b);
+    b.template = ev.current_templ;
+  }
+}
+
+static int get_region_var(trans_fun_env ev) {
+  _ rgn_typ = operand_type(ev.fn, ev.current_rgn);
+  switch rgn_typ {
+  case CodeRgn(i) : return i;
+  default: BUG("Bug: expected code region pointer!");
+  }
+}
+
+static int get_templ_ptr_var(trans_fun_env ev) {
+  _ tp_typ = operand_type(ev.fn, ev.current_template_ptr);
+  switch tp_typ {
+  case TemplPtr(i) : return i;
+  default: BUG("Bug: expected template pointer!");
+  }
+}
+
+static int add_hole_templ(trans_fun_env ev,cf_template t, cf_block b, 
+			  cf_holeinfo hi) {
+  _ h = install_hole(ev.fn,hi);
+ Xarray::add(t.holes,^(h,b));
+  return h;
+}
+
+static int add_hole(trans_fun_env ev,cf_holeinfo hi) {
+  return add_hole_templ(ev,ev.current_templ,ev.current_blk,hi);
+}
+
+// From the generator, (generatee must exist)
+// issue a dump instruction for the new template,
+// add the new template to the environment
+// return the translation environment for the generatee
+static trans_fun_env start_template(trans_fun_env ev) {
+  _ child = ev.child.v; // Failure here indicates a bug.
+
+  _ blk_id  = Id::id_new("T_entry");
+  _ tmpl_id = Id::id_new("T");
+  _ tmpl_end_id = Id::id_new("T_end");
+
+  _ entry_blk = create_block(child,blk_id);
+  ground_block(child,entry_blk);
+
+  _ tmpl = ^cf_template{ name   = tmpl_id,
+			 end_name = tmpl_end_id,
+			 blocks = Xarray::singleton(1,entry_blk),
+			 entry  = entry_blk,
+			 exit   = null,
+			 holes  = Xarray::create(3,^(-1,entry_blk)),
+			 labels = Set::empty(cf_block_cmp)};
+
+  child.current_templ = tmpl;
+  child.current_blk = entry_blk;
+  entry_blk.template = tmpl; // XXX - brittle
+
+  _ fn = ev.fn;
+  _ tp_var = Xarray::add_ind(fn.template_pointers,tmpl);
+  _ tp_typ = ^cf_typ.TemplPtr(tp_var);
+
+  int tp = install_local(ev.fn,tp_typ,"templ_ptr");
+  _ tp_op = ^cf_operand.Local(tp);
+  ev.current_template_ptr = tp_op;
+
+  
+  Xarray::add(ev.current_rgn_ops,tp);
+
+  emit(ev,^cf_instruction.Dump(^(ev.current_rgn,tp_op,tmpl)));
+
+  ev.templ_ops = Dict::insert(ev.templ_ops,tmpl,tp_op);
+
+  // This information is no longer computed here.  See popiltype.pop
+  // Dumped this template so it is the new post-condition for the code-region.
+  // _ rgn_var = get_region_var(ev);
+  // ev.regions = Dict::insert(ev.regions,rgn_var,tmpl);
+
+  // Initialize the list of filled holes for this template pointer.
+  ev.filled_holes = Dict::insert(ev.filled_holes,tp_var,null);
+
+  child.fn.templates = ^list(tmpl,child.fn.templates);
+
+  return child;
+}
+
+// Make the current_blk the exit block of the template
+// Make transfer an unconditional jump to an unknown destination
+// The successor information for Terminal transfers will be patched later.
+static trans_fun_env end_template(trans_fun_env ev) {
+
+  _ parent = ev.parent.v;
+  _ blk = ev.current_blk;
+
+  _ hi = ^cf_holeinfo.Terminal(null); // Correct when processing cut.
+  _ hole = install_hole(ev.fn, hi);
+  // NOTE: Do not add terminal hole to list of holes in template
+  // DO NOT use add_hole
+  
+  blk.trans = ^cf_transfer.Uncond(^cf_dest.Unknown(hole));
+  
+  _ templ = ev.current_templ;
+
+  templ.exit = ^Opt(^(blk,hole));
+
+  return parent; 
+}
+  
+// returns null if fully handled no more changes required.
+static <cf_dest>Opt correct_dest(trans_fun_env ev, cf_block src, cf_dest d) {
+
+  switch d {
+  case Unknown(_): return null; //This destination already filled.
+  case Known(b): 
+    _ src_t = src.template;
+    _ dest_t = b.template;
+
+    if(dest_t == null) {
+      _ x = ev.pending_blks;
+      if (x!=null) {  // XXX fix this hack!
+	if (x.hd == src) return null; // Hack to avoid duplicates in ev.pending.
+      }
+      ev.pending_blks = ^list(src,ev.pending_blks);
+      return null; // Cannot process.  Destination unknown.
+    }
+    if(dest_t == src_t) return null; // Intra-template jump, no change.
+    
+    _ h = add_hole_templ(ev,src_t,src,^cf_holeinfo.Jmp(^list(b,null)));
+
+    // Record that this label was used to fill a hole. 
+    dest_t.labels = Set::insert(dest_t.labels,b);
+
+    _ parent = ev.parent.v; // Should not fail in a generator.
+
+    _ src_t_op;
+    _ dest_t_op;
+    try {
+       src_t_op = Dict::lookup(parent.templ_ops,src_t);
+      dest_t_op = Dict::lookup(parent.templ_ops,dest_t);
+    } handle y switch y {
+    case Dict::Absent: 
+      BUG("Bug: template should already be dumped.");
+    }
+
+    // Issue fill instruction in generator to fill the hole with
+    emit(parent,^cf_instruction.FillJmp(^(parent.current_rgn,
+					  src_t_op,h,dest_t_op,b)));
+    _ new_d = ^cf_dest.Unknown(h);
+    return ^Opt(new_d);
+  }
+}
+
+static void correct_pair_dest_list<a>(trans_fun_env ev, cf_block src,
+				      <*(a,cf_dest)>list x) {
+  for (; x != null; x=x.tl) {
+    _ dd = correct_dest(ev,src,x.hd.2);
+    if (dd!=null) x.hd.2 = dd.v;
+  }
+}
+
+// Look at transfer of block src.  If destinations are all within template
+// leave it alone.  If it is unknown what template the destinations reside in
+// add source to pending_blocks in ev.  If destinations reside in other 
+// templates, rewrite destinations to be unknown and issue appropriate fill
+// instructions in the generating function.
+static void correct_transfer(trans_fun_env ev, cf_block src) {
+
+  //Quick test: if not in a generator never need to do anything.
+  if(ev.parent == null) return;
+
+  _ trans = src.trans;
+
+  _ template = src.template;
+
+  if(template == null) {
+    ev.pending_blks = ^list(src,ev.pending_blks);
+    return;
+  }
+
+  switch trans {
+  case Abort: /* empty stmt */; // XXX This happens but why (bsearch.pop)
+  case Uncond (d) :
+    _ dd = correct_dest(ev,src,d);
+    if (dd != null) src.trans = ^cf_transfer.Uncond(dd.v);
+          
+  case Cond(x):
+    _ dd = correct_dest(ev,src,x.1);
+    if (dd != null) x.1 = dd.v;
+
+    dd = correct_dest(ev,src,x.2);
+    if (dd != null) x.2 = dd.v;
+
+  case NumSwitch(x):    
+    _ dd = correct_dest(ev,src,x.3);
+    if(dd!=null) x.3 = dd.v;
+
+    correct_pair_dest_list(ev,src,x.2);
+    
+  case SumSwitch(x):
+    correct_pair_dest_list(ev,src,x.2);
+    correct_pair_dest_list(ev,src,x.3);
+    if(x.4 != null) {
+      _ dd = correct_dest(ev,src,x.4.v);
+      if(dd!=null) x.4.v = dd.v;
+    }
+
+  case ExnSwitch(x):
+    correct_pair_dest_list(ev,src,x.2);
+    _ dd = correct_dest(ev,src,x.3);
+    if (dd!=null) x.3 = dd.v;
+
+   case NullCheck(x):
+    _ dd = correct_dest(ev,src,x.2);
+    if (dd!=null) x.2 = dd.v;
+
+  case UnionCheck(x):
+    _ dd = correct_dest(ev,src,x.4);
+    if (dd != null) x.4 = dd.v;
+
+  case NullBranch(x):
+    _ dd = correct_dest(ev,src,x.2);
+    if (dd!=null) x.2 = dd.v;
+    dd = correct_dest(ev,src,x.3);
+    if (dd != null) x.3 = dd.v;
+
+  case Call (x):
+    _ dd = correct_dest(ev,src,x.5);
+    if (dd != null) x.5 = dd.v;
+
+  case Raise(_):     /* empty stmt */; 
+  case Retn (_):     /* empty stmt */;
+  case TailCall (_): /* empty stmt */;
+  }  
+}
+
+// Attempt to process pending blocks.
+// I am trying to structure the code to minimize their number.
+static void process_pending_blocks(trans_fun_env ev) {
+  if (ev.parent == null) { // Not in a code generator. Do nothing.
+    ev.pending_blks = null; 
+    return; }
+ 
+  _ pending = ev.pending_blks;
+  ev.pending_blks = null; // Must null prior to loop.  See comment below. 
+
+  for(; pending !=null; pending = pending.tl) {
+    // Note: correct_transfer will add pending.hd to ev.pending_blks
+    // if appropriate.
+    correct_transfer(ev,pending.hd);
+  }
+}
+ //Cyclone -			   
+
+////////////////////////// String and Global Translation ///////////////
+
+// notice we're hoisting any nested data items which is slightly bad
+// since it makes the globals dictionary bigger than necessary.
+
+open Tal {
+open Poptaltypes {
+
+static id addstring(trans_env ev, string s) {
+  id  i   = id_new("gbl");
+  id  i2  = id_new("string");
+  con c   = string_packed();
+  int len = size(s);
+  <data_item>list l = (len == 0) ? null 
+                                 : ^list(^data_item.Dbytes(s),null);
+  _ char_f = cfield(pcbytes(^scale.Byte1),^variance.ReadWrite);
+
+  data_block d_hd = 
+    ^data_block(i,4,null,^coerce(
+			       ^list(^data_item.D4bytes(^coerce(len,null)),
+			       ^list(^data_item.Dlabel(^coerce(i2,null)),
+			       null)),
+				^list(^coercion.Pack(^(pcint(len),c)),
+				null)));
+  data_block d_body =
+    ^data_block(i2,4,^Opt(cprod_b(^list(carray(pcint(len),char_f),null))),
+		^coerce(l,
+			^list(^coercion.Toarray(^(0,0,char_f)),
+			null)));
+
+  cf_globaldecl gd = ^cf_globaldecl(^scope.Static, 
+                                   ^cf_typ.Array(^(^Opt(len),u_char)), 
+                                   d_hd);
+  cf_globaldecl gd2 = ^cf_globaldecl(^scope.Static, 
+                                     ^cf_typ.UnpackedArray(^(^cf_sing.Int(len),
+				                           u_char)),
+                                     d_body);  
+
+  ev.file.globals = Dict::insert(ev.file.globals, i2,gd2);
+  ev.file.globals = Dict::insert(ev.file.globals, i, gd);
+
+  return i;
+}
+
+// used when compiling NewStruct to get stuff in the right order
+static <a>list sort_opt_fields<a>(<*(<field_name>Opt,a)>list fes,
+                                  cf_structdecl sd) {
+  <a>list es = null;
+  if (fes != null && fes.hd.1 != null) {
+    field_name fields[] = sd.field_names;
+    for (int i=0; i < size(fields); i++) {
+      field_name f = fields[i];
+      for (<*(<field_name>Opt,a)>list xs = fes; xs != null; xs = xs.tl) {
+	if (strcmp(xs.hd.1.v,f) == 0) {
+	  es = ^list(xs.hd.2,es);
+	  break;
+	}
+      }
+    }
+    es = List::rev(es);
+  } else {
+    es = List::map(snd@< <field_name>Opt,a>,fes);
+  }
+  return es;
+}
+
+// XXX - Below unimplemented!
+// Doubles should be double word aligned!!
+// Everything else 4 byte aligned.  
+// According to Intel large data structures should be aligned on a 32 byte 
+// boundary.
+// Why doesn't the assembler do all this?
+void trans_global(trans_env ev, *(scope,var,typ,<exp>Opt) gbl) {
+  // if we had const in Popcorn, we'd want to record that (and the value).
+  // for alignment reasons, all base types are expanded to four bytes
+  id               i    = tid_val(gbl.2);
+  *(con,data_item,bool) x  = trans_global_data(ev,gbl.4.v);
+  con              c    = cprod_b(^list(cfield(x.1,^variance.ReadWrite),null));
+  data_item        d    = x.2;
+  bool      dword_align = x.3;
+  int             align = (dword_align) ? 8 : 4;
+  data_block       dptr = ^data_block(i,align,
+				      ^Opt(c), ^coerce(^list(d, null),null));
+  cf_globaldecl    gd   = ^cf_globaldecl(gbl.1, trans_typ(gbl.3), dptr);
+  ev.file.globals = Dict::insert(ev.file.globals, i, gd);
+}
+
+*(con,data_item,bool) trans_global_data(trans_env ev, exp e) {
+#define DFOURBYTES(i,c) ^(con,\
+                         ^data_item.D4bytes(^coerce(i, \
+						    ^list(^coercion.c,null))), \
+			  false)
+  cf_typ typ = trans_typ(e.typ.v);
+  con    con = typ2con_roll(typ);
+  bool dword_align = false;
+  <<data_item>list>coerce data;
+  switch e.raw_exp {
+  case Const(x):
+    switch x {
+    case Int   (i): return DFOURBYTES(i,         Subsume  (con));
+    case Char  (c): return DFOURBYTES(ord(c),    Subsume  (con)); 
+    case Bool  (b): return DFOURBYTES(b ? 1 : 0, Tosum    (con));
+    case Null:      
+      switch typ {
+      case Option(_): return DFOURBYTES(0, Tosum(con));
+      default: return DFOURBYTES(0,         RollTosum(con));
+      }
+    case String(s): 
+      return ^(con,^data_item.Dlabel(^coerce(addstring(ev,s),null)),false);
+    case Double(d): return ^(con, ^.Dfloat64(d),true);
+    case Float(f):  return ^(con, ^.Dfloat32(f),false);
+    }
+  case Cast*(t,e): 
+    // Casts from doubles to floats and vice-versa must be performed,
+    // as must restrictions in the size of the value.
+    if(!is_cast_nop(e.typ.v,t)) {
+      switch e.raw_exp {
+      case Const(x):
+	switch x {
+	case Int(i):
+	  switch t {
+	  case CharType: e.raw_exp = ^raw_exp.Const(^.Char(i & 0xFF));
+	  case IntType*(sgn,sz):
+	    _ j = (sz == ^.B1) ? i & 0xFF : (sz == ^.B2) ? i & 0xFFFF : i;
+	    e.raw_exp = ^raw_exp.Const(^cnst.Int(j));
+	  case DoubleType: 
+	    e.raw_exp = ^raw_exp.Const(^cnst.Double((:double)i));
+	  case FloatType:
+	    e.raw_exp = ^raw_exp.Const(^cnst.Float((:float)i));
+	  default: ;
+	  }
+	case Char(c):
+	  switch t {
+	  case DoubleType:
+	    e.raw_exp = ^raw_exp.Const(^cnst.Double((:double)c));
+	  case FloatType: 
+	    e.raw_exp = ^raw_exp.Const(^cnst.Float((:float)c));
+	  default: ;
+	  }
+	case Double(d):
+	  switch t {
+	  case IntType(_): BUG("Unimplemented: static cast double -> int.");
+	  case FloatType: e.raw_exp = ^raw_exp.Const(^cnst.Float(d));
+	  default: ;
+	  }
+	case Float(f):
+	  switch t {
+	  case IntType(_): BUG("Unimplemented: static case float -> int.");
+	  case DoubleType: e.raw_exp = ^raw_exp.Const(^cnst.Double((:double)f));
+	  default: ;
+	  }
+	default: ;
+	}
+      case Cast *(t2,e2): e.raw_exp = ^.Cast(^(t,e2));
+      default: BUG("Bad global cast!");
+      }
+    }
+    return trans_global_data(ev, e);
+  case ConstArray(x):
+    <data_item>list ds    = map(snd2@<con,data_item,bool>,
+				map_c(trans_global_data,ev,x.1));
+    cf_typ          elt_t = trans_typ(x.2==null ? x.1.hd.typ.v : x.2.v);
+    con             elt_c = typ2con_roll(elt_t);
+    int             len   = length(x.1);
+
+    _ align = sizeof_typ(elt_t) > 4 ? 8 : 4; 
+    _ field    = cfield(elt_c,^variance.ReadWrite);
+    _ arr_lab  = Id::id_new("array");
+    _ arr_body = ^coerce(ds,^list(^coercion.Toarray(^(0,0,field)), null));
+    _ arr_d = ^data_block(arr_lab,align,
+			  ^Opt(cprod_b(^list(carray(pcint(len),field),null))),
+			  arr_body);
+    _ arr_body_typ = unpacked_array_typ(e.typ.v,len);
+
+    ev.file.globals = 
+      Dict::insert(ev.file.globals, arr_lab, 
+		   ^cf_globaldecl(^scope.Static, arr_body_typ, arr_d));
+    data  = ^coerce(^list(^data_item.D4bytes(^coerce(len,null)),
+                    ^list(^data_item.Dlabel(^coerce(arr_lab,null)),null)),
+                    ^list(^coercion.Pack(^(pcint(len),con)),null));
+  case ConstCArray(es):
+    <data_item>list ds    = map(snd2@<con,data_item,bool>,
+				map_c(trans_global_data,ev,es));
+    cf_typ          elt_t = trans_typ(es.hd.typ.v);
+    con             elt_c = typ2con_roll(elt_t);
+    int             len   = length(es);
+
+    _ align = sizeof_typ(elt_t) > 4 ? 8 : 4; 
+    _ field    = cfield(elt_c,^variance.ReadWrite);
+    _ arr      = ^coerce(ds,^list(^coercion.Toarray(^(0,0,field)), null));
+
+    // XXX - might have to do something here about the optional part?
+
+    data  = arr;
+
+  case NewStruct(x):
+    cf_structdecl   sd      = Dict::lookup(ev.file.structs,x.1);
+    <exp>list       es      = sort_opt_fields(x.3,sd);
+    <data_item>list ds      = map(snd2@<con,data_item,bool>,
+				  map_c(trans_global_data,ev,es));
+    <con>list       cons    = map(typ2con_roll, map(trans_typ,x.2.v));
+
+    // Now insert padding for alignment purposes.
+    _ fields     = sd.fields;
+    _ num_fields = size(fields);
+    _ offset     = sizeof_typ(fields[0].typ);
+    _ ds2        = ds;
+    for(_ i=1; i<num_fields; i++, ds2=ds2.tl) {
+      _ f = fields[i];
+      _ f_offset = f.offset;
+      _ f_sz = sizeof_typ(f.typ);
+
+      if(f_sz > 4) dword_align = true;
+
+      _ padding = f_offset - offset;
+      
+      if(padding != 0) {
+	_ pad = new_string(padding);
+	ds2.tl = ^list(^.Dbytes(pad),ds2.tl);
+
+	//DEBUG
+	if(ds2 == null) BUG("ds2 == null");
+
+	ds2 = ds2.tl;
+      }
+
+      offset = f_offset + f_sz;
+
+      // DEBUG
+      if(ds2 == null)  BUG("ds2 == null");
+    }
+
+    coercion        first   = 
+      ^coercion.Roll(chptr(null, ^Opt(mem_name_con(sd.name, cons)), null));
+    con             name    = name_con(x.1, cons);
+    coercion        second  = 
+      sd.possibly_null ? ^coercion.RollTosum(name) : ^coercion.Roll(name);
+    data = ^coerce(ds, ^list(second, ^list(first, null)));
+
+  case NewTuple(x):
+    _ ds = map(snd2@<con,data_item,bool>,map_c(trans_global_data,ev,x));
+    
+    if(x!=null) {
+      // Insert padding
+      _ ds2 = ds;
+
+      // DEBUG
+      if(x.hd.typ == null) BUG("Expression without a type.");
+
+      _ offset = sizeof_typ(trans_typ(x.hd.typ.v));
+      if(offset > 4) dword_align = true;
+
+      x=x.tl;
+      for(; x!=null; x=x.tl, ds2=ds2.tl) {
+	
+	// DEBUG
+	if(x.hd.typ == null) BUG("Expression without a type.");
+
+	_ f_sz = sizeof_typ(trans_typ(x.hd.typ.v));
+	if(f_sz > 4) dword_align = true;
+	
+	_ padding = offset % f_sz;
+	
+	if(padding != 0) {
+	  _ pad = new_string(padding);
+	  ds2.tl = ^list(^.Dbytes(pad),ds2.tl);
+
+	  //DEBUG
+	  if(ds2 == null) BUG("ds2 == null");
+
+	  ds2 = ds2.tl;
+	}
+	
+	offset += f_sz + padding;
+      }
+    }
+
+    data = ^coerce(ds, null);
+
+  case NewUnion(x):
+    <con>list cons   = map(typ2con_roll, map(trans_typ,x.2.v));
+    int       tag    = Dict::lookup(Dict::lookup(ev.union_fields,x.1),x.3);
+    if(x.4 == null)
+      return DFOURBYTES(tag, RollTosum(con));
+    else {
+      _ d = (trans_global_data(ev,x.4.v)).2;
+      data = ^coerce(^list(^data_item.D4bytes(^coerce(tag,null)),
+                     ^list(d,null)),
+                     ^list(^coercion.RollTosum(con),null));
+    }
+  case NewExn*(v,eopt):
+    
+    if(eopt == null) {
+      // void exception -- return the one packet
+      // INVARIANT: Notice we need to use the same name here and in
+      // Poptaltypes when we make the one true packet!!!
+      return ^(con, ^data_item.Dlabel(
+                     ^coerce(tid_pkt(strconcat("?",
+				     strconcat(v, "?exn"))),
+			     null)),false);
+
+    } else {
+      // value exception -- construct a packet
+      id               exn_id   = exn_addr(v);
+      _                x        = trans_global_data(ev,eopt.v);
+      con              pack_con = cfield(x.1,^variance.ReadWrite);
+      data = ^coerce(^list(^data_item.Dlabel(^coerce(exn_id,null)),
+                     ^list(x.2,
+			   null)),
+                     ^list(^coercion.Pack(^(pack_con,con)),null));
+      dword_align = x.3;
+    }
+
+  default: BUG("bad type of global variable");
+  }
+  id lab = Id::id_new("gbl");
+  _ align = dword_align ? 8 : 4;
+  ev.file.globals = 
+    Dict::insert(ev.file.globals, lab, 
+		 ^cf_globaldecl(^scope.Static, typ,
+		                ^data_block(lab,align,^Opt(con),data)));
+  return ^(con, ^data_item.Dlabel(^coerce(lab,null)),false);
+#undef DFOURBYTES
+}
+}} // end open
+
+/////////////////////////// Translation Environment /////////////////////
+?struct trans_env {  
+  cf_file     file;
+
+  // file-level mappings
+  <type_name, <field_name,int>Dict::dict>Dict::dict struct_fields;
+  <type_name, <field_name,int>Dict::dict>Dict::dict union_fields;
+
+  trans_fun_env fe;
+}
+
+struct trans_fun_env {
+  trans_env global_env;
+  cf_function fn;
+  bool        is_main;
+
+  // Cyclone +
+  <trans_fun_env>Opt parent; // environment for function generating this one.
+  <trans_fun_env>Opt child;  // environment for function being generated.
+
+  cf_template current_templ; // destructively updated as necessary.
+
+  <cf_template>list pred_templates;
+  <cf_template>list succ_templates;
+  // List of templates that are at the top-level of closest enclosing 
+  // cut.  Note: All splices are enclosed in cuts.
+
+  // Cyclone -
+
+  cf_block current_blk;      // ditto
+
+  // Information that flows across blocks.
+
+  <int,*(BITVEC,int)>        Dict::dict partial_inits; 
+        // codomain contains bits that are set for initialized fields 
+        // and total number of fields 
+  <var,int>                 Dict::dict var_to_local;
+  <var,*(cf_block,cf_block)>Dict::dict label_to_blks; //continue blk, break blk
+
+  <var>list right_siblings_assign;
+
+  <cf_block>Opt current_handler;       
+  cf_block      current_break_dest;
+  cf_block      current_continue_dest;
+
+  // Range is local of array type.
+  // co-domain is pair of locals (singleton size, unpacked array)
+  // Used for optimization -- automatically unpacks arrays when they are
+  // defined.  Only works for user-defined arrays.  
+  // Therefore, a = b; gets tracked and later accesses a[i] = 5; are 
+  // efficient, but x.1[5] = 3; gets no special treatment.
+  <int,*(cf_operand,cf_operand)> Dict::dict unboxed_arrays;
+
+  // Cyclone +
+  <int,BITVEC>Dict::dict regions;
+  <int,<cf_hole>list>Dict::dict filled_holes;
+
+  cf_operand current_rgn; // Curent code region
+  <int>Xarray::xarray current_rgn_ops; // Template pointers dumped into region.
+
+  cf_operand current_template_ptr; 
+  // Template_ptr we are in the process of dumping.  Needed to process fills.
+  // Only used by the child, may be dummy value when no child active.
+
+  <cf_block>list pending_blks; // When these blocks were completed,
+  // the relationship of their destinations (in the same template or not) was
+  // unknown.  We must reexamine this and replace the transfer with a hole
+  // and a fill once this information becomes known.
+
+  <cf_template,cf_operand>Dict::dict templ_ops; // Amazingly there is a 
+  // mapping from templates to operands which dump them.  
+  // Needed to issue fill instructions.
+
+  // Cyclone -
+}
+static type_name typ2name(typ t) {
+  return (Popunify::compress(t)).NamedType.1; 
+}
+static <cf_typ>list typ2inst(typ t) {
+  return List::map(trans_typ,(Popunify::compress(t)).NamedType.2); 
+}
+static bool nullable(trans_fun_env ev, typ t) {
+  switch Popunify::compress(t) {
+  case CArrayType *(_,_,opt): return opt;
+  default:
+    return Dict::lookup(ev.global_env.file.structs, typ2name(t)).possibly_null;
+  }
+}
+static int field_to_offset(trans_fun_env ev, type_name t, field_name f) {
+  return Dict::lookup(Dict::lookup(ev.global_env.struct_fields, t), f);
+}
+static int union_variant(trans_fun_env ev, type_name t, field_name f) {
+  return Dict::lookup(Dict::lookup(ev.global_env.union_fields, t), f);
+}
+// CHANGE THE FOLLOWING TWO TO STRINGS
+static id exn_addr(var v) {
+  // the label corresponding to an exception name
+  return id_of_string(strconcat(v,"?exn"));
+}
+static id void_exn_packet(var v) {
+  // the global variable used for a void exception packet
+  return id_of_string(strconcat(v,"?exn?pkt"));
+}
+static cf_operand var2operand(trans_fun_env ev, var v, cf_typ t) {
+  try
+    return localoperand(Dict::lookup(ev.var_to_local, v));
+  handle y switch y {
+  case Dict::Absent:
+    switch t {
+    case Fn *(c,_,_,args):
+      return ^cf_operand.Global(Poptaltypes::tid_fun(v,c,args));
+    default:
+      return ^cf_operand.Global(Poptaltypes::tid_val(v));
+    }
+  }
+}
+
+static exception Void_type;
+static exception Context_dead;
+
+///////////////////////// Type Translation //////////////////////////
+
+  // There's not much to do here -- just encode Strings, Chars, and Bools
+  // another thing to do is drop field names on structs/unions, but that
+  // will be done elsewhere when translating the named types' information
+
+// here's some ad hoc sharing -- should really bite the bullet and
+// hash cons a la Shao
+
+static cf_typ unconstrained_t = ^cf_typ.Named(^("memType",null));
+
+cf_typ trans_typ(typ t) {
+
+  *(cf_typ,cf_capability) trans_typ_rw(typ t) {
+    return ^(trans_typ(t), ^cf_capability.ReadWrite);
+  };
+  
+  switch t {
+  case VoidType:   BUG("Bad type");
+  case Evar(x): 
+    if(x.2==null)    return unconstrained_t;
+    else             return trans_typ(x.2.v);
+  case VarType(x):   return ^cf_typ.Var(x);
+  case IntType(x):   return (x.1) ? s_int : u_int;
+  case BooleanType:  return ^cf_typ.Bool;          
+  case StringType:   return ^cf_typ.Array(^(null,u_char));
+  case CharType:     return u_int;
+  case FloatType:    return ^cf_typ.Float;
+  case DoubleType:   return ^cf_typ.Double;
+  case ArrayType(x): return ^cf_typ.Array(^(null,trans_typ(x.1)));
+  case CArrayType *(t,sz,opt):
+    _ t2 = trans_typ(t);
+    _ s = ^cf_sing.Int(sz);
+    _ t3 = ^.UnpackedArray(^(s,t2));
+    if(opt) t3 = ^cf_typ.Option(t3);
+    return t3;
+  case TupleType(x): return tuple_typ(x);
+  case ExnType:      return ^cf_typ.Exn;
+  case NamedType(x): return ^cf_typ.Named(^(x.1, map(trans_typ, x.2)));
+  case FnType   (x):
+    _ c = (x.1 == ^convention.Stdcall ? 
+	   ^cf_convention.Stdcall : ^cf_convention.Cdecl);
+    <cf_typ>Opt ret = null;
+    switch x.3 { case VoidType: ; default: ret = ^Opt(trans_typ(x.3)); }
+    return ^cf_typ.Fn(^(c,x.2, ret, map(trans_typ, x.4)));
+  case MutableTyp*(t): return trans_typ(t);
+  case UnresolvedTyId(_): BUG("UnresolvedTyId in trans_typ");
+  }
+}
+
+static cf_typ tuple_typ(<typ>list ts) {
+  int offset = 0;
+  _ rw = ^cf_capability.ReadWrite;
+  _ fs[] = new_array(length(ts),^cf_field(^cf_typ.Bool,rw,-1));
+  for(_ i = 0; ts != null; ts = ts.tl, i++) {
+    _ t = trans_typ(ts.hd);
+    _ sz = sizeof_typ(t);
+    
+    offset += (offset % sz); // padding
+    
+    fs[i] = ^cf_field(t,rw,offset);
+    offset += sz;
+  }
+  
+  return ^cf_typ.Tuple(fs);
+}
+
+// t must be an array type
+static cf_typ array_typ(typ t, int sz) {
+  switch t {
+  case Evar(x): 
+    if(x.2==null)  return unconstrained_t;
+    else           return trans_typ(x.2.v);
+  case ArrayType(x): return ^cf_typ.Array(^(^Opt(sz),trans_typ(x.1)));
+  default: BUG("poptranslate::array_typ");
+  }
+}
+
+static cf_typ unpacked_array_typ(typ t, int sz) {
+  switch t {
+  case Evar(x): 
+    if(x.2==null)  return unconstrained_t;
+    else           return trans_typ(x.2.v);
+  case ArrayType(x): 
+    return ^cf_typ.UnpackedArray(^(^cf_sing.Int(sz),trans_typ(x.1)));
+  case CArrayType(x):
+    return ^cf_typ.UnpackedArray(^(^cf_sing.Int(sz),trans_typ(x.1)));
+  default: BUG("poptranslate::unpacked_array_typ");
+  }  
+}
+static cf_capability trans_capability(capability c) {
+  switch c {
+  case ReadOnly:  return ^cf_capability.Read;
+  case ReadWrite: return ^cf_capability.ReadWrite;
+  }
+}
+
+///////////////////// Expression Translation /////////////////////////
+  // main function is trans_exp -- it works like this:
+  // * linearize the expression ex, returning the operand holding the result
+  // * passes down what right siblings may assign to so Var and AssignOp
+  //   know whether they need to make a copy
+  // * imperatively emits instructions
+  // * destructively updates ev.current_blk if control transfer occurs
+  // * raises Void_type if ex has VoidType and hence no operand
+  //     this is caught in Conditional and by trans_exp_top
+  // * raises Context_dead if ex causes non-local control xfer (i.e. Raise)
+  //     this prevents rest of ex from being translated
+  //     and is caught by trans_exp_top (used by trans_stmt)
+  // (Because of raises, realize that recursive calls may not return!)
+static int string_counter = 0;
+static int float_counter = 0;
+static int double_counter = 0;
+
+static cf_operand trans_exp(trans_fun_env ev, exp ex) { 
+  raw_exp e = ex.raw_exp;
+  typ     t = ex.typ.v;
+  cf_operand ans, r, r2;
+
+  // since many branches will need to muck with right_siblings_assign,
+  // we'll save and restore this once and for all.  Notice though that if
+  // an exception is raised, the restoration won't occur.
+  // It also means the switch branches should NOT return; they should assign
+  // to ans.
+  _ current_siblings_assign = ev.right_siblings_assign;
+  switch e {
+ 
+  case Const(c): 
+    int  val; // appease definite assignment
+    bool is_string = false;
+    switch c {
+    case String(x): 
+      // inefficient but correct (not how old compiler does it)
+      // should probably make necessary additions to Popil!!!
+      is_string = true;
+      string name = strconcat("str",string_of_int(string_counter++));
+      trans_global(ev.global_env, 
+		   ^(^scope.Static, name, ^typ.StringType, ^Opt(ex)));
+      ans = ^cf_operand.Global(Poptaltypes::tid_val(name));
+    case Int   (x): 
+      val = x;       
+      ans = constoperand(newconst(ev.fn, val, trans_typ(t)));
+    case Bool  (x): 
+      val = x ? 1 : 0;
+      ans = constoperand(newconst(ev.fn, val, trans_typ(t)));
+    case Char  (x): 
+      val = ord(x); 
+      ans = constoperand(newconst(ev.fn, val, trans_typ(t)));
+    case Null:      
+      val = 0;
+      ans = constoperand(newconst(ev.fn, val, trans_typ(t)));
+    case Float (x):
+      if(x==1.0 || x==0.0) {
+	_ op = (x==1.0) ? ^.OneF : ^.ZeroF;
+	ans = localoperand(newtemp(ev.fn,^cf_typ.Float));
+	emit(ev,^.Nullop(^(op,ans)));
+      } 
+      else {
+	_ name = strconcat("flt",string_of_int(float_counter++));
+	trans_global(ev.global_env,^(^scope.Static, name,^.FloatType,^Opt(ex)));
+	ans = ^.Global(Poptaltypes::tid_val(name));
+      }
+    case Double (x):
+      if(x==1.0 || x==0.0) {
+	_ op = (x==1.0) ? ^.OneF : ^.ZeroF;
+	ans = localoperand(newtemp(ev.fn,^cf_typ.Double));
+	emit(ev,^.Nullop(^(op,ans)));
+      } 
+      else {      
+      _ name = strconcat("dbl",string_of_int(double_counter++));
+      trans_global(ev.global_env,^(^scope.Static, name,^.DoubleType, ^Opt(ex)));
+      ans = ^.Global(Poptaltypes::tid_val(name));
+      }
+    }     
+
+  case ConstArray*(el,_):
+    int num_elmts = length(el);
+    <*(int,exp)>list es = null;
+
+    for (int i=0; el != null; el = el.tl) {
+      es = ^list(^(i,el.hd),es);
+      ++i;
+    }
+
+    _ ua_typ = unpacked_array_typ(t,num_elmts);
+    cf_operand ua = localoperand(newtemp(ev.fn, ua_typ));
+
+    emit(ev, ^cf_instruction.New(ua));
+    // initialize the elements
+    trans_init_fields(ev, List::rev(es), ua, 0, num_elmts);
+    
+    _ sing_typ = ^cf_typ.Sing(^cf_sing.Int(num_elmts));
+    
+    _ pre_typ = ^cf_typ.Tuple({^cf_field(sing_typ,^cf_capability.Read,0),
+			       ^cf_field(ua_typ,^cf_capability.Read,4)});
+
+    _ pre_ans = localoperand(newtemp(ev.fn,pre_typ));
+
+    // create the space -- ans has the array type, but is uninitialized
+    ans = localoperand(newtemp(ev.fn, array_typ(t,num_elmts)));
+    emit(ev, ^cf_instruction.New(pre_ans));
+    // initialize the tag
+    r = constoperand(newconst(ev.fn, num_elmts, sing_typ))
+;
+    emit(ev, ^cf_instruction.AssignField(^(0, pre_ans, r)));
+    emit(ev, ^cf_instruction.AssignField(^(1, pre_ans, ua)));
+    emit(ev, ^cf_instruction.TypedCopy(^(ans,pre_ans,^.InitRoll)));
+    
+  case ConstCArray(el):
+    int num_elmts = length(el);
+    <*(int,exp)>list es = null;
+
+    for (int i=0; el != null; el = el.tl) {
+      es = ^list(^(i,el.hd),es);
+      ++i;
+    }
+
+    _ ua_typ = unpacked_array_typ(t,num_elmts);
+    ans = localoperand(newtemp(ev.fn, ua_typ));
+
+    emit(ev, ^cf_instruction.New(ans));
+    // initialize the elements
+    trans_init_fields(ev, List::rev(es), ans, 0, num_elmts);
+    
+  case Var(v):
+    //       print_string(v); print_string("\n");
+    _ t2 = trans_typ(t);
+    r = var2operand(ev,v,t2);
+    if(List::mem(strcmp,current_siblings_assign,v)) {
+      // this print is for debugging only
+      printf("\nMaking copy because of right sibling assign: %s\n", v);
+      ans = localoperand(newtemp(ev.fn, t2));
+      emit(ev, ^cf_instruction.Copy(^(ans,r)));
+    } else 
+      ans = r;
+    // still need to copy globals since sibling stuff doesn't reason about them
+    // but not functions b/c they're immutable
+    switch ans {
+    case Global(_): 
+      switch Popunify::compress(t) {
+      case FnType(_): ;
+      default: 
+	r = localoperand(newtemp(ev.fn, trans_typ(t)));
+	emit(ev, ^cf_instruction.Copy(^(r,ans)));
+	ans = r;
+      }
+    default: ;
+    } 
+
+  case Primop*(op,es):
+    cf_typ ans_t = trans_typ(t);
+    ans = localoperand(newtemp(ev.fn, ans_t)); // dead if constant-fold
+
+    if (es == null) {
+      emit(ev, ^cf_instruction.Nullop(^(op, ans)));
+    }
+    else if (es.tl == null) {    // arity 1
+      // Ord and Chr are no-ops, so we must not replace siblings in 
+      // those cases
+      switch op {
+      case Ord: ev.right_siblings_assign = current_siblings_assign;
+      case Chr: ev.right_siblings_assign = current_siblings_assign;
+      default:  ev.right_siblings_assign = null;
+      }
+      r = trans_exp(ev, es.hd);
+      switch op {
+      case Size: 
+	// FMS: Eliminating ArraySize caused a massive code explosion here
+	// and the compiler to temporarily generate worse code.
+	// I believe we can overcome these problems.  The advantage of this
+	// approach is that it exposes the internals, which means that a 
+	// future optimization can optimize the check.
+	// Unpack the array, extract the size, pack the size as an int.
+	// This code is similar to trans_array_op but it wasn't clear how to
+	// factor it.
+
+	_ r_unboxed;
+	_ r_num = -1;
+	switch r {
+	case Local(i) : 
+	  r_num = i; 
+	  r_unboxed = Dict::member(ev.unboxed_arrays,i);
+	default: 
+	  r_unboxed = false;
+	}
+	_ s_len;
+	if(r_unboxed) {
+	  s_len = (Dict::lookup(ev.unboxed_arrays,r_num)).1;
+	} 
+	else {
+	  _ tv_len = newtyvar();
+	  _ s_len_v = ^cf_sing.Var(tv_len);
+	  _ s_len_ty = ^.Sing(s_len_v);
+	  
+	  _ b_ty;
+	  switch operand_type(ev.fn, r) {
+	  case Array*(_,t) : 
+	    b_ty = ^cf_typ.UnpackedArray(^(s_len_v,t));
+	  default: BUG("Size, bad array type");
+	  }
+	  
+	  _ unp_arr_ty = ^cf_typ.Tuple({^cf_field(s_len_ty,^cf_capability.Read,0),
+					^cf_field(b_ty,^cf_capability.Read,4)});
+	  _ unp_arr = localoperand(newtemp(ev.fn,unp_arr_ty));
+	  s_len = localoperand(newtemp(ev.fn, s_len_ty));
+	
+	  emit(ev, ^.TypedCopy(^(unp_arr, r, ^.Unpacking(^list(tv_len,null)))));
+	  emit(ev, ^.SelectField(^(0,s_len,unp_arr)));
+	  
+	  ev.fn.sing_tyvars = ^list(tv_len, ev.fn.sing_tyvars);
+	}
+
+	emit(ev, ^.TypedCopy(^(ans,s_len,^.Packing(null))));
+
+      case Ord:  ans = r; // do nothing -- chars are B4s 
+      case Chr:  ans = r; // do nothing -- chars are B4s
+      default:   emit(ev, ^cf_instruction.Unop(^(op, ans, r)));
+      }
+    }
+    else if (es.tl.tl == null) { // arity 2
+      // do siblings appropriately, r and r2 not used if constant-fold
+      ev.right_siblings_assign = es.tl.hd.assigned_to;
+      r  = trans_exp(ev, es.hd);
+      ev.right_siblings_assign = null;
+      r2 = trans_exp(ev, es.tl.hd);
+
+      // now with constant-folding (should add +0, -0, *1 later)
+      // as well as some easy strength reduction
+      bool no_dice = false;
+      switch r {
+      case Const(i1):
+	switch r2 {
+	case Const(i2):
+	  int val1 = Xarray::get(ev.fn.all_consts, i1).val;
+	  int val2 = Xarray::get(ev.fn.all_consts, i2).val;
+	  int v    = 0;
+	  switch op {
+	  case Plus:   v = val1+val2;
+	  case Times:  v = val1*val2;
+	  case TimesU: 
+	    v = (:signed int)((:unsigned int)val1 * (:unsigned int)val2);
+	  case Minus:  v = val1-val2;
+	  case Bitand:     v = val1 &   val2;
+	  case Bitor:      v = val1 |   val2;
+	  case Bitxor:     v = val1 ^   val2;
+	  case Bitlshift:  v = val1 <<  val2;
+	  case Bitlrshift: v = val1 >>> val2;
+	  case Bitarshift: v = val1 >>  val2;
+             // for the next four, should warn about zero
+	  case Div:    if(val2==0) no_dice = true; else v = val1 / val2;
+	  case Mod:    if(val2==0) no_dice = true; else v = val1 % val2;
+	  case DivU:   
+	    if(val2==0) no_dice = true; 
+	    else v = (:signed int)((:unsigned int)val1 / (:unsigned int)val2);
+	  case ModU:   
+	    if(val2==0) no_dice = true; 
+	    else v = (:signed int)((:unsigned int)val1 % (:unsigned int)val2);
+	  default: no_dice = true;
+	  }
+	  if(!no_dice)
+	    ans = constoperand(newconst(ev.fn, v, ans_t));
+	default: no_dice = true;
+	}
+      default: no_dice = true;
+      }
+      if(no_dice)
+	emit(ev, ^cf_instruction.Binop(^(op, ans, r, r2)));
+    } else
+      BUG("Translation: primop arity > 2");
+  
+  case Conditional*(e1,e2,e3): 
+    // set up blocks, edges to branches
+    cf_block true_blk  = create_block(ev, id_new("ifTrue"));
+    cf_block false_blk = create_block(ev, id_new("ifFalse"));
+    cf_block merge_blk = create_block(ev, id_new("ifMerge"));
+    // we always put the answer in a new temp
+    ev.right_siblings_assign = null;
+    // create answer iff not void
+    bool is_void = false;
+    switch t { case VoidType: is_void = true; default: ; }
+    ans = localoperand(is_void ? 0 : newtemp(ev.fn, trans_typ(t)));// 0 a dummy
+    // translate parts and return appropriately
+    trans_test(ev, e1, true_blk, false_blk);
+    ground_block(ev, true_blk);
+    ground_block(ev, false_blk);
+
+    _ ch = checkpoint_env(ev);
+
+    bool true_dead  = trans_exp_branch(ev, true_blk,  e2, ans, merge_blk);
+
+    restore_env(ev, ch);
+    bool false_dead = trans_exp_branch(ev, false_blk, e3, ans, merge_blk);
+
+    ground_block(ev,merge_blk);
+    fix_block(ev,merge_blk);
+
+    ev.current_blk = merge_blk;
+
+    process_pending_blocks(ev);
+
+    if (true_dead && false_dead) raise Context_dead();
+    else if (is_void)            raise Void_type();
+
+  case AssignOp*(x1,x2,x3):
+    ans = trans_lhs_exp(ev, x1, x2, x3);
+  
+  case FunCall*(f,tl,term_args):
+    <cf_typ>list typ_args  = map(trans_typ, tl.v);
+    cf_block     afterblk  = create_block(ev, id_new("ret"));
+    // figure out assigned_to information
+    <var>list null_vl = null;
+    <<var>list>list assigned_rights = 
+	List::fold_right(
+          fun <<var>list>list f(exp e, <<var>list>list acc) {
+	    return ^list(append(e.assigned_to,acc.hd),acc);
+	  },
+	  term_args, ^list(null_vl,null));
+    // eval function expression
+    ev.right_siblings_assign = assigned_rights.hd;
+    r = trans_exp(ev, f);
+    
+    assigned_rights = assigned_rights.tl;
+    // eval term_args left to right
+    <cf_operand>list operand_args = null;
+    while(term_args != null) {
+      ev.right_siblings_assign = assigned_rights.hd;
+      r2 = trans_exp(ev,term_args.hd);
+      operand_args = ^list(r2,operand_args);
+      assigned_rights = assigned_rights.tl;
+      term_args       = term_args.tl;
+    }
+    operand_args = List::rev(operand_args);
+    // do the call
+    add_edge(ev.current_blk, afterblk);
+
+    ground_block(ev,afterblk);
+
+    if(ev.current_handler != null)
+      add_edge(ev.current_blk, ev.current_handler.v);
+
+    fix_block(ev,afterblk);
+
+    switch t {
+    case VoidType:
+      _ blk = ev.current_blk;
+      ev.current_blk.trans =
+	^cf_transfer.Call(^(null, r, typ_args, operand_args,
+			    ^cf_dest.Known(afterblk)));
+      ev.current_blk = afterblk;
+      
+      correct_transfer(ev,blk);
+
+      raise Void_type();
+    default:
+      ans = localoperand(newtemp(ev.fn, trans_typ(t)));
+      _ blk = ev.current_blk;
+      ev.current_blk.trans =
+	^cf_transfer.Call(^(^Opt(ans), r, typ_args, operand_args,
+	                     ^cf_dest.Known(afterblk)));
+      ev.current_blk = afterblk;
+      
+      correct_transfer(ev,blk);
+    }
+
+  case TypInst*(e,tl):
+    // always makes a copy to a fresh variable
+    ev.right_siblings_assign = null;
+    r   = trans_exp(ev, e);
+    ans = localoperand(newtemp(ev.fn, trans_typ(t)));
+    emit(ev, ^cf_instruction.TypedCopy(
+	       ^(ans, r, ^cf_typedcopy.Instantiation(map(trans_typ, tl)))));
+    return ans;
+
+  case NewStruct*(n,tl,field_exps):
+    _ sd    = Dict::lookup(ev.global_env.file.structs,n);
+    _ names = sd.field_names;
+    _ ans_typ = trans_typ(t);
+    ans = localoperand(newtemp(ev.fn, ans_typ));
+
+    _ tyinst = List::zip(sd.tyvars, ans_typ.Named.2);
+    _ old_fields = sd.fields;
+    _ fields = {:cf_field};
+    if(size(old_fields) > 0) {
+      fields = new_array(size(old_fields),old_fields[0]);
+      for(_ i=0; i < size(old_fields); i++) {
+	_ f = old_fields[i];
+	fields[i] = ^cf_field(typ_subst(tyinst,f.typ), f.cap, f.offset);
+      }
+    }
+    _ pre_ans = localoperand(newtemp(ev.fn, ^cf_typ.Tuple(fields)));
+
+    emit(ev, ^cf_instruction.New(pre_ans));
+    <*(int,exp)>list es = null;
+    if (field_exps != null && field_exps.hd.1 != null) {
+      for (_ fes = field_exps; fes != null; fes = fes.tl) {
+	for (int index = 0; index < size(names); index++) {
+	  if (strcmp(names[index],fes.hd.1.v) == 0) {
+	    es = ^list(^(index,fes.hd.2),es);
+	    break;
+	  }
+	}
+      }
+    } else {
+      int index = 0;
+      for (_ fes = field_exps; fes != null; fes = fes.tl) {
+	es = ^list(^(index,fes.hd.2),es);
+	++index;
+      }
+    }
+    es = List::rev(es);
+    trans_init_fields(ev, es, pre_ans, 0, List::length(es));
+    emit(ev, ^cf_instruction.TypedCopy(^(ans, pre_ans, ^.InitRoll)));    
+
+  case StructMember*(e,fn):
+    // always projects to a fresh variable
+    ev.right_siblings_assign = null;
+    r2 = trans_exp(ev, e);
+    typ struct_typ = e.typ.v;
+    r2 = non_memory(ev, r2, trans_typ(struct_typ));
+    null_check(ev, struct_typ, r2);
+
+    // do the projection
+    _ field_num = field_to_offset(ev, typ2name(struct_typ), fn);
+    ans       = localoperand(newtemp(ev.fn, trans_typ(t)));
+    emit(ev, ^cf_instruction.SelectField(^(field_num, ans, r2)));
+
+  case NewUnion*(_,_,fn,eopt):
+    // always puts answer somewhere fresh
+    ev.right_siblings_assign = null;
+    int tag = union_variant(ev, typ2name(t), fn);
+    if (eopt == null)
+      // void case
+      ans = constoperand(newconst(ev.fn, tag, trans_typ(t)));
+    else {
+      // value case
+      _ tag_typ = ^cf_typ.Sing(^cf_sing.Int(tag));
+      _ value_typ = trans_typ(eopt.v.typ.v);
+      _ pre_typ = ^cf_typ.Tuple({^cf_field(  tag_typ,^cf_capability.Read,0),
+				 ^cf_field(value_typ,^cf_capability.Read,4)});
+      ans = localoperand(newtemp(ev.fn, trans_typ(t)));
+      _ pre_ans = localoperand(newtemp(ev.fn, pre_typ));
+      r2 = constoperand(newconst(ev.fn,tag,tag_typ));
+      r  = trans_exp(ev, eopt.v);
+      emit(ev, ^cf_instruction.New        (pre_ans));
+      emit(ev, ^cf_instruction.AssignField(^(0, pre_ans, r2)));
+      emit(ev, ^cf_instruction.AssignField(^(1, pre_ans, r)));
+      emit(ev, ^cf_instruction.TypedCopy(^(ans,pre_ans,^.InitRoll)));
+    }
+
+  case UnionMember(x): 
+    // answer goes in a new temporary
+    ev.right_siblings_assign = null;
+    r2 = trans_exp(ev, x.1);
+    // necessary for regalloc reasons
+    r = localoperand(newtemp(ev.fn, trans_typ(x.1.typ.v)));
+    emit(ev, ^cf_instruction.Copy(^(r, r2)));
+
+    // set up control transfer for success variant
+    cf_block right_blk  = create_block(ev, id_new("right"));
+           _ right_dest = ^cf_dest.Known(right_blk);
+    add_edge(ev.current_blk, right_blk);
+
+    if(ev.current_handler != null)
+      add_edge(ev.current_blk, ev.current_handler.v);
+
+    ground_block(ev,right_blk);
+    
+    // rest depends on whether we're testing for a void or value variant
+    int tag = union_variant(ev, typ2name(x.1.typ.v), x.2);
+    switch t {
+    case VoidType: // (wasn't allowed in OCaml implementation)
+      // (r can't be global, move if necessary)
+      ev.current_blk.trans = ^cf_transfer.UnionCheck(^(r,tag,true,right_dest));
+      ev.current_blk = right_blk;
+      fix_block(ev, right_blk);
+      raise Void_type();
+    default: 
+      // switch on the tag
+      _ blk = ev.current_blk;
+      ev.current_blk.trans = ^cf_transfer.UnionCheck(^(r,tag,false,right_dest));
+      ev.current_blk = right_blk;
+      fix_block(ev,right_blk);
+      
+      correct_transfer(ev,blk);
+
+      //in right block, refine the type of the union and project the value field
+      ans = localoperand(newtemp(ev.fn, trans_typ(t)));
+      refine_operand(ev.current_blk, r, 
+		     ^cf_refinement.ValueVariant(tag));
+      emit(ev, ^cf_instruction.SelectField(^(1, ans, r)));
+    }
+
+  case NewTuple(x):
+    ans = localoperand(newtemp(ev.fn, trans_typ(t)));
+    emit(ev, ^cf_instruction.New(ans));
+    <*(int,exp)>list es = null;
+    for (int i=0; x != null; x = x.tl) {
+      es = ^list(^(i,x.hd),es);
+      ++i;
+    }
+    es = List::rev(es);
+    trans_init_fields(ev, es, ans, 0, List::length(es));
+
+  case TupleMember*(e1,i):
+    // answer always goes somewhere fresh
+    ev.right_siblings_assign = null;
+    r = trans_exp(ev, e1);
+    r = non_memory(ev, r, trans_typ(e1.typ.v));
+    ans = localoperand(newtemp(ev.fn, trans_typ(t)));
+    emit(ev, ^cf_instruction.SelectField(^(i-1, ans, r)));
+
+  case Subscript*(e1,e2):
+    // answer always goes somewhere fresh
+    ev.right_siblings_assign = null;
+    r   = trans_exp(ev, e1);
+    r2  = trans_exp(ev, e2);
+    ans = localoperand(newtemp(ev.fn, trans_typ(t)));
+    trans_array_op(ev,r,true,r2,ans);
+    
+  case CSubscript*(e1,e2):
+    ev.right_siblings_assign = null;
+    r  = trans_exp(ev,e1);
+    r2 = trans_exp(ev,e2);
+    ans = localoperand(newtemp(ev.fn, trans_typ(t)));
+    trans_carray_op(ev,e1.typ.v,r,true,r2,ans);
+
+  case Codegen(x):
+    _ old_child = ev.child; // Must restore at end!
+    _ old_rgn = ev.current_rgn; 
+    _ old_rgn_ops = ev.current_rgn_ops;
+
+    _ fe = new_fun_env(ev.global_env,ev.global_env.file);
+
+    ev.child = ^Opt(fe);
+    fe.parent =^Opt(ev);
+    
+    // allocate new codergn
+    _ fn = ev.fn;
+    _ rgn_var = Xarray::length(fn.code_regions); // Will be the next one.
+    _ rgn_typ = ^cf_typ.CodeRgn(rgn_var);
+    _ rgn = localoperand(newtemp(ev.fn, rgn_typ));
+    ev.regions = Dict::insert(ev.regions,rgn_var,{:int});
+
+    ev.current_rgn = rgn;
+    ev.current_rgn_ops = Xarray::create_empty();
+
+    emit(ev,^cf_instruction.Start(rgn));
+
+    _ file = ev.global_env.file;
+    _ func = trans_fun(ev.global_env,fe,x);
+
+    
+    // Add the now completed code region to the function.
+    Xarray::add(fn.code_regions,^(ev.current_rgn_ops,func));
+
+    // All holes should be filled at this point.  
+    file.rtcg_funs = Dict::insert(file.rtcg_funs,
+				  Poptaltypes::tid_fun(x.name,
+						       func.convention,
+						       func.arg_typs),
+				  func);
+
+    ans = localoperand(newtemp(ev.fn,trans_typ(t)));
+    emit(ev,^cf_instruction.End(^(ans,rgn)));
+
+    ev.regions = Dict::delete(ev.regions,rgn_var); // Remove the region.
+
+    ev.child = old_child;      // Restoring child.
+    ev.current_rgn = old_rgn; // Restoring region pointer.
+    ev.current_rgn_ops = old_rgn_ops; // Restoring.
+  case Fill(x):    
+    _ new_ev = ev.parent.v; // NULL here means not inside a template.
+
+    _ r = trans_exp(new_ev,x); // XXX - may not return.  
+    // If x is void or raises this code may not behave well.
+
+    _ ct = trans_typ(t);
+
+    _ hole = add_hole(ev,^cf_holeinfo.Value(ct));
+   
+    emit(new_ev,^cf_instruction.Fill(^(new_ev.current_rgn,
+				       new_ev.current_template_ptr,
+				       hole,
+				       r)));
+
+    _ templ_var = get_templ_ptr_var(new_ev);
+    _ filled_holes;
+    // XXX - should probably abstract hole filling operation.
+    try 
+       filled_holes = Dict::lookup(new_ev.filled_holes,templ_var);
+    handle y switch y { 
+    case Dict::Absent: BUG("Template improperly initialized."); 
+    }
+    
+    new_ev.filled_holes = Dict::insert(new_ev.filled_holes,templ_var,
+				       ^list(hole,filled_holes));
+
+    ans = localoperand(newtemp(ev.fn,ct));
+    emit(ev,^cf_instruction.Hole(^(hole,ans)));
+
+  case NewExn*(v,eopt):
+    // what we do depends on if there's a packet or not
+    // (in old implementation there was always a packet, but we'll try being
+    //  smarter)
+    ev.right_siblings_assign = null;
+    if (eopt == null)
+      return ^cf_operand.Global(void_exn_packet(v));
+    
+    _ packet_typ = trans_typ(eopt.v.typ.v);
+    _ exn_typ = ^cf_typ.Exn;
+
+    id exn_id = exn_addr(v);
+
+    _ exnname_typ = ^cf_typ.ExnName(exn_id);
+    _ pre_typ = ^cf_typ.Tuple({^cf_field(exnname_typ, ^cf_capability.Read, 0), 
+			       ^cf_field( packet_typ, ^cf_capability.Read, 4)});
+    _ pre_ans = localoperand(newtemp(ev.fn,pre_typ));
+
+    ans = localoperand(newtemp(ev.fn, exn_typ));
+    
+    r2  = localoperand(newtemp(ev.fn, exnname_typ));
+    // eval the packet
+    r = trans_exp(ev, eopt.v);
+
+    // get the space and initialize the fields (have to move name thru reg)
+    emit(ev, ^cf_instruction.New        (pre_ans));
+    emit(ev, ^cf_instruction.Copy       (^(r2,    ^cf_operand.Global(exn_id))));
+    emit(ev, ^cf_instruction.AssignField(^(0,pre_ans, r2)));
+    emit(ev, ^cf_instruction.AssignField(^(1,pre_ans, r)));
+    emit(ev, ^cf_instruction.TypedCopy(^(ans,pre_ans,^.InitRoll)));
+    
+  case Raise(x):
+    // even if there are right sibling assignments, they won't be evaluated
+    ev.right_siblings_assign = null;
+    r = trans_exp(ev, x);
+    trans_raise(ev, r);
+    raise Context_dead();
+
+  case SeqExp(el): 
+    // note: list cannot be null
+    // figure out assigned_to information
+    <var>list null_vl = null;
+    <<var>list>list assigned_rights = 
+	List::fold_right(
+          fun <<var>list>list f(exp e, <<var>list>list acc) {
+	    return ^list(append(e.assigned_to,acc.hd),acc);
+	  },
+	 el.tl, ^list(null_vl,null));
+    
+    for(; el.tl != null; el = el.tl, assigned_rights = assigned_rights.tl) {
+      try {
+	ev.right_siblings_assign = assigned_rights.hd;
+	trans_exp(ev, el.hd);
+      }
+      handle y switch y {
+      case Void_type:    ;
+      case Context_dead: raise(y);
+      }
+    }
+    ans = trans_exp(ev,el.hd);
+
+  case Nop: raise Void_type();
+    
+  case Cast*(t,e):
+    if(is_cast_nop(e.typ.v,t)) {
+      ev.right_siblings_assign = current_siblings_assign;
+      ans = trans_exp(ev,e);
+    } else {
+      ev.right_siblings_assign = null;
+      r = trans_exp(ev,e);
+      ans = trans_cast(ev,r,e.typ.v,t);
+    }
+  case NewAbstype*(n,_,exist_types_opt,e):
+    // we make a copy b/c the type changes
+    ev.right_siblings_assign = null;
+    r = trans_exp(ev, e);
+    ans = localoperand(newtemp(ev.fn, trans_typ(t)));
+    emit(ev, ^cf_instruction.TypedCopy(^(ans, r,
+	       ^cf_typedcopy.Packing(List::map(trans_typ,exist_types_opt.v)))));
+  case Fun(_):
+    BUG("inner function found during translation");
+  }
+  ev.right_siblings_assign = current_siblings_assign;
+  return ans;
+}
+static bool trans_exp_branch(trans_fun_env ev, cf_block start, exp e, 
+			     cf_operand dest_exp, cf_block dest_block) {
+  // used by Conditional case of trans_exp
+  ev.current_blk = start;
+  fix_block(ev,start);
+
+  try {
+    cf_operand r = trans_exp(ev, e);
+    emit(ev, ^cf_instruction.Copy(^(dest_exp,r)));
+    jump(ev.current_blk, dest_block);
+    correct_transfer(ev,ev.current_blk);
+    return false;
+  } handle y switch y {
+  case Context_dead: return true;
+  case Void_type: 
+    jump(ev.current_blk, dest_block); 
+    correct_transfer(ev,ev.current_blk);
+    return false;
+  }
+}
+
+static void trans_init_fields(trans_fun_env ev, <*(int,exp)>list el, 
+			      cf_operand ptr,int start_field,int num_fields) {
+  if(el==null)
+    return;
+  // used by ConstArray, NewStruct, NewTuple cases of trans_exp
+  cf_operand r;
+  // determine right sibling info
+  <var>list null_vl = null;
+  <<var>list>list assigned_rights = 
+      List::fold_right(
+	   fun <<var>list>list f(*(int,exp) e, <<var>list>list acc) {
+	     return ^list(append(e.2.assigned_to,acc.hd),acc);
+	   },
+	   el.tl, ^list(null_vl,null));
+
+  BITVEC init_fields = Bitvec::new_empty(num_fields);
+  for (int i=0; i < start_field; ++i)
+    Bitvec::set(init_fields,i);
+  for (; el != null; el = el.tl, assigned_rights=assigned_rights.tl) {
+    int i = el.hd.1;
+    exp e = el.hd.2;
+    ev.right_siblings_assign = assigned_rights.hd;
+    if (Bitvec::get(init_fields,i)) 
+      BUG("field is already initialized");
+    _ local_init_fields = ^(Bitvec::new_copy(init_fields),num_fields);
+    // translate next operand, under approrpriate partial init info
+    ev.partial_inits = 
+      Dict::insert(ev.partial_inits, ptr.Local, local_init_fields);
+    try
+      r = trans_exp(ev, el.hd.2);
+    handle y {
+      ev.partial_inits = Dict::delete(ev.partial_inits, ptr.Local);
+      raise(y);
+    }
+    // initialize the field
+    emit(ev, ^cf_instruction.AssignField(^(i, ptr, r)));
+    // record that the field is initialized
+    Bitvec::set(init_fields,i);
+  }
+  ev.partial_inits = Dict::delete(ev.partial_inits, ptr.Local);
+}
+
+static void trans_test(trans_fun_env ev, exp test, 
+		       cf_block true_blk, cf_block false_blk) {
+  // this might be repeated work if the result of middle-end constant
+  // propagation is to do this sort of thing anyway.  But at least keeps
+  // the size of the IR down.
+
+  // also the conversion to NullBranch is quite useful for make null-check
+  // elimination obvious
+  switch test.raw_exp {
+  case Const(x):
+    if (x.Bool) {
+      add_edge(ev.current_blk, true_blk);
+      ev.current_blk.trans = ^cf_transfer.Uncond(^cf_dest.Known(true_blk));
+    } else {
+      add_edge(ev.current_blk, false_blk);
+      ev.current_blk.trans = ^cf_transfer.Uncond(^cf_dest.Known(false_blk));
+    }
+    correct_transfer(ev,ev.current_blk);
+    return;
+  case Primop*(op,el):
+    bool is_comparison = false;
+    switch op {
+    case Not:  trans_test(ev, el.hd, false_blk, true_blk); return;
+    case Eq:   is_comparison = true;
+    case Neq:  is_comparison = true;
+    case Gt:   is_comparison = true;
+    case GtU:  is_comparison = true;
+    case Lt:   is_comparison = true;
+    case LtU:  is_comparison = true;
+    case Gte:  is_comparison = true;
+    case GteU: is_comparison = true;
+    case Lte:  is_comparison = true;
+    case LteU: is_comparison = true;
+    default:   ;
+    }
+    if(is_comparison) {
+      // improve this (by flipping around test and constant-folding)
+      ev.right_siblings_assign = el.tl.hd.assigned_to;
+      cf_operand r1 = trans_exp(ev, el.hd);
+      ev.right_siblings_assign = null;
+      cf_operand r2 = trans_exp(ev, el.tl.hd);
+      add_edge(ev.current_blk, true_blk);
+      add_edge(ev.current_blk, false_blk);
+      bool first_null  = false;
+      bool second_null = false;
+      switch el.hd.raw_exp {
+      case Const(y): switch y { case Null: first_null = true; default: ;}
+      default:       ;
+      }
+      switch el.tl.hd.raw_exp {
+      case Const(y): switch y { case Null: second_null = true; default: ;}
+      default:       ;
+      }
+      bool do_null_branch = false;
+      if (first_null)
+	switch r2 {
+	case Local(x): do_null_branch = true;
+	default:       ;
+      } else if (second_null)
+	switch r1 {
+	case Local(x): do_null_branch = true;
+	default: ;
+      }
+      _ true_dest = ^cf_dest.Known(true_blk);
+      _ false_dest = ^cf_dest.Known(false_blk);
+      if(do_null_branch) {
+	cf_operand r = first_null ? r2 : r1;
+	switch op {
+	case Eq:  
+	  ev.current_blk.trans = 
+	    ^cf_transfer.NullBranch(^(r, false_dest, true_dest));	
+	case Neq: 
+	  ev.current_blk.trans =
+	    ^cf_transfer.NullBranch(^(r, true_dest,  false_dest));
+	default: BUG("comparison of null not equality");
+	}
+      } else
+	ev.current_blk.trans = 
+	  ^cf_transfer.Cond(^(true_dest, false_dest, r1, r2, op));
+      correct_transfer(ev,ev.current_blk);
+      return;
+    }
+  case Conditional*(e1,e2,e3):
+    switch e3.raw_exp {
+    case Const(y):
+      switch y {
+      case Bool(b):
+	if (!b) { // it's an and
+	  cf_block true_blk2 = create_block(ev, id_new("condtrue"));
+
+	  trans_test(ev, e1, true_blk2, false_blk);
+	  ground_block(ev,true_blk2);
+
+	  ev.current_blk = true_blk2;
+	  fix_block(ev,true_blk2);
+	  trans_test(ev, e2, true_blk, false_blk);
+	  return;
+	}
+      default: ;
+      }
+    default: 
+      switch e2.raw_exp {
+      case Const(y):
+	switch y {
+	case Bool(b):
+	  if(b) { // it's an or
+	    cf_block false_blk2 = create_block(ev, id_new("condfalse"));
+	    trans_test(ev, e1, true_blk, false_blk2);
+	    ev.current_blk = false_blk2;
+	    ground_block(ev,false_blk2);
+	    fix_block(ev,false_blk2);
+	    trans_test(ev, e3, true_blk, false_blk);
+	    return;
+	  }
+	default: ;
+	}
+      default: ;
+      }
+    }
+    // can add baked in support for other Conditional here
+  default: ;
+  }
+  cf_operand r       = trans_exp(ev, test);
+  cf_operand true_op = constoperand(newconst(ev.fn, 1, ^cf_typ.Bool));
+  add_edge(ev.current_blk, true_blk);
+  add_edge(ev.current_blk, false_blk);
+  _ true_dest = ^cf_dest.Known(true_blk);
+  _ false_dest = ^cf_dest.Known(false_blk);
+  
+  ev.current_blk.trans =
+    ^cf_transfer.Cond(^(true_dest, false_dest, r, true_op, ^primop.Eq));
+  correct_transfer(ev,ev.current_blk);
+}   
+static cf_operand trans_lhs_exp(trans_fun_env ev, exp lhs, <primop>Opt p, exp rhs) {
+  // used by AssignOp case of trans_exp
+  cf_operand r, r3, r4, rhs_op;
+  cf_operand r2 = ^cf_operand.Const(0); // appeases definite assignment
+  // strip off the lhs casts (if any)
+  <typ>list lhs_casts_rev = null;
+  if (p != null) 
+    while (true) {
+      switch lhs.raw_exp {
+      case Cast(x):
+  	lhs_casts_rev = ^list(x.1, lhs_casts_rev);
+  	lhs           = x.2;
+      default:
+	lhs_casts_rev = ^list(lhs.typ.v,lhs_casts_rev);
+	r2 = localoperand(newtemp(ev.fn, trans_typ(lhs.typ.v)));
+  	break;
+      }
+    }
+  // evaluate the "real" lhs, coercing current value and result appropriately
+  // leave result in r2
+  switch lhs.raw_exp {
+ 
+  case Var(x):
+    r4 = var2operand(ev,x,trans_typ(lhs.typ.v));
+    if (p != null) {
+      ev.right_siblings_assign = rhs.assigned_to;
+      r  = trans_exp(ev,lhs);
+      ev.right_siblings_assign = null;
+      rhs_op  = assignop_operation(ev, lhs_casts_rev, r, p.v, rhs);
+    }
+    else {
+      ev.right_siblings_assign = null;
+      rhs_op = trans_exp(ev,rhs);
+    }
+    emit(ev, ^cf_instruction.Copy(^(r4,rhs_op)));
+
+    // If the lhs is an array then we unbox it!
+    if(p==null) {
+      switch(operand_type(ev.fn,r4)) {
+      case Array(_): unbox_array(ev,r4,true); // Force the unboxing, this is
+	// a new definition.
+      default:;
+      }
+    }
+  case StructMember*(e,fn):
+    typ struct_typ = e.typ.v;
+    int field = field_to_offset(ev, typ2name(struct_typ), fn);
+    ev.right_siblings_assign = rhs.assigned_to;
+    r3 = trans_exp(ev, e);
+    r  = non_memory(ev, r3, trans_typ(struct_typ));
+    null_check(ev, struct_typ, r);
+    ev.right_siblings_assign = null;
+    if (p != null) {
+      emit(ev, ^cf_instruction.SelectField(^(field, r2, r)));
+      rhs_op = assignop_operation(ev, lhs_casts_rev, r2, p.v, rhs);
+    } else {
+      rhs_op = trans_exp(ev,rhs);
+    }
+    emit(ev, ^cf_instruction.AssignField(^(field, r, rhs_op)));
+    
+  case TupleMember*(e,i):
+    ev.right_siblings_assign = rhs.assigned_to;
+    r = trans_exp(ev, e);
+    r = non_memory(ev, r, trans_typ(e.typ.v));
+    ev.right_siblings_assign = null;
+    if (p != null) {
+      emit(ev, ^cf_instruction.SelectField(^(i-1, r2, r)));
+      rhs_op = assignop_operation(ev, lhs_casts_rev, r2, p.v, rhs);
+    }
+    else {
+      rhs_op = trans_exp(ev,rhs);
+    }
+    emit(ev, ^cf_instruction.AssignField(^(i-1, r, rhs_op)));
+  
+  case Subscript*(e1,e2):
+    ev.right_siblings_assign = List::append(e2.assigned_to,rhs.assigned_to);
+    r3 = trans_exp(ev, e1);
+    ev.right_siblings_assign = rhs.assigned_to;
+    r  = trans_exp(ev, e2); 
+    ev.right_siblings_assign = null;
+    if (p != null) {
+      trans_array_op(ev,r3,true,r,r2);
+      rhs_op = assignop_operation(ev, lhs_casts_rev, r2, p.v, rhs);
+    } else {
+      rhs_op = trans_exp(ev, rhs);
+    }
+    trans_array_op(ev,r3,false,r,rhs_op);
+  case CSubscript*(e1,e2):
+    ev.right_siblings_assign = List::append(e2.assigned_to,rhs.assigned_to);
+    r3 = trans_exp(ev, e1);
+    ev.right_siblings_assign = rhs.assigned_to;
+    r  = trans_exp(ev, e2); 
+    ev.right_siblings_assign = null;
+    if (p != null) {
+      trans_carray_op(ev,e1.typ.v,r3,true,r,r2);
+      rhs_op = assignop_operation(ev, lhs_casts_rev, r2, p.v, rhs);
+    } else {
+      rhs_op = trans_exp(ev, rhs);
+    }
+    trans_carray_op(ev,e1.typ.v,r3,false,r,rhs_op);
+
+  default: BUG("trans_lhs_exp, bad left hand side");
+  }
+  return rhs_op;
+}
+
+// Generate operands for an array we are to unbox for the first time.
+static *(var,cf_operand,cf_operand) create_unboxed_array_ops(trans_fun_env ev,
+							     cf_typ arr_ty) {
+  _ tv_len   = newtyvar();
+  _ s_len_v  = ^cf_sing.Var(tv_len);
+  _ s_len_ty = ^.Sing(s_len_v);
+  
+    _ b_ty; // Type of the unpacked array (called b here).
+    switch arr_ty {
+    case Array*(_,t) : 
+      b_ty = ^cf_typ.UnpackedArray(^(s_len_v,t));
+    default: BUG("unbox_array: cannot unbox non-array type");
+    }
+    
+    _ s_len   = localoperand(newtemp(ev.fn, s_len_ty));
+    _ b       = localoperand(newtemp(ev.fn, b_ty));
+
+    return ^(tv_len,s_len,b);
+}
+
+// Causes the array to be unpacked and unboxed.  
+// Returns the (size, unpacked array) pointers as local operands.
+// If the unpacking has been done earlier does not redo the work,
+// just returns the right operands.
+// If force is true, re-unpacks the arguments.
+static *(cf_operand,cf_operand) unbox_array(trans_fun_env ev, cf_operand a,
+					    bool force) {
+
+  int a_num = -1;
+  bool already_unboxed = false;
+  switch a {
+  case Local(i):
+    if(Dict::member(ev.unboxed_arrays,i)) already_unboxed = true;
+    a_num = i;
+  default: ;
+  }
+
+  _ tv_len;
+  _ s_len, b;
+
+  if(already_unboxed) {
+    _ x = Dict::lookup(ev.unboxed_arrays,a_num);
+    if(!force) return x;
+		
+    s_len = x.1;
+    b = x.2;
+    switch operand_type(ev.fn,s_len) {
+    case Sing(s):
+      tv_len = s.Var;
+    default: BUG("unbox array: length is not a singleton");
+    }
+  }
+  else {
+
+    _ x = create_unboxed_array_ops(ev,operand_type(ev.fn,a));
+    tv_len = x.1;
+    s_len = x.2;
+    b = x.3;
+
+    // We only add the type variable if its not already present.
+    ev.fn.sing_tyvars = ^list(tv_len, ev.fn.sing_tyvars);
+  }
+
+  _ s_len_ty = operand_type(ev.fn,s_len);
+  _ b_ty     = operand_type(ev.fn,b);
+  _ ua_ty    = ^cf_typ.Tuple({^cf_field(s_len_ty,^cf_capability.Read,0),
+			      ^cf_field(b_ty,^cf_capability.Read,4)});
+  _ ua       = localoperand(newtemp(ev.fn,ua_ty));
+
+  emit(ev, ^.TypedCopy(^(ua,a,^.Unpacking(^list(tv_len  ,null)))));
+  emit(ev, ^.SelectField(^(0,s_len, ua)));
+  emit(ev, ^.SelectField(^(1,b, ua)));
+
+  return ^(s_len,b);
+}
+
+static void trans_array_op(trans_fun_env ev, cf_operand arr, bool sub, 
+				 cf_operand index, cf_operand ds) {
+  // If sub is true then array subscript, otherwise array update.
+
+  _ tv_index = newtyvar();
+  _ s_index_v = ^cf_sing.Var(tv_index);
+  cf_typ s_index_ty = ^.Sing(s_index_v);
+  
+  _ x     = unbox_array(ev,arr,false);
+  _ s_len = x.1; // Singleton length of the array
+  _ b     = x.2; // Unpacked base array.
+
+  cf_operand s_index = localoperand(newtemp(ev.fn, s_index_ty));
+
+  ev.fn.sing_tyvars = ^list(tv_index, ev.fn.sing_tyvars);
+
+  emit(ev, ^.TypedCopy(^(s_index,index,^.Unpacking(^list(tv_index,null)))));
+  emit(ev,^.ArrayCheck(^(s_index,s_len)));
+
+  if(sub) emit(ev, ^cf_instruction.ArraySub(^(ds,b,s_index)));
+  else    emit(ev, ^cf_instruction.ArrayUpd(^(b,s_index,ds)));
+}
+
+static void trans_carray_op(trans_fun_env ev, Popsyntax::typ t,
+			    cf_operand arr, bool sub, 
+			   cf_operand index, cf_operand ds) {
+  _ len;
+  _ optional;
+  switch Popunify::compress(t) {
+  case CArrayType *(_,sz,opt): len = sz; optional = opt;
+  default: BUG(strconcat("Carray without Carray type: ",typ2string(t)));
+  }
+
+  _ tv_index = newtyvar();
+  _ s_index_v = ^cf_sing.Var(tv_index);
+  _ s_index_ty = ^.Sing(s_index_v);
+
+  if(optional)
+    null_check(ev,t,arr);
+
+  cf_operand s_index = localoperand(newtemp(ev.fn, s_index_ty));
+  
+  emit(ev,^.TypedCopy(^(s_index,index,^.Unpacking(^list(tv_index,null)))));
+  emit(ev,^.CArrayCheck(^(s_index,len)));
+
+  if(sub) emit(ev, ^cf_instruction.ArraySub(^(ds,arr,s_index)));
+  else    emit(ev, ^cf_instruction.ArrayUpd(^(arr,s_index,ds)));
+
+}
+static cf_operand assignop_operation(
+  trans_fun_env ev, <typ>list casts, cf_operand old_lhs, primop p, exp rhs) {
+
+  if(casts!=null) {
+    // coerce the lhs argument and reverse casts for when we coerce the answer
+    for(;casts.tl != null; casts = casts.tl) {
+      old_lhs = trans_cast(ev,old_lhs,casts.hd,casts.tl.hd);
+    }
+  }
+
+  // actually perform the operation
+  cf_operand r  = localoperand(newtemp(ev.fn, operand_type(ev.fn, old_lhs)));
+  cf_operand r2 = trans_exp(ev, rhs);
+  emit(ev, ^cf_instruction.Binop(^(p, r, old_lhs, r2)));
+
+  if(casts!=null) {
+    // coerce the answer
+    _ result_casts = List::rev(casts);;
+    for(;result_casts.tl != null; result_casts = result_casts.tl) {
+      r = trans_cast(ev,r,result_casts.hd,result_casts.tl.hd);
+    }
+  }
+
+  return r;
+}
+
+static void null_check(trans_fun_env ev, typ t, cf_operand r) {
+  if (nullable(ev, t)) {
+    // set up control transfer for null check
+    cf_block nonnull_blk = create_block(ev, id_new("nullSucceed"));
+    add_edge(ev.current_blk, nonnull_blk);
+
+    if(ev.current_handler != null)
+      add_edge(ev.current_blk, ev.current_handler.v);
+
+    // emit the check (note r cannot be global!)
+    ev.current_blk.trans = ^cf_transfer.NullCheck(^(r,^cf_dest.Known(nonnull_blk)));
+    // current block now nonnull and type is refined
+    _ start_blk = ev.current_blk;
+    ev.current_blk = nonnull_blk;
+
+    ground_block(ev,nonnull_blk);
+
+    fix_block(ev,nonnull_blk);
+    correct_transfer(ev,start_blk);
+
+    refine_operand(ev.current_blk, r, ^cf_refinement.NotNull);
+  }
+}
+
+static bool is_cast_nop(typ src_typ, typ dest_typ) {
+  if(src_typ == dest_typ) return true;
+
+  switch src_typ {
+  case CharType:
+    switch dest_typ {
+    case CharType: return true;
+    case IntType *(_,sz1): return (sz1 == ^.B1);
+    default: return false;
+    }
+  case IntType*(_,sz1):
+    switch dest_typ {
+    case CharType: return (sz1 == ^.B1);
+    case IntType*(_,sz2): return (sz1==sz2);
+    default: return false;
+    }
+  case FloatType:
+    switch dest_typ {
+    case FloatType: return true;
+    default: return false;
+    }
+  case DoubleType:
+    switch dest_typ {
+    case DoubleType: return true;
+    default: return false;
+    }
+  default: return false;
+  }
+}
+
+static cf_operand trans_cast(trans_fun_env ev, cf_operand src_op, 
+			     typ src_typ, typ dest_typ) {
+  primop p;
+
+  dest_typ = Popunify::compress(dest_typ);
+  src_typ = Popunify::compress(src_typ);
+
+  switch dest_typ {
+  case CharType:
+    switch src_typ {
+    case CharType: return src_op;
+    case IntType *(signed2,sz2):
+      if(sz2 == ^.B1) return src_op;
+      p = ^.Resize(^(signed2,^.B1,sz2));
+    case FloatType:  p = ^.FtoI; // Cast  float to int.
+    case DoubleType: p = ^.DtoI; // Cast double to int.
+    default: BUG("Unexpected cast to char.");
+    }
+  case IntType *(signed1,sz1):
+    switch src_typ {
+    case CharType:
+      if(sz1==^.B1) return src_op;
+      p = ^.Resize(^(false,sz1,^.B1));
+    case IntType *(signed2,sz2):
+      // Regular int cast.
+      if(sz1==sz2)  return src_op; // Same size so no-op.
+     
+      switch src_op {
+      case Const(i):
+	int val = Xarray::get(ev.fn.all_consts,i).val;
+	return constoperand(newconst(ev.fn, val, trans_typ(dest_typ)));
+      default: p = ^.Resize(^(signed2,sz1,sz2));
+      }
+    case FloatType:  p = ^.FtoI; // Cast  float to int.
+    case DoubleType: p = ^.DtoI; // Cast double to int.
+    default: BUG(strconcat("Unexpected cast to int from ",typ2string(src_typ)));
+    }
+  case FloatType:
+    switch src_typ {
+    case CharType  : p = ^.ItoF;
+    case IntType(_): p = ^.ItoF;
+    case DoubleType: p = ^.DtoF;
+    case FloatType: return src_op;
+    default: BUG("Unexpected cast to float.");
+    }
+  case DoubleType:
+    switch src_typ {
+    case CharType  : p = ^.ItoD;
+    case IntType(_): p = ^.ItoD;
+    case FloatType: p = ^.FtoD;
+    case DoubleType: return src_op;
+    default: BUG("Unexpected cast to double.");
+    }
+  default: BUG("Unexpected cast!");
+  }
+  
+  _ ans = localoperand(newtemp(ev.fn, trans_typ(dest_typ)));
+  emit(ev,^.Unop(^(p,ans,src_op)));
+  return ans;
+}
+
+////////////////////////// Statement Translation ///////////////////////
+static bool trans_stmt(trans_fun_env ev, stmt s) { 
+  // return true if context must be dead -- 
+  // notice we can (conservatively) compute
+  // this bottom up since labels are lexically scoped.
+
+  // we do not expect any exceptions to be raised out of trans_stmt or
+  // trans_exp_top so we don't handle any environment restoration if one occurs
+
+  // currently does a lot of dead-code elim that could just be left to the 
+  // optimizer.  (Unlike expression dead-code elim which is hard to generate
+  // well-typed code without doing it.)
+
+  // Cyclone +
+  // Invariant: current_blk is always a member of current template.
+  // Cyclone -
+
+  switch s.raw_stmt {
+
+  case Skip:   return false;
+    
+  case Exp(e): return trans_exp_top(ev,e);
+
+  case Seq(x): return trans_stmt(ev,x.1) || trans_stmt(ev,x.2); //short-circuits
+
+  case Return(eopt): 
+    if (eopt == null) { // normal void return type case
+      if(!ev.is_main) ev.current_blk.trans = ^cf_transfer.Retn(null);
+      else {
+	_ z = constoperand(newconst(ev.fn,0,
+				    ^cf_typ.Num(^cf_numtype(^.B4,true))));
+	ev.current_blk.trans = ^cf_transfer.Retn(^Opt(z)); 
+      }
+    }
+    else if (ev.fn.ret_typ == null) { // silly void return of void exp case
+      if (!trans_exp_top(ev, eopt.v)) {
+	if(!ev.is_main) ev.current_blk.trans = ^cf_transfer.Retn(null);
+	else {
+	  _ z = constoperand(newconst(ev.fn,0,
+				      ^cf_typ.Num(^cf_numtype(^.B4,true))));
+	  ev.current_blk.trans = ^cf_transfer.Retn(^Opt(z)); 
+	}
+      }
+    } else { // normal value return case
+      <cf_operand>Opt ropt = trans_exp_top_r(ev, eopt.v);
+      if (ropt!=null)
+	ev.current_blk.trans = ^cf_transfer.Retn(^Opt(ropt.v));
+    }
+    return true;
+
+  case IfThenElse(x):
+    // set up blocks, edges to branches
+    cf_block true_blk  = create_block(ev, id_new("ifTrue"));
+    cf_block false_blk = create_block(ev, id_new("ifFalse"));
+    cf_block merge_blk = create_block(ev, id_new("ifMerge"));
+    // translate test
+    if (trans_test_top(ev, x.1, true_blk, false_blk)) return true;
+    // translate parts and return appropriately
+
+    ground_block(ev,true_blk);
+    ground_block(ev,false_blk);
+
+    _ ch = checkpoint_env(ev);
+
+    ev.current_blk  = true_blk;
+    fix_block(ev,true_blk); // put true_blk in current template.
+    bool true_dead  = trans_stmt(ev, x.2);
+    _ true_src = ev.current_blk;
+
+    restore_env(ev,ch);
+
+    ev.current_blk  = false_blk;
+    fix_block(ev,false_blk); 
+    bool false_dead = trans_stmt(ev, x.3);
+    _ false_src = ev.current_blk;
+
+    ground_block(ev,merge_blk);
+    fix_block(ev,merge_blk);
+
+    if (!false_dead)
+      jump(false_src, merge_blk);
+    if (!true_dead)
+      jump(true_src, merge_blk);
+
+    correct_transfer(ev,false_src); // Rewrite transfers if they happen to be
+    correct_transfer(ev,true_src);  // inter-template.
+
+    ev.current_blk  = merge_blk;
+
+    process_pending_blocks(ev); // Test is pending at this point.
+
+    return true_dead && false_dead;
+
+  case While *(test,body):
+    // create the blocks
+    cf_block body_blk = create_block(ev, id_new("whileBody"));
+    cf_block test_blk = create_block(ev, id_new("whileTest"));
+    cf_block end_blk  = create_block(ev, id_new("whileEnd"));
+    // jump to test and emit it
+    _ start_blk = ev.current_blk;
+    jump(start_blk, test_blk);
+
+    ev.current_blk = test_blk;
+    fix_block(ev,test_blk); // XXX - wrong ordering, here.
+    // Test should be generated after the body.
+    ground_block(ev,test_blk);
+
+    if (trans_test_top(ev, test, body_blk, end_blk)) return true;
+
+    ground_block(ev,body_blk);
+    ground_block(ev,end_blk); // Body may not be executed but test always is. 
+
+    _ ch = checkpoint_env(ev); // Before processing the body
+
+    // emit body and finish up
+    trans_loop_body(ev, end_blk, test_blk, body_blk, body);
+
+    restore_env(ev,ch);
+
+    ev.current_blk = end_blk;
+    fix_block(ev,end_blk); // Put end_blk in current template.
+
+    correct_transfer(ev,start_blk);
+
+    process_pending_blocks(ev); 
+    // Processing loop body may create pending blocks.
+
+    return false; // since body may never be taken
+
+  case Break(lopt):
+    if (lopt == null)
+      jump(ev.current_blk, ev.current_break_dest);
+    else
+      jump(ev.current_blk, Dict::lookup(ev.label_to_blks, lopt.v).2);
+
+    correct_transfer(ev,ev.current_blk);
+
+    return true;
+
+  case Continue(lopt):
+    if (lopt == null)
+      jump(ev.current_blk, ev.current_continue_dest);
+    else
+      jump(ev.current_blk, Dict::lookup(ev.label_to_blks, lopt.v).1);
+
+    correct_transfer(ev,ev.current_blk);
+
+    return true;
+    
+  case For(x):
+    // emit initialization
+    if(trans_exp_top(ev, x.1)) return true;
+    // create blocks
+    cf_block body_blk = create_block(ev, id_new("forBody"));
+    cf_block test_blk = create_block(ev, id_new("forTest"));
+    cf_block next_blk = create_block(ev, id_new("forNext"));
+    cf_block end_blk  = create_block(ev, id_new("forEnd"));
+    // jump to test and emit it
+    _ start_blk = ev.current_blk;
+    jump(start_blk, test_blk);
+    ev.current_blk = test_blk;
+    fix_block(ev,test_blk); // XXX - wrong ordering!
+
+    ground_block(ev,test_blk);
+
+    if (trans_test_top(ev, x.2, body_blk, end_blk)) return true;
+
+    ground_block(ev,body_blk);
+    ground_block(ev,end_blk);
+
+    _ ch = checkpoint_env(ev);
+
+    // emit the body
+    trans_loop_body(ev, end_blk, next_blk, body_blk, x.4);
+
+    // emit next and finish up
+    ev.current_blk = next_blk;
+    fix_block(ev,next_blk);
+    ground_block(ev,next_blk);
+
+    if(!trans_exp_top(ev, x.3)) {
+      jump(ev.current_blk, test_blk);
+      correct_transfer(ev,ev.current_blk);
+    }
+
+    restore_env(ev,ch);
+
+    ev.current_blk = end_blk;
+    fix_block(ev,end_blk);
+
+    correct_transfer(ev,start_blk);
+
+    process_pending_blocks(ev);
+
+    return false; // since body may never be taken
+
+  case IntSwitch(x):
+    // translate the test
+    <cf_operand>Opt ropt = trans_exp_top_r(ev, x.1);
+    if (ropt == null) return true; // expression might raise
+    cf_operand r         = ropt.v;
+    // improve this (by flipping around test and constant-folding)
+    cf_block   trans_blk = ev.current_blk;
+    // translate the arms including the default
+    cf_block              end_blk  = create_block(ev, id_new("endswitch"));
+    <*(int,cf_block)>list arm_blks = null;
+    bool                  all_retn = true;
+    _ ch = checkpoint_env(ev); // checkpoint the cfg-dependent environment
+    for(<*(int,stmt)>list arms = x.2; arms != null; arms = arms.tl) {
+      int      arm_num = arms.hd.1;
+      string   pre     = arm_num < 0 ? "caseM" : "case";
+      if(arm_num < 0) arm_num = - arm_num;
+      id       i         = id_new(strconcat(pre,string_of_int(arm_num)));
+      cf_block arm_blk   = create_block(ev, i);
+      ground_block(ev,arm_blk);
+      bool     this_retn = trans_switch_arm(ev, trans_blk, end_blk, arm_blk,
+					    arms.hd.2);
+      if(!this_retn) // This arm does not return could be pred of end_blk
+	ground_block(ev,end_blk); // Its post env is a good pre-env for end_blk.
+
+      restore_env(ev,ch);
+
+      arm_blks = ^list(^(arms.hd.1,arm_blk), arm_blks);
+      all_retn = this_retn && all_retn;
+    }
+    cf_block def_blk  = create_block(ev, id_new("default"));
+    bool     def_retn = trans_switch_arm(ev, trans_blk,end_blk, def_blk, x.3);
+    all_retn = def_retn && all_retn;
+    // Create destinations
+    _ arm_dests = ^list(^(1,^cf_dest.Known(def_blk)),null); // Bogus first elt
+    _ tmp = arm_dests;
+    for(_ x=arm_blks; x!=null; x=x.tl) {
+      _ y = ^(x.hd.1,^cf_dest.Known(x.hd.2));
+      tmp.tl = ^list(y,null);
+      tmp = tmp.tl;
+    }
+    arm_dests = arm_dests.tl;
+    _ def_dest = ^cf_dest.Known(def_blk);
+    // encode the transfer and return
+    trans_blk.trans = ^cf_transfer.NumSwitch(^(r, arm_dests, def_dest));
+    ev.current_blk  = end_blk;
+    fix_block(ev,end_blk);
+    restore_block_env(ev,end_blk); // Wrong if all_retn, but unused in that case anyways.
+
+    correct_transfer(ev,trans_blk);
+
+    process_pending_blocks(ev);
+    return all_retn;
+
+  case CharSwitch(x):  
+    // convert to an IntSwitch
+    exp e = ^exp(^Opt(^typ.IntType(^(true,^size_of.B4))),
+                 ^raw_exp.Primop(^(^primop.Ord, ^list(x.1, null))),
+                 x.1.assigned_to,
+                 x.1.loc);
+    <*(int,stmt)>list ss = map(ord_fst@<stmt>, x.2);
+    return trans_stmt(ev, ^stmt(^raw_stmt.IntSwitch(^(e, ss, x.3)), s.loc));
+  
+  case UnionSwitch(x): 
+    type_name u_name  = typ2name(x.1.typ.v);
+    // translate the test
+    <cf_operand>Opt ropt = trans_exp_top_r(ev, x.1);
+    if (ropt == null) return true; // expression might raise
+    cf_operand r2 = ropt.v;
+    // necessary for refinement reasons (shouldn't be -- fix this!)
+    //     cf_operand r = non_memory(ev, r2, trans_typ(x.1.typ.v));
+    cf_operand r = localoperand(newtemp(ev.fn, trans_typ(x.1.typ.v)));
+    emit(ev, ^cf_instruction.Copy(^(r, r2)));
+
+    cf_block   trans_blk = ev.current_blk;
+    // translate the arms, treating void and value cases differently
+    cf_block              end_blk    = create_block(ev, id_new("endswitch"));
+    <*(int,cf_dest)>list void_dests  = null;
+    <*(int,cf_dest)>list value_dests = null;
+    bool                  all_retn   = true;
+    bool                  this_retn;
+    _ ch = checkpoint_env(ev);
+    for(<switch_arm>list arms = x.2; arms != null; arms = arms.tl) {
+      switch_arm arm = arms.hd;
+      cf_block   blk = create_block(ev, id_new(strconcat("case_", arm.field)));
+      ground_block(ev,blk);
+      int        tag = union_variant(ev, u_name, arm.field);
+      switch arm.pat {
+      case None:
+	this_retn  = trans_switch_arm(ev, trans_blk, end_blk, blk, arm.body);
+	void_dests  = ^list(^(tag, ^cf_dest.Known(blk)), void_dests);
+      default:
+	this_retn = 
+	  trans_switch_arm_decl(ev, trans_blk, end_blk, blk, r,
+				^cf_refinement.ValueVariant(tag),
+				arm.pat, arm.body);
+	value_dests = ^list(^(tag, ^cf_dest.Known(blk)), value_dests);
+      }
+      if(!this_retn) ground_block(ev,end_blk);
+      restore_env(ev,ch);
+
+      all_retn = this_retn && all_retn;
+    }
+    // translate the default, if any
+    <cf_dest>Opt def_dest = null;
+    if (x.3 != null) {
+      _ def_blk = create_block(ev, id_new("default"));
+      ground_block(ev,def_blk);
+      def_dest  = ^Opt(^cf_dest.Known(def_blk)); 
+      this_retn = trans_switch_arm(ev, trans_blk, end_blk, def_blk, x.3.v);
+      if(!this_retn) ground_block(ev,end_blk);
+      all_retn  = this_retn && all_retn;
+    }
+    // encode the transfer and return
+    trans_blk.trans = 
+      ^cf_transfer.SumSwitch(^(r,void_dests,value_dests,def_dest));
+    ev.current_blk  = end_blk;
+    fix_block(ev,end_blk);
+
+    restore_block_env(ev,end_blk);
+
+    correct_transfer(ev,trans_blk);
+
+    process_pending_blocks(ev); // XXX Might not be necessary here. Cannot hurt.
+
+    return all_retn;
+
+  case ExnSwitch(x): // with the IL, this is still very similar to UnionSwitch
+    // translate the test
+    <cf_operand>Opt ropt = trans_exp_top_r(ev, x.1);
+    if (ropt == null) return true; // expression might raise
+    cf_operand r2        = ropt.v;
+    // necessary for refinement reasons (shouldn't be -- fix this!)
+        //     cf_operand r = non_memory(ev, r2, trans_typ(x.1.typ.v));
+    cf_operand r = localoperand(newtemp(ev.fn, trans_typ(x.1.typ.v)));
+    emit(ev, ^cf_instruction.Copy(^(r, r2)));
+
+    cf_block   trans_blk = ev.current_blk;
+    // translate the arms, treating exceptions with packets differently
+    cf_block             end_blk   = create_block(ev, id_new("endswitch"));
+    <*(id,cf_dest)>list arm_dests  = null;
+    bool                 all_retn  = true;
+    bool                 this_retn;
+    _ ch = checkpoint_env(ev);
+    for(<switch_arm>list arms = x.2; arms != null; arms = arms.tl) {
+      switch_arm arm = arms.hd;
+      cf_block   blk = create_block(ev,id_new(strconcat("exncase_",arm.field)));
+      ground_block(ev,blk);
+      id       exn_i = exn_addr(arm.field);
+      arm_dests = ^list(^(exn_i,^cf_dest.Known(blk)), arm_dests);
+      switch arm.pat {
+      case None:
+	this_retn = trans_switch_arm(ev, trans_blk, end_blk, blk, arm.body);
+      default:
+	this_retn = 
+	  trans_switch_arm_decl(ev, trans_blk, end_blk, blk, r,
+				^cf_refinement.ExceptionVariant(exn_i),
+				arm.pat, arm.body);
+      }
+      if(!this_retn) ground_block(ev,end_blk);
+      restore_env(ev,ch);
+
+      all_retn = this_retn && all_retn;
+    }
+    // translate the default (if not one, insert a re-raise)
+    cf_block def_blk = create_block(ev,id_new("default"));
+    ground_block(ev,def_blk);
+    _ def_dest = ^cf_dest.Known(def_blk);
+    if (x.3 == null) {
+      add_edge(trans_blk, def_blk);
+      cf_block old_blk = ev.current_blk;
+      ev.current_blk   = def_blk;
+      fix_block(ev,def_blk); // XXX - not sure this is right.
+      trans_raise(ev, r);
+      ev.current_blk   = old_blk;
+    }
+    else {
+      this_retn = trans_switch_arm(ev, trans_blk, end_blk, def_blk, x.3.v);
+      if(!this_retn) ground_block(ev,end_blk);
+      all_retn  = this_retn && all_retn;
+    }
+    // encode the transfer and return
+    trans_blk.trans = ^cf_transfer.ExnSwitch(^(r, arm_dests, def_dest));
+
+    ev.current_blk = end_blk;
+    fix_block(ev,end_blk);
+
+    restore_block_env(ev,end_blk);
+
+    correct_transfer(ev,trans_blk);
+
+    process_pending_blocks(ev); // XXX - may not be necessary. No harm though.
+
+    return all_retn;
+
+  case Decl(x):
+    int i;
+    // translate the initializer iff there is one
+    if(x.3 != null) {
+      <cf_operand>Opt ropt = trans_exp_top_r(ev, x.3.v);
+      if (ropt == null) return true; // expression might raise
+      cf_operand r = ropt.v;
+      // initialize the var
+      i = install_local(ev.fn, trans_typ(x.2), x.1);
+      emit(ev, ^cf_instruction.Copy(^(localoperand(i), r)));
+    } else
+      i = install_local(ev.fn, trans_typ(x.2), x.1);
+    // translate the body
+    return trans_decl(ev, x.1, i, x.4,x.3!=null);
+
+  case Cut(x):
+    _ before_cut = ev.current_templ;
+    _ old_preds = ev.pred_templates;  // Must be restored.
+    _ old_succs = ev.succ_templates;  // Must be restored.
+ 
+   ev.pred_templates = null;
+   ev.succ_templates = null;
+
+    _ new_ev = end_template(ev);   // end current template
+
+    trans_stmt(new_ev,x);          // translate the body in generator
+    start_template(new_ev);        // return to generatee
+
+    _ after_cut = ev.current_templ;
+
+    // WARNING: N^2 operation
+    // Creating complete graph. N is expected to be small (<10).
+    // Graph wires up templates buried within Cut in every possible way.
+
+    _ start_templates = ^list(after_cut,ev.pred_templates);
+    _ end_templates = ^list(before_cut,ev.succ_templates);
+
+    for(_ x = end_templates; x != null; x = x.tl) {
+      _ y = x.hd;
+
+      if(y.exit != null) {
+	_ end_blk  = y.exit.v.1;
+	
+	<cf_template>list ts = null;
+	for(_ z = start_templates; z != null; z = z.tl) {
+	  _ start_blk = z.hd.entry;
+	  add_edge(end_blk,start_blk);
+	  ts = ^list(z.hd,ts);
+	}
+
+	_ hi = ^cf_holeinfo.Terminal(ts);
+
+	_ end_hole = y.exit.v.2;
+
+	Xarray::set(ev.fn.all_holes,end_hole,hi);
+      }
+    }
+
+    ev.pred_templates = old_preds;
+    ev.succ_templates = old_succs;
+
+    return false;
+    
+  case Splice(x): 
+    _ new_ev = start_template(ev);    
+
+    new_ev.pred_templates = ^list(new_ev.current_templ,new_ev.pred_templates);
+
+    _ dead = trans_stmt(new_ev,x);
+    if(!dead) end_template(new_ev);
+
+    // Warning: trans_stmt upates ev.current_templ.  Placement is crucial.
+    new_ev.succ_templates = ^list(new_ev.current_templ,new_ev.succ_templates);
+
+    return false;;
+   
+  case Label(x):
+    // create blocks and go to start
+    cf_block start = create_block(ev, id_new(strconcat(x.1,"_start")));
+    cf_block end   = create_block(ev, id_new(strconcat(x.1,"_end")));
+
+    _ prev_blk = ev.current_blk;
+    jump(ev.current_blk, start);
+    ev.current_blk = start;
+    ground_block(ev,start);
+    fix_block(ev,start);
+    correct_transfer(ev,prev_blk); 
+
+    // update environment, **must be restored**
+    <var,*(cf_block,cf_block)>Dict::dict old_dict = ev.label_to_blks;
+    ev.label_to_blks = Dict::insert(ev.label_to_blks, x.1, ^(start,end));
+    // emit body, restore environment
+    bool dead = trans_stmt(ev, x.2);
+    ev.label_to_blks = old_dict;
+    // go to end and finish
+    _ conclusion_blk = ev.current_blk;
+    if(!dead) 
+      jump(ev.current_blk, end);
+    ev.current_blk = end;
+    fix_block(ev,end);
+
+    ground_block(ev, end);
+
+    correct_transfer(ev,conclusion_blk);
+
+    return false; // maybe we jump here
+
+  case Do(x):
+    // create the blocks and go to body
+    cf_block body_blk = create_block(ev, id_new("whileBody"));
+    cf_block test_blk = create_block(ev, id_new("whileTest"));
+    cf_block end_blk  = create_block(ev, id_new("whileEnd"));
+    // emit body and test
+
+    _ start_blk = ev.current_blk;
+    jump(start_blk, body_blk);
+
+    ground_block(ev,body_blk);
+
+    trans_loop_body(ev, end_blk, test_blk, body_blk, x.1);
+
+    ev.current_blk = test_blk;
+    fix_block(ev,test_blk);
+    ground_block(ev,test_blk);
+
+    trans_test_top(ev, x.2, body_blk, end_blk);
+
+    ev.current_blk = end_blk;
+    fix_block(ev,end_blk);
+    ground_block(ev,end_blk);
+
+    correct_transfer(ev,start_blk);
+    
+    process_pending_blocks(ev);
+
+    return false; // first iteration might break
+    
+  case TryHandle(x):
+    // new handler has old handler as its handler and a var with the exception
+    cf_block   end         = create_block(ev, id_new("tryEnd"));
+    int        i           = install_local(ev.fn, ^cf_typ.Exn, x.2);
+    cf_block   new_handler = create_handler_block(ev, id_new("tryCatch"), i);
+    // update environment with new handler ** environment must be restored **
+    <cf_block>Opt old_handler = ev.current_handler;
+    ev.current_handler = ^Opt(new_handler);
+    // make body and go there
+    cf_block body = create_block(ev, id_new("tryBody"));
+
+    _ start_blk = ev.current_blk;
+    jump(start_blk, body);
+
+    ev.current_blk = body;
+    fix_block(ev,body);
+    ground_block(ev,body);
+
+    // translate body
+    bool body_dead = trans_stmt(ev, x.1);
+
+    ground_block(ev,end);
+
+    if (!body_dead) {
+      jump(ev.current_blk, end);
+      correct_transfer(ev,ev.current_blk);
+    }
+
+    // restore environment
+    ev.current_handler = old_handler;
+    // translate handler (with new var)
+    ev.current_blk = new_handler;
+    fix_block(ev,new_handler);
+
+    restore_block_env(ev,body); // Same as on entry to the body.
+    ground_block(ev,new_handler);
+
+    bool handler_dead = trans_decl(ev, x.2, i, x.3,true);
+    // XXX
+    if (!handler_dead) {
+      jump(ev.current_blk, end);
+      correct_transfer(ev,ev.current_blk);
+    }
+    // finish up
+    ev.current_blk = end;
+    fix_block(ev,end);
+
+    correct_transfer(ev,start_blk);
+    process_pending_blocks(ev);
+
+    return body_dead && handler_dead;
+  case TryCatchFinally(x):
+    // should've been translated away
+    BUG("try/catch/finally found in poptranslate");
+  case With(q):
+    var       x         = q.1; 
+    <var>list type_vars = q.3;
+    typ       x_type    = q.2.v;  // the type of x in the scope of the With
+    exp       e         = q.4;         
+    stmt      s         = q.5;
+    // translate the expression e
+    <cf_operand>Opt ropt = trans_exp_top_r(ev, e);
+    if (ropt == null) return true; // expression might raise?
+    cf_operand r = ropt.v;
+    // add type_vars to the environment *** environment must be restored ***
+    ev.fn.exist_tyvars = List::append(type_vars,ev.fn.exist_tyvars);
+    // initialize var then translate the body (much like a Decl)
+    int i = install_local(ev.fn, trans_typ(x_type), x);
+    emit(ev, ^cf_instruction.TypedCopy(^(localoperand(i), r, 
+		  ^cf_typedcopy.Unpacking(type_vars))));
+    bool body_dead = trans_decl(ev, x, i, s,true);
+    return body_dead;
+ case Rdtsc *(e1,e2):
+   _ v1;
+   switch e1.raw_exp {
+   case Var(v) : v1 = v;
+   default : BUG("Non-variable found in Rdtsc.(1)");
+   }
+
+   _ v2;
+   switch e2.raw_exp {
+   case Var(v) : v2 = v;
+   default : BUG("Non-variable found in Rdtsc.(2)");
+   }
+
+  _ o1 = var2operand(ev,v1,trans_typ(e1.typ.v));
+  _ o2 = var2operand(ev,v2,trans_typ(e2.typ.v));
+
+  emit(ev, ^cf_instruction.Rdtsc(^(o1,o2)));
+  return false;
+  }
+}
+
+static bool trans_exp_top(trans_fun_env ev, exp ex) { 
+  // discard the result because we don't care.  void types are okay, therefore.
+  // return true if context is dead
+  try {
+    trans_exp(ev,ex);
+    return false;
+  }  handle y switch y {
+  case Void_type:    return false;
+  case Context_dead: return true;
+  }
+}
+static <cf_operand>Opt trans_exp_top_r(trans_fun_env ev, exp ex) {
+  // return null if context is dead, void types are not okay
+  try 
+    return ^Opt(trans_exp(ev,ex));
+  handle y switch y {
+  case Context_dead: return null;
+  }
+}
+
+static bool trans_test_top(trans_fun_env ev, exp test, 
+			   cf_block true_blk, cf_block false_blk) {
+  try {
+    trans_test(ev, test, true_blk, false_blk);
+    return false;
+  }
+  handle y switch y {
+  case Context_dead: return true;
+  }
+}
+static void trans_loop_body(trans_fun_env ev, cf_block end, cf_block next, 
+			    cf_block body, stmt s) {
+  // used by For, While, Do
+  // update environment, translate body
+  cf_block old_break       = ev.current_break_dest;
+  cf_block old_continue    = ev.current_continue_dest;
+  ev.current_break_dest    = end;
+  ev.current_continue_dest = next;
+  // translate body
+  ev.current_blk           = body;
+  fix_block(ev,body);
+
+  if (!trans_stmt(ev, s)) {
+    jump(ev.current_blk, next);
+    correct_transfer(ev,ev.current_blk);
+  }
+
+  // restore environment
+  ev.current_break_dest    = old_break;
+  ev.current_continue_dest = old_continue;
+}
+
+static bool trans_decl(trans_fun_env ev, var v, int i, stmt s,
+		       bool initialized) {
+  // used by Decl, Try, UnionSwitch, ExnSwitch, With
+  // declaration may shadow, so **must restore environment**
+  _ old_var_to_local   = ev.var_to_local;
+  _ old_unboxed_arrays = ev.unboxed_arrays;
+
+  ev.var_to_local = Dict::insert(ev.var_to_local, v, i);
+
+  // If this variable is an array
+  //   If it has been initialized, then unbox it.
+  //   Otherwise, introduce new variables and a type-variable for the array
+  //      Can't unbox it since it isn't yet defined.
+  _ iop = localoperand(i);
+  _ iop_ty = operand_type(ev.fn,iop);
+
+  switch iop_ty {
+  case Array (_):
+    _ ua_ops;
+    _ tv_len;
+    if(initialized) {
+      ua_ops = unbox_array(ev,iop,true);
+      switch operand_type(ev.fn,ua_ops.1) {
+      case Sing(s):
+	tv_len = s.Var;
+      default: BUG("trans_decl: length is not a singleton");
+      }
+    }
+    else {
+      _ x = create_unboxed_array_ops(ev,iop_ty);
+      tv_len = x.1;
+      ua_ops = ^(x.2,x.3);
+      ev.fn.sing_tyvars = ^list(tv_len,ev.fn.sing_tyvars);
+    }
+    ev.unboxed_arrays = Dict::insert(ev.unboxed_arrays,i,ua_ops);
+  default: ;
+  }
+
+  // emit the body
+  bool dead = trans_stmt(ev, s);
+
+  // restore environment and finish
+  ev.var_to_local   = old_var_to_local;
+  ev.unboxed_arrays = old_unboxed_arrays;
+
+  return dead;
+}
+static bool trans_switch_arm(trans_fun_env ev, cf_block trans, cf_block end, 
+			     cf_block arm_blk, stmt s) {
+  // used by all the switch flavors
+  add_edge(trans, arm_blk);
+  ev.current_blk = arm_blk;
+  fix_block(ev,arm_blk);
+  bool this_retn = trans_stmt(ev, s);
+  if (!this_retn) {
+    jump(ev.current_blk, end);
+    correct_transfer(ev,ev.current_blk);
+  }
+  return this_retn;
+}
+static bool trans_switch_arm_decl(trans_fun_env ev, 
+				  cf_block trans, cf_block end,
+				  cf_block arm_blk, cf_operand r, 
+				  cf_refinement r_refine,
+				  pattern pat, stmt s) {
+  // used by value cases of UnionSwitch and ExnSwitch
+  bool this_retn;
+  add_edge(trans, arm_blk);
+  refine_operand(arm_blk, r, r_refine);
+  ev.current_blk = arm_blk;
+  fix_block(ev,arm_blk);
+
+  switch pat {
+  case None: BUG("no pattern in trans_switch_arm_decl");
+  case Prim(p):
+    switch p {
+    case Wild(_): ; 
+      this_retn = trans_stmt(ev,s);
+    case Var(vt):
+      var v = vt.1;
+      typ t = vt.2;
+      int v_id = install_local(ev.fn, trans_typ(t), v);
+      emit(ev, ^cf_instruction.SelectField(^(1, localoperand(v_id), r)));
+      this_retn = trans_decl(ev, v, v_id, s,true); 
+    }
+  case Tuple(ps):
+    // calculate the type of the pattern
+    <typ>list ts = null;
+    for (<prim_pattern>list ps = ps; ps != null; ps = ps.tl) {
+      switch ps.hd {
+      case Wild(t): ts = ^list(t.1,ts);
+      case Var(vt): ts = ^list(vt.2,ts);
+      }
+    }
+    typ t = ^typ.TupleType(List::rev(ts));
+    // a dummy variable for the tuple itself
+    var v = "_";
+    int v_id = install_local(ev.fn, trans_typ(t), v);
+    // extract the tuple from the union
+    emit(ev, ^cf_instruction.SelectField(^(1, localoperand(v_id), r)));    
+    // save the var_to_local environment due to shadowing
+    <var,int>Dict::dict old_dict = ev.var_to_local;
+    // insert the tuple variable "_"
+    ev.var_to_local = Dict::insert(ev.var_to_local, v, v_id);
+    // for each sub-pattern variable, emit a SelectField and insert into ev
+    for (int i=0; ps != null; i++, ps = ps.tl) {
+      prim_pattern p = ps.hd;
+      switch p {
+      case Wild(t): ; // skip
+      case Var(pvt):
+	var pv = pvt.1;  // sub-variable
+	typ pt = pvt.2;  // sub-variable type
+	int pv_id = install_local(ev.fn, trans_typ(pt), pv); 
+	emit(ev, ^cf_instruction.SelectField(^(i, localoperand(pv_id), 
+					       localoperand(v_id))));
+	ev.var_to_local = Dict::insert(ev.var_to_local, pv, pv_id);
+      }
+    }
+    // translate the body under this extended environment
+    this_retn = trans_stmt(ev,s);
+    // restore the old environment 
+    ev.var_to_local = old_dict;
+  }
+  if (!this_retn) {
+    jump(ev.current_blk, end);
+    correct_transfer(ev,end);
+  }
+
+  return this_retn;
+}
+static *(int,a) ord_fst<a>(*(char,a) x) {
+  return ^(ord(x.1),x.2);
+}
+
+//////////////////////////// Topdecl Translation ////////////////////
+static void trans_typedecl(trans_env ev, raw_top_decl rtd) {
+  // destructively adds type or externs to ev
+  // more specifically: 1. add types to cf_file
+  //                    2. add field/variant --> int mapping
+  // all the other gunk is delayed until il-->TAL
+  // the translation is minimal, but may as well make things convenient for us
+  switch rtd {
+  case StructDecl(sd): 
+    string                             name        = sd.name;
+    <field_name,int>Dict::dict         field_map   = Dict::empty(strcmp);
+    <*(field_name,capability,typ)>list fields      = sd.fields;
+    cf_field           cf_fields[] =
+      new_array(length(fields), ^cf_field(^cf_typ.Bool,^cf_capability.Read,-1));
+    field_name cf_field_names[] = new_array(length(fields),"");
+
+    int offset = 0;
+    for(int i=0; fields!=null; ++i, fields=fields.tl) {
+      field_map    = Dict::insert(field_map, fields.hd.1, i);
+      _ typ = trans_typ(fields.hd.3);
+      _ cap = trans_capability(fields.hd.2);
+      _  sz = sizeof_typ(typ);
+
+      offset += (offset % sz); // Padding.  Align on a multiple of sz boundary.
+
+      cf_fields[i] = ^cf_field(typ,cap,offset);
+      cf_field_names[i] = fields.hd.1;
+      offset+= sz;
+    }
+    cf_structdecl cf_sd = 
+      ^cf_structdecl(sd.scope, name, sd.tyvars, sd.possibly_null, 
+		     cf_fields, cf_field_names);
+    ev.file.structs  = Dict::insert(ev.file.structs,  name, cf_sd);
+    ev.struct_fields = Dict::insert(ev.struct_fields, name, field_map);
+
+  case UnionDecl(ud): 
+    string                            name      = ud.name;
+    <field_name,int>Dict::dict        field_map = Dict::empty(strcmp);
+    <*(field_name,typ)>list           fields    = ud.fields;
+    *(<int>list, <*(int,cf_typ)>list) cf_fields = ^(null,null);
+
+    int void_num  = 1;
+    int value_num = 1;
+    for(; fields!=null; fields=fields.tl) {
+      typ t = fields.hd.2;
+      switch t {
+      case VoidType: 
+	cf_fields = ^(^list(void_num,cf_fields.1), cf_fields.2);
+	field_map = Dict::insert(field_map, fields.hd.1, void_num);
+	++void_num;
+      default: 
+	cf_fields = ^(cf_fields.1, 
+		      ^list(^(value_num,trans_typ(t)),cf_fields.2));
+	field_map = Dict::insert(field_map, fields.hd.1, value_num);
+	++value_num;
+      }
+    }
+    cf_uniondecl cf_ud = ^cf_uniondecl(ud.scope, name, ud.tyvars, cf_fields);
+    ev.file.unions     = Dict::insert(ev.file.unions,  name, cf_ud);
+    ev.union_fields    = Dict::insert(ev.union_fields, name, field_map);
+    
+  case ExternType(x): 
+    ev.file.abstracts = Dict::insert(ev.file.abstracts, 
+				     x.1, ^cf_absdecl(x.2, x.3));
+
+  case AbsDecl(a):
+    ev.file.abstypes = Dict::insert(ev.file.abstypes, a.name, 
+				   ^cf_abstypedecl(a.scope, a.name,
+						   a.all_tyvars, a.exist_tyvars,
+						   trans_typ(a.defn)));
+  default: BUG("trans_typedecl: Not a type declaration.");
+  }
+}
+
+void trans_exn(trans_env ev, *(var,scope,typ) x) {
+  // translate the declaration
+  <cf_typ>Opt topt = null;
+  id          i    = exn_addr(x.1);
+  switch x.3 {
+  case VoidType: 
+    ev.file.void_pkts = Set::insert(ev.file.void_pkts,void_exn_packet(x.1));
+  default:       
+    topt = ^Opt(trans_typ(x.3));
+  }
+  ev.file.exns = Dict::insert(ev.file.exns, i, ^cf_exndecl(x.2, i, topt));
+}
+ 
+cf_function trans_fun(trans_env ev, trans_fun_env fe, fndecl fd) {
+  // reuse fe when translating fd
+  // can make no assumptions about contents of fe except that parent
+  // is correct.
+  // does not install resulting function in file (needed for RTCG)
+  // first make the data structure we'll update as we go:
+  // at first entry_blk's fun and handler are wrong, so tie the knot below
+  // note entry is not the real entry -- Popiltal adds a prologue
+  //printf("\n %s\n",fd.name);
+
+  cf_block    entry_blk = make_block(fe, id_new(fd.name), null);
+  <cf_typ>Opt ret_typ   = null;
+  switch fd.ret_type {
+  case VoidType: ;
+  default:       ret_typ = ^Opt(trans_typ(fd.ret_type));
+  }
+  _ convention = (fd.convention == ^convention.Stdcall ? 
+		  ^cf_convention.Stdcall : ^cf_convention.Cdecl);
+  cf_function cf_fun    = 
+     ^cf_function(ev.file,
+		  fd.name,
+		  convention,
+		  fd.is_static,
+		  fd.tyvars,
+		  null,
+		  null,
+		  map(trans_typ, map(snd@<var,typ>, fd.args)),
+		  ret_typ,
+		  Xarray::create(10,^cf_idinfo(^cf_typ.Bool,^cf_use.Generated)),
+		  Xarray::create(10,^cf_constinfo(0,^cf_typ.Bool)),
+		  null,
+		  entry_blk,
+		  Xarray::from_array({entry_blk}),
+		  null,
+		  // Cyclone +
+		  null,
+		  null,
+		  Xarray::create(1,^cf_holeinfo.Terminal(null)),
+		  Xarray::create_empty(),
+		  Xarray::create_empty()
+		  // Cyclone -
+		  );
+  // now reset the function-local portion of the environment
+  // note: current_break_dest, current_continue_dest values won't be used
+  fe.global_env      = ev;
+  fe.fn              = cf_fun;
+  fe.is_main         = strcmp(fd.name,"pop_main")==0;
+  fe.child           = null;
+  fe.partial_inits   = Dict::empty(intcmp);
+  fe.var_to_local    = Dict::empty(strcmp);
+  fe.current_handler = null;
+  fe.label_to_blks   = Dict::empty(strcmp);
+  fe.current_blk     = entry_blk;
+  fe.unboxed_arrays  = Dict::empty(intcmp);
+  fe.current_templ   = null;
+  fe.regions         = Dict::empty(intcmp);
+  fe.filled_holes    = Dict::empty(intcmp);
+  fe.templ_ops       = Dict::empty(cf_template_cmp);
+
+  entry_blk.fn     = cf_fun;
+  entry_blk.handler = null;
+  entry_blk.num     = 0;
+
+  if(fe.parent != null) {
+    fe.fn.generator  = fe.parent.v.fn;
+    Xarray::delete(fe.fn.blocks,1); // Remove the entry_blk.
+    // Start template adds a new block.
+    fe = start_template(fe.parent.v); // XXX - very brittle invariants here!
+    _ new_entry = fe.current_blk;
+    new_entry.label = fe.fn.entry.label;
+    new_entry.num = 0; // reset the counter
+    new_entry.fn = cf_fun;
+
+    fe.fn.entry = new_entry;
+    Xarray::set(fe.fn.blocks,0,new_entry);
+  }
+
+  ground_block(fe,fe.current_blk);
+
+   // install parameters, zero-indexed
+  <*(var,typ)>list args = fd.args;
+  for(int i=0; args!=null; ++i, args=args.tl) {
+    _ arg_ty = trans_typ(args.hd.2);
+    int j = install_param(cf_fun, arg_ty, args.hd.1, i);
+    fe.var_to_local = Dict::insert(fe.var_to_local, args.hd.1, j);
+
+    // Eager unpacking of array parameters.
+    switch arg_ty {
+    case Array(_): 
+      _ jop = localoperand(j);
+      _ ua_ops = unbox_array(fe,jop,true);
+      _ tv_len;
+      switch operand_type(fe.fn,ua_ops.1) {
+      case Sing(s): tv_len = s.Var;
+      default: BUG("trans_fun: Array params length not singleton.");
+      }
+      fe.unboxed_arrays = Dict::insert(fe.unboxed_arrays,j,ua_ops);
+    default: ;
+    }
+
+  }
+  // translate body and handle implict return
+  if (!trans_stmt(fe, fd.body)) {
+    if(fe.fn.ret_typ == null) {
+      if(!fe.is_main) fe.current_blk.trans = ^cf_transfer.Retn(null);
+      else {
+	_ z = constoperand(newconst(fe.fn,0,
+				    ^cf_typ.Num(^cf_numtype(^.B4,true))));
+	fe.current_blk.trans = ^cf_transfer.Retn(^Opt(z)); 
+      }
+    }
+    else {
+      fe.current_blk.trans = ^cf_transfer.Abort; // Unreachable code.
+    }
+  }
+
+  if(fe.is_main) {
+    fe.fn.ret_typ = ^Opt(^cf_typ.Num(^cf_numtype(^.B4,true)));
+  }
+  // Eliminate duplicate variables in exist_tyvars.
+  <string>list etv = cf_fun.exist_tyvars;
+  if(etv!=null) {
+    etv = merge_sort(strcmp,etv);
+    for(<string>list x=etv;x.tl!=null;) {
+      if(strcmp(x.hd,x.tl.hd)==0) x.tl = x.tl.tl;
+      else x = x.tl;
+    }
+    cf_fun.exist_tyvars = etv;
+  }
+
+  if(fe.pending_blks!=null) {
+   Popilprint::set_output(tal_stdout);
+    printf("Pending blocks: ");
+    for(_ x = fe.pending_blks; x!=null; x=x.tl) {
+      _ b = x.hd;
+      Popilprint::prn_block(b);
+    }
+    BUG("Pending blocks remain.");
+  }
+
+  // Just as a convenience reverse the list of templates.
+  cf_fun.templates = List::rev(cf_fun.templates);
+
+  return cf_fun;
+}
+
+ void trans_fun_top(trans_env ev, fndecl fd) {
+   _ cf_fun = trans_fun(ev,ev.fe,fd);
+
+  // install the now finished function
+  ev.file.funs = Dict::insert(ev.file.funs,
+			      Poptaltypes::tid_fun(fd.name,cf_fun.convention,
+						   cf_fun.arg_typs),
+			      cf_fun);
+
+  if(strcmp(fd.name,"pop_main")==0)
+    ev.file.has_main = true;
+}
+
+void trans_extern(trans_env ev, *(var,typ) ext) {
+  _ t = trans_typ(ext.2);
+  _ ext_id;
+
+  switch t {
+  case Fn *(c,_,_,args):
+    ext_id = Poptaltypes::tid_fun(ext.1,c,args);
+  default: ext_id = Poptaltypes::tid_val(ext.1);
+  }
+
+  ev.file.extern_vals = Dict::insert(ev.file.extern_vals, ext_id, t);
+}
+
+
+////////////////////////////////  Entry Point /////////////////////////
+cf_file trans_file(Poptypeenv::global_env ge, <top_decl>list tds) {
+  // create the environment we will use for all of translation
+  cf_file file = ^cf_file(Dict::empty(strcmp),
+			  Dict::empty(strcmp),
+			  Dict::empty(strcmp),
+			  Dict::empty(strcmp),
+			  Dict::empty(id_compare),
+			  Set::empty(id_compare),
+			  Dict::empty(id_compare),
+			  Dict::empty(id_compare),
+			  Dict::empty(id_compare),
+			  Dict::empty(id_compare),
+			  false);
+    
+  _ fe = new_fun_env(null,file);
+  
+  _ ev = ^trans_env(file, 
+		    Dict::empty(strcmp),
+		    Dict::empty(strcmp),
+		    fe);
+  fe.global_env = ev; // Tie the knot.
+  
+  // sort the top decls
+  <raw_top_decl>             list top_typs    = null;
+  <fndecl>                   list top_funs    = null;
+  <*(scope,var,typ,<exp>Opt)>list top_globals = null;
+  <*(var,scope,typ)>         list top_exns    = null;
+  <*(var,typ)>               list top_extVals = null;
+  for(; tds != null; tds=tds.tl)
+    switch tds.hd.raw_top_decl {
+    case FunDecl      (f): top_funs    = ^list(f, top_funs);
+    case GlobalDecl   (g): top_globals = ^list(g, top_globals);
+    case ExceptionDecl(x): top_exns    = ^list(x, top_exns);
+    case ExternVal    (v): top_extVals = ^list(v, top_extVals);
+    default:               top_typs    = ^list(tds.hd.raw_top_decl, top_typs);
+  }
+  // translate the types, then the exceptions, then the terms
+  List::iter_c(trans_typedecl, ev, top_typs);
+  List::iter_c(trans_exn,      ev, top_exns);
+  List::iter_c(trans_extern,   ev, top_extVals);
+  List::iter_c(trans_global,   ev, top_globals);
+  List::iter_c(trans_fun_top,  ev, top_funs);
+  return file;
+  
+}
+

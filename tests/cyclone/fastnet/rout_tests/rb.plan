@@ -1,0 +1,14 @@
+(* The point of the test is to show that the resource bound
+   is decremented properly in the packet after the call to OnRemote
+   within the "eval"'ed chunk *)
+
+fun doit() =
+  OnRemote(|print|("hello"),hd thisHost(),1,defaultRoute)
+
+fun done() = print ("hello2")
+
+fun foo() =
+  (print ("rb starting at ");print (getRB());
+   eval(|doit|());
+   print ("rb after the send "); print(getRB());
+   OnRemote(|done|(),hd thisHost(),1,defaultRoute))

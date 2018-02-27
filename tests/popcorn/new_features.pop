@@ -1,0 +1,229 @@
+// This file demonstrates some new features added to Popcorn including:
+// 1. the <t>array type constructor
+// 2. sprintf and %x and %u descriptors
+// 3. tuple-patterns in switches
+// 4. try-catch
+// 5. labelled initializers for structs:  ^{x = 3, z = 4, y = 5}
+// 6. nested function definitions:  map(fun int f(int x) { return x+1; }, z)
+// 7. type inference using "_" for an unconstrained type
+// Notes are included in each section.
+#include "core.h"
+#include "string.h"
+#include "list.h"
+open Core;
+open String;
+open List;
+
+// 1. the <t>array type constructor
+// To denote an array type, one can use the old C-style "int x[]" notation
+// which is confusing when deeply nested and makes it difficult to macroize
+// or the new "<int>array x" notation.
+int sum(<int>array x) {
+  int s = 0;
+
+  s = 0;
+  for (int i=0; i < size(x); i++) {
+    s += x[i];
+  }
+  return s;
+}
+
+<int>array pickone(<<int>array>array x,int i) {
+  return x[i];
+}
+
+// 2. sprintf and %x and %u descriptors.  Sprintf is just a
+// convenient way to convert values to strings and glue them
+// together.  Both core.h and string.h need to be included
+// for it to work.  In addition, for sprintf, fprintf, and printf,
+// we can now use the %x (lower-case hex) and %u (unsigned int)
+// descriptors.
+
+void descriptors(int i, unsigned int j, string s, char c) {
+  string s2 = sprintf("i=%d (%x), j=%u (%x), s=%s, c=%c\n",i,i,j,j,s,c);
+  printf("i=%d (%x), j=%u (%x), s=%s, c=%c\ns2 = %s",i,i,j,j,s,c,s2);
+}
+
+// 3. This code demonstrates how pattern matching has been expanded
+// to support destructuring tuple components of unions and support
+// for wildcard patterns.  
+
+union t  // a datatype
+{
+  *(int,int) A;
+  *(int)     B;
+  *()        C;  // notice that C carries an "empty" tuple (unit in ML)
+  *(string,char,int) D;
+}
+
+int old_switch(t x) {
+  switch x {
+  case A(p): return p.1+p.2;  // must extract components using dot notation
+  case B(p): return p.1;
+  case C(p): return 0;
+  case D(p): return p.3;
+  }
+}  
+
+int new_switch(t x) {
+  switch x {
+  case A*(i,j): return i+j;  // use *(x1,...,xn) pattern to extract here
+  case B*(i): return i;
+  case C*(): return 0;
+  case D*(_,_,x): return x;  // notice wildcards
+  }
+}
+
+int other_switch(t x) {
+  switch x {
+  case A(_): return 0;
+  case B(i): return (i.1);
+  case C(x): return 1;
+  case D*(s,_,k): return ord(s[0])+k;
+  }
+}
+
+int other_switch2(t x) {
+  switch x {
+  case A*(_,j): return j;
+  case B*(_): return 2;
+  case C(x): return 1;
+  case D*(_,j,_): return ord(j);
+  }
+}
+
+// 4. try-catch
+// This code demonstrates that we now have support for Java-style
+// try/catch blocks (in addition to the ML-style try/handle) blocks.
+// I expect the try/handle blocks to go away eventually and to add
+// support for try/catch/finally and try/finally.  
+
+exception Foo;
+exception Boo(string);
+exception Baz(*(int,int));
+
+void old_style_exn() {
+  try {
+    1+1;
+  } handle y switch y {
+  case Foo: printf("Foo was raised\n");
+  case Boo(s): printf("Boo(%s) was raised\n",s);
+  case Baz(p): printf("Baz(%d,%d) was raised\n",p.1,p.2);
+  default: raise(y);
+  }
+}
+
+void new_style_exn() {
+  try {
+    1+1;
+  } catch {  // notice that you no longer have to name the exception
+  case Foo: printf("Foo was raised\n");
+  case Boo(s): printf("Boo(%s) was raised\n",s);
+  case Baz*(i,j): printf("Baz(%d,%d) was raised\n",i,j);
+    // notice that no default is needed (this is actually true for the
+    // other case too -- a re-raise is inserted.
+  }
+}
+
+// 5. labelled initializers for structs
+// So you don't have to remember the order of the fields.  Notice
+// that, just as in ML, the effects happen left-to-right in the 
+// expression order, not the field order.
+struct big_hairy {int x; int y; int z; string name; char io;}
+
+big_hairy top_level = ^big_hairy{y = 3, x = 4, name = "fred", io = 'c', z = 2};
+
+int have_effect(int i) {
+  printf("i = %d\n",i);
+  return i;
+}
+
+// executing this will print out i=1, i=2, i=3
+big_hairy old_big_hairy(int i,int j) {
+  return ^big_hairy(have_effect(1), // x
+		    have_effect(2), // y
+		    have_effect(3), // z
+		    "barney",       // name
+		    'd');           // io
+}
+
+// executing this will print out i=2, i=3, i=1
+big_hairy new_big_hairy(int i,int j) {
+  return ^big_hairy {y=have_effect(2), z=have_effect(3), x=have_effect(1),
+		       name="barney", io = 'd'};
+}
+
+// 6. nested function definitions
+// The form "fun t f<a1,...,an>(t1 x1,...,tn xn) { ... }" is treated
+// as static function expression.  Note however, that the inner function
+// cannot refer to local variables or arguments of the enclosing function
+// (i.e., it's not a closure.)  Also, instead of using an identifier,
+// one can use "_" to avoid creating a name for the function.
+
+// notice that sum is a function already defined at the top-level
+// but doesn't conflict with the inner function defined here.
+int sum_list(<int>list x) {
+  return List::fold_left(fun int sum(int s,int x) { return s+x; },0,x);
+}
+
+// here we use "_" instead of the naming the function sum -- this is
+// the equivalent of a lambda.
+int sum_list2(<int>list x) {
+  return List::fold_left(fun int _(int s,int x) { return s+x; },0,x);
+}
+
+// One can nest inner functions and they can refer to one another
+// thereby allowing you to define mutually-recursive functions.
+// Also, when one writes a local variable of function type, one
+// can "initialize" it with a block "{...}".  
+void test_fn() {
+
+  // notice f defines an internal function g which calls f (and vice versa).
+  int foo(int x,string y) = 
+    fun int f(int x,string y) { 
+      return (fun int g(int z) { return f(3,"foo"); })(ord(y[0]));
+    };
+
+  // the following is short hand for:
+  //   int baz(int x,string y) = fun int baz(int x,string y) { return x+1 };
+  int baz(int x,string y) { return x+1; };
+
+  foo(2,"bar");
+  baz(3,"frob");
+}
+
+<int>list addone(<int>list x) {
+  return List::map(fun int inc(int z) { return z+1;}, x);
+}
+
+// polymorphic functions can also be defined locally
+int test_id() {
+
+  a id<a>(a x) = fun a id<a>(a x){ return x; };
+
+  a id2<a>(a x) { return x;};
+
+  return id2(id(3));
+}
+
+// 7. type inference for locally-declared variables
+// You can simply write "_" instead of the type for variables.
+void test_inference() {
+  _ x;
+  _ z = ^(3,4), w = ^(1,2);
+  _ y = "hello";
+  if(true)
+    x=0;
+  else 
+    x=4;
+  printf("%s: %d %d %d %d %d\n",y,x,z.1,z.2,w.1,w.2);
+}
+
+void test_stuff(<*(<int>list,int)>list x) {
+  <<int>list>list y = List::map(fst@<<int>list,int>,x);
+  return;
+}
+
+void pop_main() {
+  test_id();
+}

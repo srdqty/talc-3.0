@@ -1,0 +1,37 @@
+#include "core.h"
+open Core;
+
+int mexp(int exp, int mod, int base) {
+  int res = 1;
+  while (exp != 0) {
+    if ((exp & 1) != 0)
+      res = (res*base) % mod;
+    base = (base*base) % mod;
+    exp >>= 1;
+  }
+  return(res);
+}
+
+int mexp_gen(int exp, int mod) (int) {
+  return
+    codegen(int mexp_sp(int base) {
+      int res = 1;
+      cut
+        while (exp != 0) {
+          if ((exp & 1) != 0)
+            splice res = (res*base) % fill(mod);
+          splice base = (base*base) % fill(mod);
+          exp >>= 1;
+        }
+      return(res);
+    });
+}
+
+void pop_main() {
+
+  printf("     mexp(3,4,5)=%d\n",mexp(3,4,5));
+  printf("mexp_gen(3,4)(5)=%d\n",mexp_gen(3,4)(5));
+  printf("     mexp(5,3,2)=%d\n",mexp(5,3,2));
+  printf("mexp_gen(5,3)(2)=%d\n",mexp_gen(5,3)(2));
+
+}

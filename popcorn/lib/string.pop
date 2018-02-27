@@ -1,0 +1,156 @@
+
+// Dan moved this stuff here so that core.pop didn't rely on list
+// (which is a pain when non-list code wants to link against core)
+
+#include "core.h"
+#include "list.h"
+#include "char.h"
+open Core;
+open List;
+
+prefix String;
+open   String;
+
+// this is a lot more space-efficient than calling strconcat repeatedly:
+string strconcat_l(<string>list strs) {
+  <string>list p = strs;
+  int total_len  = 0;
+  while (p!=null) {
+    total_len += size(p.hd);
+    p = p.tl;
+  }  
+  string ans = new_string(total_len);
+  int i = 0;
+  while (strs != null) {
+    string next    = strs.hd;
+    int    next_sz = size(strs.hd);
+    strncpy(ans,i,next,0,next_sz);
+    i += next_sz;
+    strs = strs.tl;
+  }
+  return ans;
+}
+string str_sepstr(<string>list strs, string separator) {
+  if (strs == null)    return "";
+  if (strs.tl == null) return strcpy(strs.hd);
+  <string>list p = strs;
+  int total_len  = 0;
+  int list_len   = 0;
+  while (p!=null) {
+    total_len += size(p.hd);
+    ++list_len;
+    p = p.tl;
+  }
+  int sep_sz = size(separator);
+  total_len += (list_len - 1)*sep_sz;
+  string ans = new_string(total_len);
+  int i = 0;
+  while (strs.tl != null) {
+    string next    = strs.hd;
+    int    next_sz = size(strs.hd);
+    strncpy(ans,i,next,0,next_sz);
+    i += next_sz;
+    strncpy(ans,i,separator,0,sep_sz);
+    i += sep_sz;
+    strs = strs.tl;
+  }
+  strncpy(ans,i,strs.hd,0,size(strs.hd));
+  return ans;
+}
+
+exception Substring(string);
+string substring(string s, int start, int amt) {
+  if (start + amt - 1 > size(s)) raise Substring(s);
+  string ans = new_string(amt);
+  for(int i=0; i<amt; ++i)
+    ans[i] = s[start+i];
+  return ans;
+}
+
+string replace_suffix (string src, string curr_suffix, string new_suffix) {
+  int m = size(src);
+  int n = size(curr_suffix);
+  string err = "chop_suffix";
+  if (m < n) 
+    raise InvalidArg(err);
+  for (int i = 1; i <= n; ++i)
+    if(src[m-i] != curr_suffix[n-i])
+      raise InvalidArg(err);
+  string ans = new_string(m-n+size(new_suffix));
+  strncpy(ans,0,src,0,m-n);
+  strncpy(ans,m-n,new_suffix,0,size(new_suffix));
+  return ans;
+}
+
+exception Strncmp;
+
+int strncmp_subs(string s1,int ofs1,string s2,int ofs2,int n) {
+  int s1size = size(s1) - ofs1;
+  int s2size = size(s2) - ofs2;
+  int min_size = (s1size > s2size) ? s2size : s1size;
+  int bound = (min_size > n) ? n : min_size;
+
+  if (n < 0 || ofs1 < 0 || ofs2 < 0) raise Strncmp();
+
+  for (int i=0; i < bound; i++) {
+    if (s1[i+ofs1] < s2[i+ofs2])
+      return(-1);
+    else if (s2[i+ofs2] < s1[i+ofs1])
+      return(1);
+  }
+  if (min_size <= bound)
+    return(0);
+  if (s1size < s2size)
+    return(-1);
+  else 
+    return(1);
+}
+
+int strncmp(string s1,string s2,int n) {
+  return strncmp_subs(s1,0,s2,0,n);
+}
+
+// same as above, but case-insensitive
+int strncasecmp_subs(string s1,int ofs1,string s2,int ofs2,int n) {
+  int s1size = size(s1) - ofs1;
+  int s2size = size(s2) - ofs2;
+  int min_size = (s1size > s2size) ? s2size : s1size;
+  int bound = (min_size > n) ? n : min_size;
+
+  if (n < 0 || ofs1 < 0 || ofs2 < 0) raise Strncmp();
+
+  for (int i=0; i < bound; i++) {
+    char c1, c2;
+    c1 = Char::to_upper(s1[i+ofs1]);
+    c2 = Char::to_upper(s2[i+ofs2]);
+    if (c1 < c2)
+      return(-1);
+    else if (c2 < c1)
+      return(1);
+  }
+  if (min_size <= bound)
+    return(0);
+  if (s1size < s2size)
+    return(-1);
+  else 
+    return(1);
+}
+
+// explode a string into a list of characters
+<char>list explode(string s) {
+  <char>list result = null;
+  for (int i = size(s) - 1; i >= 0; i--)
+    result = ^list(s[i],result);
+  return result;
+}
+
+// implode a list of characters into a string
+string implode(<char>list chars) {
+  string s = new_string(List::length(chars));
+  int i = 0;
+  while (chars != null) {
+    s[i++] = chars.hd;
+    chars = chars.tl;
+  }
+  return(s);
+}

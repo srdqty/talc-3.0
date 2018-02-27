@@ -1,0 +1,5 @@
+fun f(e1 : string, e2 : string, e3 : string) : unit =
+  (e1, e2, e3)
+
+val entry_fun : unit = "f"
+val entry_args : unit = ["this"; "that"; 3]

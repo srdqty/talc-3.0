@@ -1,0 +1,781 @@
+/* Type environments.
+
+   An identifier can have at most one binding in each of the following:
+
+   1) namespaces (after "namespace" or "using")
+   2) structure tags (after "struct")
+   3) union tags (after "union")
+   4) structure or union members (after "." or "->")
+   5) enum tags (after "enum")
+   6) xenum tags (after "xenum")
+   7) labels (after "goto", before ":")
+   8) typedef names (in types)
+   9) ordinary identifiers (the catch-all case)
+
+   The ordinary identifiers include structure tags and enum and xenum
+   constructors.
+
+   The environment data structures below follow from this directly.
+   Note that labels can only appear inside of functions, so they don't
+   appear in global environments.  And structure and union members
+   must be resolved on a per-structure/per-union basis (e.g., two
+   structs can have members with the same names) so their bindings
+   don't belong in our environments.
+
+   Also, we don't currently implement union.
+*/
+
+/* FIX: the environment datatypes should be abstract.
+   Their representation is used in this file and in tc.pop; elsewhere
+   they are used abstractly, but this is not enforced. */
+
+/* During type checking we keep two parallel environments.  One is
+   accessed by absolute name, the other by local name.  We need these
+   two environments because what is defined in a namespace is
+   different from what is available in the namespace.  E.g.,
+
+      extern int z;
+      namespace Foo {
+        int x;
+        namespace Bar {
+          int y = x;
+        }
+      }  
+   
+   Here x is available in the inner namespace Bar but not defined
+   there.  The absolute namespace will have entries for ::z, ::Foo::x,
+   ::Foo::Bar, and ::Foo::Bar::y.  The relative namespace just after
+   the definition of y will have entries for x, y, and z.
+*/
+
+#include "core.h"
+#include "list.h"
+#include "dict.h"
+#include "set.h"
+#include "dict.h"
+#include "gcdfec.h"
+#include "absyn.h"
+
+extern void Tcutil::check_unique_tvars(Gcdfec::seg,<tvar>List::list);
+extern void Tcutil::terr(Gcdfec::seg, string);
+
+prefix Tcenv;
+open Tcenv;
+
+open Core;
+open List;
+open Set;
+open Dict;
+open Gcdfec;
+open Absyn;
+
+exception Env_error;
+
+a env_err<a>(string msg) {
+  printf("Error: %s\n",msg);
+  fflush(tal_stdout);
+  raise Env_error();
+}
+
+/* Type environments */
+struct tenv {
+  <var>list            ns; // current namespace
+  <<var>list,genv>dict ae; // absolute environment
+  <<fenv>frames>Opt    le; // local environment, == null except in functions
+}
+
+tenv tc_init() 
+{
+  // Initialize globals
+  empty_var_set = ^Opt(Set::empty(strcmp));
+  empty_unassigned = ^Opt(^unassigned.Always(empty_var_set.v));
+
+  // Set up initial environment so that xenum exn is defined
+  _ exn_v = "exn";
+  _ xed = ^xenumdecl{scope=^scope.Extern,
+                     name=^(null,exn_v),
+                     fields=null};
+  _ ge = empty_genv();
+  ge.xenumdecls = Dict::insert(ge.xenumdecls, exn_v, xed);
+  _ ae = Dict::insert(Dict::empty(varlist_cmp), null, ge);
+  _ initial_dict = Dict::insert(Dict::empty(varlist_cmp),
+                                null,
+                                empty_genv());
+  return ^tenv(null,ae,null);
+}
+
+/* Global environments -- what's declared in a global scope */
+struct genv {
+  <var>set              namespaces;
+  <var,structdecl>dict  structdecls;
+  <var,enumdecl>dict    enumdecls;
+  <var,xenumdecl>dict   xenumdecls;
+  <var,typedefdecl>dict typedefs;
+  <var,resolved>dict    ordinaries;
+  <<var>list>list       availables; // "using" namespaces
+}
+
+genv genv_copy(genv ge) {
+  return ^genv{
+    namespaces=ge.namespaces,
+    structdecls=ge.structdecls,
+    enumdecls=ge.enumdecls,
+    xenumdecls=ge.xenumdecls,
+    typedefs=ge.typedefs,
+    ordinaries=ge.ordinaries,
+    availables=ge.availables
+  };
+}
+
+struct ok_ctrl {
+  bool OK_continue;
+  bool OK_loop_break;
+  bool OK_switch_break;
+  bool OK_fallthru;
+}
+
+static ok_ctrl def_okay_ctrl = ^ok_ctrl(false,false,false,false);
+
+ok_ctrl default_ok_ctrl() {
+  return def_okay_ctrl;
+}
+
+/* Local function environments */
+struct fenv {
+  <var>list             labels;
+  <var,var_info>dict    locals;
+  ok_ctrl               ok_ctrl;
+  <var>set              unassigned; // maybe-unassigned variables
+  typ                   return_typ;
+  <var,typedefdecl>dict typedefs;
+  <tvar>list            type_vars; // type variables that can occur free
+}
+
+/* Models the nesting of the RTCG constructs */
+union <a>frames {
+  a              Outermost;
+  *(a,<a>frames) Frame;
+  *(a,<a>frames) Hidden;
+}
+
+a get_visible<a>(<a>frames f) {
+  switch (f) {
+  case Outermost(x): return x;
+  case Frame*(x,_): return x;
+  case Hidden*(x,y): return get_visible(y);
+  }
+}
+
+<a>frames put_visible<a>(<a>frames f, a x) {
+  switch (f) {
+  case Outermost(x2): return ^frames.Outermost(x);
+  case Frame*(x2,f2): return ^frames.Frame(^(x,f2));
+  case Hidden*(x2,f2): return ^frames.Hidden(^(x2,put_visible(f2,x)));
+  }
+}
+
+<a>frames apply_to_visible<a>(a g(a), <a>frames f) {
+  return put_visible(f,g(get_visible(f)));
+}
+
+<b>frames map_frames<a,b>(b g(a), <a>frames f) {
+  switch (f) {
+  case Outermost(x): return ^frames.Outermost(g(x));
+  case Frame*(x,f2): return ^frames.Frame(^(g(x),map_frames(g,f2)));
+  case Hidden*(x,f2): return ^frames.Hidden(^(g(x),map_frames(g,f2)));
+  }
+
+}
+
+fenv get_fenv(tenv te) {
+  if (te.le == null) raise Env_error();
+  return get_visible(te.le.v);
+}
+
+tenv put_fenv(tenv te, fenv fe) {
+  if (te.le == null) raise Env_error();
+  return ^tenv(te.ns, te.ae, ^Opt(put_visible(te.le.v,fe)));
+}
+
+/* Used to tell what an ordinary identifer refers to */
+union resolved {
+  void                   UnknownRes;
+  var_info               LocalRes;
+  *(qvar,var_info)       GlobalRes;
+  structdecl             StructRes;
+  *(enumdecl,enumfield)  EnumRes;
+  *(xenumdecl,enumfield) XenumRes;
+}
+
+struct var_info {
+  scope scope;
+  tqual tq;
+  typ   t;
+  bool  is_used;
+}
+
+/* lookup functions */
+resolved lookup_ordinary(tenv te,seg loc,qvar q) {
+  if (q.1 != null || te.le == null)
+    return lookup_ordinary_global(te,loc,q);
+  var v = q.2;
+  fenv fe = get_fenv(te);
+  try
+    return ^resolved.LocalRes(Dict::lookup(fe.locals,v));
+  catch {
+  case Dict::Absent:
+    return lookup_ordinary_global(te,loc,q);
+  }
+}
+
+static resolved lookup_ordinary_global(tenv te,seg loc,qvar q) {
+  try {
+    if (q.1 == null)
+      return scoped_lookup(te,
+                           loc,
+                           fun resolved
+                           f(genv ge,var v) { 
+                             return Dict::lookup(ge.ordinaries,v);
+                           },
+                           q.2).2;
+    genv ge = lookup_namespace(te,loc,q.1);
+    return Dict::lookup(ge.ordinaries,q.2);
+  } catch {
+  case Dict::Absent:
+    return ^resolved.UnknownRes;
+  }
+}
+
+static <var>list outer_namespace(<var>list ns) {
+  if (ns == null)
+    // FIX: should give impossible error
+    return null;
+  return List::rev(List::rev(ns).tl);
+}
+
+// Lookup a namespace relative to the current namespace
+genv lookup_namespace(tenv te, seg loc, <var>list ns) {
+  return Dict::lookup(te.ae, resolve_namespace(te,loc,ns));
+}
+
+<var>list resolve_namespace(tenv te, seg loc, <var>list ns) {
+  if (ns == null)
+    // null means the current namespace
+    return te.ns;
+  <var>list cns = te.ns; // current namespace
+  <<var>list>list result = null;
+  while (true) {
+    genv ge = Dict::lookup(te.ae,cns);
+    // Check namespaces that have been made available
+    for (_ nss = ge.availables; nss != null; nss = nss.tl) {
+      genv ge = Dict::lookup(te.ae,nss.hd);
+      if (Set::member(ge.namespaces, ns.hd))
+        result = ^list(List::append(cns,ns),result);
+    } 
+    // Check current namespace
+    if (Set::member(ge.namespaces, ns.hd))
+      result = ^list(List::append(cns,ns),result);
+    if (result != null) {
+      if (result.tl != null)
+        Tcutil::terr(loc,sprintf("%s is ambiguous_",ns.hd));
+      return result.hd;
+    }
+    if (cns == null)
+      raise Dict::Absent();
+    // ns.hd is not defined in current namespace, look in next outer
+    cns = outer_namespace(cns);
+  }
+  raise Dict::Absent(); // unreachable, added to avoid type error
+}
+
+static *(<var>list,a)
+scoped_lookup<a>(tenv te, seg loc, a lookup(genv,var), var v) {
+  <var>list cns = te.ns; // current namespace
+  <*(<var>list,a)>list result = null;
+  while (true) {
+    genv ge = Dict::lookup(te.ae,cns);
+    // Check available namespaces
+    for (_ nss = ge.availables; nss != null; nss = nss.tl) {
+      genv ge = Dict::lookup(te.ae,nss.hd);
+      try result = ^list(^(nss.hd,lookup(ge,v)),result);
+      catch { case Dict::Absent: /* ignore */ ; }
+    } 
+    // Check current namespace
+    try result = ^list(^(cns,lookup(ge,v)),result);
+    catch { case Dict::Absent: /* ignore */ ; }
+
+    if (result != null) {
+      if (result.tl != null)
+        Tcutil::terr(loc,sprintf("%s is ambiguous-",v));
+      return result.hd;
+    }
+
+    if (cns == null)
+      raise Dict::Absent();
+    // v is not defined in current namespace, look in next outer
+    cns = outer_namespace(cns);
+  }
+  raise Dict::Absent(); // unreachable, added to avoid type error
+}
+
+structdecl lookup_structdecl(tenv te,seg loc,qvar q) {
+  if (q.1 == null)
+    return scoped_lookup(te,
+                         loc,
+                         fun structdecl
+                         f(genv ge,var v) { 
+                           return Dict::lookup(ge.structdecls,v);
+                         },
+                         q.2).2;
+  genv ge = lookup_namespace(te,loc,q.1);
+  return Dict::lookup(ge.structdecls,q.2);
+}
+
+enumdecl lookup_enumdecl(tenv te,seg loc,qvar q) {
+  if (q.1 == null)
+    return scoped_lookup(te,
+                         loc,
+                         fun enumdecl
+                         f(genv ge,var v) { 
+                           return Dict::lookup(ge.enumdecls,v);
+                         },
+                         q.2).2;
+  genv ge = lookup_namespace(te,loc,q.1);
+  return Dict::lookup(ge.enumdecls,q.2);
+}
+
+xenumdecl lookup_xenumdecl(tenv te,seg loc,qvar q) {
+  if (q.1 == null)
+    return scoped_lookup(te,
+                         loc,
+                         fun xenumdecl
+                         f(genv ge,var v) { 
+                           return Dict::lookup(ge.xenumdecls,v);
+                         },
+                         q.2).2;
+  genv ge = lookup_namespace(te,loc,q.1);
+  return Dict::lookup(ge.xenumdecls,q.2);
+}
+
+tenv update_xenumdecl(tenv te, seg loc, qvar q, xenumdecl xed) {
+  <var>list where_found = null;
+
+  if (q.1 == null) {
+    _ p = scoped_lookup(te,
+                        loc,
+                        fun xenumdecl
+                        f(genv ge,var v) { 
+                          return Dict::lookup(ge.xenumdecls,v);
+                        },
+                        q.2);
+    where_found = p.1;
+  } else where_found = resolve_namespace(te,loc,q.1);
+
+  genv ge = Dict::lookup(te.ae,where_found);
+  ge = genv_copy(ge);
+  ge.xenumdecls = Dict::insert(ge.xenumdecls,q.2,xed);
+  return ^tenv{ae = Dict::insert(te.ae,where_found,ge),
+               ns = te.ns,
+               le = te.le};  
+}
+
+typedefdecl lookup_typedefdecl(tenv te,seg loc,qvar q) {
+  if (q.1 == null)
+    return scoped_lookup(te,
+                         loc,
+                         fun typedefdecl
+                         f(genv ge,var v) { 
+                           return Dict::lookup(ge.typedefs,v);
+                         },
+                         q.2).2;
+  genv ge = lookup_namespace(te,loc,q.1);
+  return Dict::lookup(ge.typedefs,q.2);
+}
+
+tenv add_local_var(Gcdfec::seg loc, tenv te, var v, tqual tq, typ t, bool init) {
+  if (te.le == null) env_err("Tcenv: unexpected add_local_var");
+  fenv fe = get_fenv(te);
+  <var>set unassigned = fe.unassigned;
+  if (!init)
+    unassigned = Set::insert(unassigned,v);
+  _ new_locals = fe.locals;
+  try {
+    new_locals = Dict::insert_new(fe.locals,v,
+                                  ^var_info(^scope.Public,tq,t,false));
+  } catch {
+  case Dict::Present:
+    Tcutil::terr(loc,sprintf("redeclaration of %s",v));
+  }
+  fenv fe2 = ^fenv(fe.labels,
+                   new_locals,
+                   fe.ok_ctrl,
+                   unassigned,
+                   fe.return_typ,
+                   fe.typedefs,
+		   fe.type_vars);
+  return put_fenv(te,fe2);
+}
+
+<*(tqual,typ)>Opt lookup_struct_field(structdecl sd, var v) {
+  if (sd.fields == null) return null;
+  _ fs = sd.fields.v;
+  while (fs != null)
+    if (strcmp(fs.hd.1,v) == 0)
+      return ^Opt(^(fs.hd.2,fs.hd.3));
+    else
+      fs = fs.tl;
+  return null;
+}
+
+<tvar>list lookup_type_vars(tenv te) {
+  if (te.le == null) return null;
+  return get_fenv(te).type_vars;
+}
+
+tenv add_type_vars(seg loc,tenv te,<tvar>list tvs) {
+  <tvar>list new_tvs = List::append(tvs,lookup_type_vars(te));
+  Tcutil::check_unique_tvars(loc,new_tvs);
+  fenv fe = get_fenv(te);
+  fenv fe2 = ^fenv(fe.labels,
+		   fe.locals,
+		   fe.ok_ctrl,
+		   fe.unassigned,
+		   fe.return_typ,
+		   fe.typedefs,
+		   new_tvs);
+  return put_fenv(te,fe2);
+}
+
+struct synth {
+  typ        typ;       // only valid on expressions
+  ctrl       ctrl;      // how the stmt/expr may flow
+  unassigned norm_unas; // uninitialized variables on fall-through edge
+  <var>set   jump_unas; // uninitialized variables on forward jump edge
+}
+
+// When type-checking a statement or expression, we need to know
+// what kind of control flow it may have so that we can determine
+// whether code "falls off" a function, implicitly falls through
+// in a switch branch, etc.  We also use this information to better
+// approximate the set of variables that have not yet been initialized.
+// The lattice condtains 3 bits of information represented as follows:
+struct ctrl {
+  bool implicit_fallthru;     // stmt/exp may fall-through
+  bool explicit_fallthru;     // stmt does an explicit fallthru
+  bool forward_jump;          // stmt/exp may do a forward jump
+}
+
+bool synth_may_implicit_fallthru(synth s) {
+  return s.ctrl.implicit_fallthru;
+}
+
+bool synth_may_explicit_fallthru(synth s) {
+  return s.ctrl.explicit_fallthru;
+} 
+
+typ synth_typ(synth s) {
+  return s.typ;
+}
+
+synth synth_set_typ(synth s, typ t) {
+  //return ^synth{typ = t, ctrl = s.ctrl, norm_unas = s.norm_unas, 
+  //jump_unas = s.jump_unas};
+  s.typ = t;
+  return s;
+}
+
+static ctrl standard_ctrl = ^ctrl(true,false,false);
+static ctrl empty_ctrl = ^ctrl(false,false,false);
+static ctrl forward_ctrl = ^ctrl(false,false,true);
+static ctrl fallthru_ctrl = ^ctrl(false,true,false);
+
+static <<var>set>Opt empty_var_set = null;
+
+union unassigned {
+  <var>set             Always;  // unassigned after expression/stmt
+  *(<var>set,<var>set) Boolean; // unassigned when exp true, when false
+}
+
+static <unassigned>Opt empty_unassigned = null;
+
+<var>set get_unassigned(tenv te) {
+  if (te.le == null) return empty_var_set.v;
+  fenv fe = get_fenv(te);
+  return fe.unassigned;
+}
+
+tenv layer_synth(tenv te, synth syn) {
+  if (synth_may_implicit_fallthru(syn))
+    return set_unassigned(te,maybe_unassigned(syn));
+  else 
+    return set_unassigned(te,empty_var_set.v);
+}
+
+*(tenv,tenv) bool_layer_synth(tenv te, synth syn) {
+  if (synth_may_implicit_fallthru(syn)) {
+    switch (syn.norm_unas) {
+    case Always(v):
+      te = set_unassigned(te,v);
+      return ^(te,te);
+    case Boolean*(tv,fv):
+      return ^(set_unassigned(te,tv), set_unassigned(te,fv));
+    }
+  } else {
+    te = set_unassigned(te,empty_var_set.v);
+    return ^(te,te);
+  }
+}
+
+<var>set maybe_unassigned(synth es) {
+  switch (es.norm_unas) {
+  case Always(s):       return s;
+  case Boolean*(s1,s2): return Set::union_two(s1,s2);
+  }
+}
+
+*(<var>set,<var>set) maybe_unassigned_bool(synth es) {
+  switch (es.norm_unas) {
+  case Always(s):   return ^(s,s);
+  case Boolean(pr): return pr;
+  }
+}
+
+unassigned merge_unassigned(unassigned u1, unassigned u2) {
+  switch (u1) {
+  case Always(s1):
+    switch (u2) {
+    case Always(s2): return ^unassigned.Always(Set::union_two(s1,s2));
+    case Boolean*(ts,fs): 
+      return ^unassigned.Boolean(^(Set::union_two(s1,ts),
+				   Set::union_two(s1,fs)));
+    }
+  case Boolean*(ts,fs):
+    switch (u2) {
+    case Always(s2):
+      return ^unassigned.Boolean(^(Set::union_two(s2,ts),
+				   Set::union_two(s2,fs)));
+    case Boolean*(ts2,fs2):
+      return ^unassigned.Boolean(^(Set::union_two(ts,ts2),
+				   Set::union_two(fs,fs2)));
+    }
+  }
+}
+
+// synth we get for most expressions and atomic statements -- implicit 
+// fallthru with no forward jump, and all currently unassigned variables as
+// unassigned on the normal edge, empty set of unassigned variables on
+// the forward jump edge.
+synth standard_synth(tenv te, typ t) {
+  return ^synth{typ = t, ctrl = standard_ctrl, 
+		norm_unas = ^unassigned.Always(get_unassigned(te)),
+	        jump_unas = empty_var_set.v};
+}
+
+// useful for error expressions
+synth wild_synth(tenv te) {
+  return standard_synth(te, wildtyp());
+}
+
+// synth we get for more statements -- standard_synth with void type
+synth skip_synth(tenv te) { return standard_synth(te, ^typ.VoidType); }
+
+// synth we get upon return or continue -- no fallthru or forward jump,
+// no unassigned variables on either the normal or forward jump edge.
+synth empty_synth(tenv te) {
+  _ j = empty_var_set.v;
+  _ u = ^unassigned.Always(j);
+  return ^synth{typ = wildtyp(),ctrl = empty_ctrl,norm_unas = u,jump_unas = j};
+}
+
+// synth we get upon a break, goto, or throw -- forward jump with no 
+// fallthru, all currently unassigned variables on the forward jump edge, the
+// empty set on the normal edge.
+synth forward_jump_synth(tenv te) {
+  ctrl c = forward_ctrl;
+  _ j = get_unassigned(te);
+  _ u = empty_unassigned.v;
+  return ^synth{typ = wildtyp(), ctrl = c, norm_unas = u, jump_unas = j};
+}
+
+// synth we get for sequencing.  We merge the normal and jump edges
+// according to whether or not s1 may fallthru to s2.
+synth seq_synth(synth s1, synth s2) {
+  if (!s1.ctrl.implicit_fallthru) {
+    // control can't get to s2
+    // HACK:  we want to return s1 but the type must be draw from s2
+    // I'm using in place update instead of allocating a new record...
+    // bet this bites me someday.
+    s1.typ = s2.typ;
+    return s1;
+  } else if (!s1.ctrl.forward_jump) 
+    // control can only flow through s2
+    return s2;     
+  else {
+    // control may or may not flow through s2
+    ctrl c = ^ctrl{forward_jump = s1.ctrl.forward_jump || s2.ctrl.forward_jump,
+		   implicit_fallthru = s2.ctrl.implicit_fallthru,
+		   explicit_fallthru = s2.ctrl.explicit_fallthru};
+    unassigned nu = s2.norm_unas;
+    <var>set ju = Set::union_two(s1.jump_unas, s2.jump_unas);
+    return ^synth{typ = s2.typ, ctrl = c, norm_unas = nu, jump_unas = ju};
+  }
+}
+		    
+// synth we get upon join of two if statements or switch cases etc.
+synth join_synth(synth s1, synth s2) {
+  ctrl c = ^ctrl{implicit_fallthru = (s1.ctrl.implicit_fallthru || 
+				      s2.ctrl.implicit_fallthru),
+		 forward_jump = s1.ctrl.forward_jump || s2.ctrl.forward_jump,
+		 explicit_fallthru = false
+                 };
+  _ norm = merge_unassigned(s1.norm_unas,s2.norm_unas);
+  _ jump = Set::union_two(s1.jump_unas,s2.jump_unas); 
+  return ^synth{typ = s1.typ, ctrl = c, norm_unas = norm, jump_unas = jump};
+}
+
+// after joining all of the switch cases' synths, we treat the 
+// unassigned variables on the "forward jump" edge as unassigned
+// on the outgoing normal control flow edge, because any case's break is
+// a forward jump to the bottom of the switch statement.  
+synth switch_bottom(synth s) {
+  _ n = ^unassigned.Always(Set::union_two(s.jump_unas,maybe_unassigned(s)));
+  ctrl c = ^ctrl{implicit_fallthru = 
+		   s.ctrl.forward_jump || s.ctrl.explicit_fallthru, 
+                 //		 forward_jump = s.ctrl.forward_jump,
+                 // When a switch is followed by other statements, the result
+                 // of the above is a statement with a forward jump, even
+                 // though the forward jump comes from break statements.
+		 forward_jump = false,
+		 explicit_fallthru = false};
+
+  //  return ^synth{typ = s.typ, ctrl = c, norm_unas = n, jump_unas = s.jump_unas};
+  // The above does not work for nested switches.  Assignments after a nested switch
+  // will not be seen outside the outer switch.
+  return ^synth{typ = s.typ, ctrl = c, norm_unas = n, jump_unas = empty_var_set.v};
+}
+
+// after a loop, the synth is the join of the "false" part of the
+// test expression, and the forward_jump part of the statement
+synth loop_synth(synth e, synth s) {
+  ctrl c = ^ctrl{implicit_fallthru = e.ctrl.implicit_fallthru, 
+		 explicit_fallthru = false,
+		 forward_jump = e.ctrl.forward_jump || s.ctrl.forward_jump};
+  _ un_false = maybe_unassigned_bool(e).2;
+  _ nu = Set::union_two(un_false, s.jump_unas);
+  _ ju = Set::union_two(e.jump_unas, s.jump_unas);
+  return ^synth{typ = ^typ.VoidType, ctrl = c, 
+		norm_unas = ^unassigned.Always(nu), jump_unas = ju};
+}
+
+// an explicit fallthru -- similar to skip but ctrl indicates explicit fallthru
+synth fallthru_synth(tenv te) {
+  ctrl c = fallthru_ctrl;
+  return ^synth{typ = ^typ.VoidType, ctrl = c,
+		norm_unas = ^unassigned.Always(get_unassigned(te)),
+		jump_unas = empty_var_set.v};
+}
+
+// remove all of the variables on the fall-through edge
+synth drop_fallthru_synth(synth s) {
+  s.norm_unas = empty_unassigned.v;
+  return s;
+}
+
+// add the set v to both edges of the synth
+synth add_var_synth(<var>set v, synth s) {
+  unassigned nu = ^unassigned.Always(Set::union_two(maybe_unassigned(s),v));
+  return ^synth{typ = s.typ, ctrl = s.ctrl,
+		norm_unas = nu, jump_unas = Set::union_two(s.jump_unas,v)};
+}
+
+// remove v from the fallthru edge of the synth
+synth initialize_var_synth(synth s, var v) {
+  _ vs = Set::delete(maybe_unassigned(s),v);
+  return ^synth{typ = s.typ, ctrl = s.ctrl, 
+		norm_unas = ^unassigned.Always(vs), jump_unas = s.jump_unas};
+}
+
+
+tenv set_unassigned(tenv te, <var>set un) {
+  if (te.le == null) return te;
+  fenv fe = get_fenv(te);
+  fenv fe2 = ^fenv(fe.labels,fe.locals,fe.ok_ctrl,un,
+                   fe.return_typ,fe.typedefs,fe.type_vars);
+  return put_fenv(te,fe2);
+}
+
+bool is_ok_continue(tenv te) {
+  if (te.le == null) return false;
+  fenv fe = get_fenv(te);
+  return fe.ok_ctrl.OK_continue;
+}
+bool is_ok_break(tenv te) {
+  if (te.le == null) return false;
+  fenv fe = get_fenv(te);
+  return (fe.ok_ctrl.OK_switch_break || fe.ok_ctrl.OK_loop_break);
+}
+bool is_ok_fallthru(tenv te) {
+  if (te.le == null) return false;
+  fenv fe = get_fenv(te);
+  return fe.ok_ctrl.OK_fallthru;
+}
+tenv set_in_loop(tenv te) {
+  if (te.le == null) env_err("Tcenv: unexpected set_in_loop");
+  fenv fe = get_fenv(te);
+  ok_ctrl c2 = ^ok_ctrl{OK_continue=true,OK_loop_break=true,
+			OK_switch_break=false,OK_fallthru=false};
+  fenv fe2 = ^fenv(fe.labels,fe.locals,c2,fe.unassigned,fe.return_typ,
+                   fe.typedefs,fe.type_vars);
+  return put_fenv(te,fe2);
+}
+tenv set_in_switch(tenv te) {
+  if (te.le == null) env_err("Tcenv: unexpected set_in_switch");
+  fenv fe = get_fenv(te);
+  ok_ctrl c1 = fe.ok_ctrl;
+  ok_ctrl c2 = ^ok_ctrl{OK_continue=c1.OK_continue,
+			OK_loop_break=false,
+			OK_switch_break=true,
+			OK_fallthru=true};
+  fenv fe2 = ^fenv(fe.labels,fe.locals,c2,fe.unassigned,fe.return_typ,
+                   fe.typedefs,fe.type_vars);
+  return put_fenv(te,fe2);
+}
+tenv clear_fallthru(tenv te) {
+  if (te.le == null) return te;
+  fenv fe = get_fenv(te);
+  ok_ctrl c1 = fe.ok_ctrl;
+  // avoid allocating a new env unless the state really changes
+  if (fe.ok_ctrl.OK_fallthru) {
+    ok_ctrl c2 = ^ok_ctrl{OK_continue=c1.OK_continue,
+			  OK_loop_break=c1.OK_loop_break,
+			  OK_switch_break=c1.OK_switch_break,
+			  OK_fallthru=false};
+    fenv fe2 = ^fenv(fe.labels,fe.locals,c2,fe.unassigned,fe.return_typ,
+		     fe.typedefs,fe.type_vars);
+    return put_fenv(te,fe2);
+  } else 
+    return te;
+}
+tenv add_label(tenv te,var v) {
+  if (te.le == null) env_err("Tcenv: unexpected add_label");
+  fenv fe = get_fenv(te);
+  fenv fe2 = ^fenv(^list(v,fe.labels),fe.locals,fe.ok_ctrl,
+                   fe.unassigned,fe.return_typ,fe.typedefs,fe.type_vars);
+  return put_fenv(te,fe2);
+}
+typ return_typ(tenv te) {
+  if (te.le == null) env_err("Tcenv: unexpected return_typ");
+  return get_fenv(te).return_typ;
+}
+
+genv empty_genv() { // FIX: inefficient...
+  return ^genv{namespaces  = empty_var_set.v,
+               structdecls = Dict::empty(strcmp),
+               enumdecls   = Dict::empty(strcmp),
+               xenumdecls  = Dict::empty(strcmp),
+               typedefs    = Dict::empty(strcmp),
+               ordinaries  = Dict::empty(strcmp),
+               availables  = null};
+}
+
+

@@ -1,0 +1,57 @@
+#include "core.h"
+
+open Core;
+
+/**** "External" data ****/
+void call_func() {
+  func();
+}
+
+void change_c() {
+  c = 1;
+}
+/*************************/
+
+void func() {
+  return;
+}
+
+int c = 1;
+
+extern void start_cc_time(int i);
+extern void end_cc_time(int i);
+extern void print_cc_time_med(int i,int num);
+extern void print_cc_time(int i,int num);
+
+void pop_main () {
+  int i, j;
+  void f() = call_func;
+  void g() = change_c;
+
+/*
+  printf("timing overhead:\n");
+
+  for (i=0; i<100; i++) {
+    start_cc_time(i);
+    end_cc_time(i);
+  }
+  print_cc_time_med(i,1);
+*/
+
+  printf("cost per-call:\n");
+  start_cc_time(0);
+  for (i=0; i<100000; i++) {
+    f();
+  }
+  end_cc_time(0);
+  print_cc_time(0,i);
+
+  printf("cost per-update:\n");
+  start_cc_time(0);
+  for (i=0; i<100000; i++) {
+    g();
+  }
+  end_cc_time(0);
+  print_cc_time(0,i);
+
+}

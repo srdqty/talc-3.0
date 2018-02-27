@@ -1,0 +1,33 @@
+#include "core.h"
+#include "poploader.h"
+
+exception FailedCheck;
+a myload <a>(string name,<a>rep trep) 
+{ 
+  /* use filesystem to find the files */
+  string talname = Core::strconcat(name, ".o");
+  string toname = Core::strconcat(name, ".to");
+  FILE talfile = Core::file_open (talname, "rb");
+  FILE tofile = Core::file_open (toname, "rb");
+  /* read talfile */
+  int tallen = Core::file_length(talname);
+  string talbuf = Core::new_string(tallen);
+  int tolen = Core::file_length(toname);
+  string tobuf = Core::new_string(tolen);
+  
+  f_string_read(talfile, talbuf, 0, tallen);
+  f_string_read(tofile, tobuf, 0, tolen);
+  Core::file_close (talfile);
+  Core::file_close (tofile);
+  
+  return Poploader::pop_load (talbuf,tobuf,trep);
+}
+
+<*(*(a)<a>(a))>rep trep = repterm@<*(*(a)<a>(a))>;
+
+void pop_main() {
+//  *(*(a)<a>(a)) f = myload("foo",repterm@<*(*(a)<a>(a))>);
+  *(*(a)<a>(a)) f = myload("foo",trep);
+  *(int) v;
+  v = (f.1)(1);
+}

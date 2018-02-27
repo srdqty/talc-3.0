@@ -1,0 +1,3 @@
+(* find out which hosts are neighbors of a router *)
+fun getNeighbors() = print(getNeighbors())
+

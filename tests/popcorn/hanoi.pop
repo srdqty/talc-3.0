@@ -1,0 +1,62 @@
+// hanoi.pop -- towers of hanoi.
+// Tests recursive functions.
+
+#include "core.h"
+open Core;
+
+int hanoi12(int n) {
+  if (n == 0) return 0;
+  int m = n - 1;
+  hanoi13(m);
+  print_string("1->2 ");
+  return(hanoi32(m));
+}
+
+int hanoi13(int n) {
+  if (n == 0) return 0;
+  int m = n - 1;
+  hanoi12(m);
+  print_string("1->3 ");
+  return(hanoi23(m));
+}
+
+int hanoi23(int n) {
+  if (n == 0) return 0;
+  int m = n - 1;
+  hanoi21(m);
+  print_string("2->3 ");
+  return(hanoi13(m));
+}
+
+int hanoi21(int n) {
+  if (n == 0) return 0;
+  int m = n - 1;
+  hanoi23(m);
+  print_string("2->1 ");
+  return(hanoi31(m));
+}
+
+int hanoi31(int n) {
+  if (n == 0) return 0;
+  int m = n - 1;
+  hanoi32(m);
+  print_string("3->1 ");
+  return(hanoi21(m));
+}
+
+int hanoi32(int n) {
+  if (n == 0) return 0;
+  int m = n - 1;
+  hanoi31(m);
+  print_string("3->2 ");
+  return(hanoi12(m));
+}
+
+int pop_main()
+{	
+  print_string("\n3 rings peg 1 -> peg 2: ");
+  hanoi12(3);
+  print_string("\n");
+
+  return 1;
+}

@@ -1,0 +1,162 @@
+
+// talout.pop
+// Made the decision that O/S is a compile-time (i.e. pre-processor)
+// decision.  One of SYS_WIN32 OR SYS_UNIX should be defined by the Sys module.
+
+// only ported the things that Popcorn needs
+// excluded: write_options, write_int, write_imp
+
+#include "sys.h"
+#include "core.h"
+#include "list.h"
+#include "string.h"
+#include "arg.h"
+open Core;
+open List;
+open String;
+
+prefix Talout;
+open   Talout;
+
+union bintool   { void MS, TALC, GNU; }
+union binformat { void COFF, ELF; }
+
+#ifdef SYS_UNIX
+string    object_file_suffix = ".o";
+string    library_suffix     = ".a";
+string    default_executable = "a.out";
+bintool   asm_bintool        = ^bintool.TALC;
+bintool   link_bintool       = ^bintool.GNU;
+binformat objformat          = ^binformat.ELF;
+#else
+string    object_file_suffix = ".obj";
+string    library_suffix     = ".lib";
+string    default_executable = "a.exe";
+bintool   asm_bintool        = ^bintool.MS;
+bintool   link_bintool       = ^bintool.MS;
+binformat objformat          = ^binformat.COFF;
+#endif
+
+static <string>Opt runtime_opt;
+string runtime() {
+  if (runtime_opt != null)
+    return runtime_opt.v;
+  try 
+    runtime_opt = ^Opt(get_env("TALCLIB"));
+  handle y switch y {
+  case Not_found: runtime_opt = ^Opt(Sys::current_dir_name);
+  default:        raise(y);
+  }
+  return runtime_opt.v;
+}
+void set_runtime(string s) {
+  runtime_opt = ^Opt(s);
+}
+<string>list includes = null;
+void add_include(string p) {
+  if (!mem(strcmp,includes,p))
+    includes = ^list(p,includes);
+}
+string ri_options() {
+  return strconcat(" --runtime ",
+	 strconcat(runtime(),
+	 str_sepstr(includes, " -I ")));
+}
+Arg::bool_ref verbose_sys_commands = ^Arg::bool_ref(true);
+static bool sys_command(string s) {
+  if (verbose_sys_commands.v) {
+    printf("%s\n", s); 
+    fflush(tal_stdout);
+  }
+  return system(string_to_Cstring(s))==0;
+}
+bool verify(string filename) {
+  return 
+    sys_command(strconcat_l(^list("talc.exe",
+			    ^list(ri_options(),
+			    ^list(" --elaborate-only ",
+			    ^list(filename,null))))));
+}
+static exception Exit;
+
+static bool do_asm(bool doverify, string talfn, <string>Opt objfile) {
+  string cmd;
+  try {
+    switch asm_bintool {
+    case MS:
+      if (doverify && !verify(talfn)) raise Exit(); // order matters!
+      switch objformat {
+      case COFF:
+	string incs  = str_sepstr(^list(runtime(),includes), " /I");
+	string oname = (objfile==null) ? "" : strconcat(" /Fo", objfile.v);
+	cmd = strconcat_l(^list("ml /nologo /coff",
+			  ^list(incs,
+			  ^list(" /Fl /Sc /c",
+			  ^list(oname,
+			  ^list(" /Ta",
+			  ^list(talfn,null)))))));
+      case ELF: 
+	fprintf(tal_stderr,"%s: masm cannot output ELF\n",talfn);
+	raise Exit();
+      }
+    case TALC:
+      string oname = (objfile==null) ? "" : strconcat(" -o ", objfile.v);
+      string fmt;
+      switch objformat {
+      case COFF: fmt = " --coff";
+      case ELF:  fmt = " --elf";
+      }
+      cmd = strconcat_l(^list("talc.exe",
+			^list(ri_options(),
+			^list(oname,
+			^list(" --TALC",
+			^list(fmt,
+			^list(" -c ",
+			^list(talfn,null))))))));
+    case GNU: 
+      fprintf(tal_stderr, "%s, GNU assembler not supported\n", talfn);
+      raise Exit();
+    }
+    return sys_command(cmd);
+  } handle y switch y {
+  case Exit: return false;
+  default:   raise(y);
+  }
+}
+
+bool asm(string talfn, <string>Opt objfile) { 
+  return do_asm(false, talfn, objfile);
+}
+bool verify_and_asm(string talfn, <string>Opt objfile) {
+  return do_asm(true, talfn, objfile);
+}
+
+bool link(<string>list objfiles, string exename) {
+  string cmd;
+  switch link_bintool {
+  case MS:
+    string include_str = 
+      includes == null ? "" 
+                : strconcat(" /libpath:", str_sepstr(includes, " /libpath:"));
+    cmd = strconcat_l(^list("link /nologo /nodefaultlib:libc /subsystem:console /libpath:",
+		      ^list(runtime(),
+		      ^list(include_str,
+		      ^list(" /out:",
+		      ^list(exename,
+		      ^list(" tal_start",
+		      ^list(object_file_suffix,
+		      ^list(" ",
+		      ^list(str_sepstr(objfiles, " "),
+		      ^list(" tal_util",
+		      ^list(object_file_suffix,
+		      ^list(" gc",
+		      ^list(library_suffix, null))))))))))))));
+  case TALC:
+    fprintf(tal_stderr, "Talout.link -- TALC linker unimplemented");
+    raise Exit();
+  case GNU:
+    fprintf(tal_stderr, "Talout.link -- gcc not called from Popcorn (yet)");
+    raise Exit();
+  }
+  return sys_command(cmd);
+}

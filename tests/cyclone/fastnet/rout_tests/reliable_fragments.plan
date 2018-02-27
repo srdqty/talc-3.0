@@ -1,0 +1,19 @@
+svc generateKey : void -> key
+svc sendAck : ('a chunk,key,int) -> unit chunk
+
+fun sendem (c,x:int*host) =
+  let val seq = generateKey()
+      val d = sendAck(c,seq,10) in
+    (RetransOnRemote([d],seq,3,#2 x,#1 x,defaultRoute);x)
+  end
+
+svc fragment : ('a chunk,int) -> unit chunk list
+svc fragment_overhead : int
+svc reliable_overhead : int
+
+fun reliable_fragments(dest,c) =
+  let val p = defaultRoute(dest)
+      val cs = fragment(c,getMTU(snd p)-reliable_overhead)
+      val l = length(cs) in
+    (foldr(sendem,cs,(getRB()/(l*3),dest)); ())
+  end

@@ -1,0 +1,694 @@
+/* MWH 7/27/00 --- ported from: */
+
+/* tdate_parse - parse string dates into internal form, stripped-down version
+**
+** Copyright (C) 1995 by Jef Poskanzer <jef@acme.com>.  All rights reserved.
+**
+** Redistribution and use in source and binary forms, with or without
+** modification, are permitted provided that the following conditions
+** are met:
+** 1. Redistributions of source code must retain the above copyright
+**    notice, this list of conditions and the following disclaimer.
+** 2. Redistributions in binary form must reproduce the above copyright
+**    notice, this list of conditions and the following disclaimer in the
+**    documentation and/or other materials provided with the distribution.
+** 
+** THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+** ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+** IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+** ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+** FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+** DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+** OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+** HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+** LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+** OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+** SUCH DAMAGE.
+*/
+
+/* This is a stripped-down version of date_parse.c, available at
+** http://www.acme.com/software/date_parse/
+*/
+
+#include "unixlib.h"
+#include "char.h"
+#include "array.h"
+#include "core.h"
+
+#include "c_string.h"
+#include "scanf.h"
+
+static struct strint {
+  string s;
+  int l;
+}
+
+static void
+pound_case( string str )
+{
+  int len;
+  len = C_strlen(str);
+  for (int i=0; i < len; i++ )
+    str[i] = Char::to_lower( str[i] );
+}
+
+static int
+strint_compare( strint v1, strint v2 )
+{
+  return C_strcmp( v1.s, 0, v2.s, 0 );
+}
+
+static int
+strint_search( string str, strint tab[] )
+{
+  int i, h, l, r;
+  
+  l = 0;
+  h = size(tab) - 1;
+  for (i = ( h + l ) / 2; ;i = ( h + l ) / 2) {
+    r = C_strcmp( str, 0, tab[i].s, 0 );
+    if ( r < 0 )
+      h = i - 1;
+    else if ( r > 0 )
+      l = i + 1;
+    else
+      break;
+
+    if ( h < l )
+      return -1;
+  }
+  return tab[i].l;
+}
+
+static strint wday_tab[] = {
+  ^strint( "sun", 0 ), ^strint( "sunday", 0 ),
+  ^strint( "mon", 1 ), ^strint( "monday", 1 ),
+  ^strint( "tue", 2 ), ^strint( "tuesday", 2 ),
+  ^strint( "wed", 3 ), ^strint( "wednesday", 3 ),
+  ^strint( "thu", 4 ), ^strint( "thursday", 4 ),
+  ^strint( "fri", 5 ), ^strint( "friday", 5 ),
+  ^strint( "sat", 6 ), ^strint( "saturday", 6 )
+};
+static bool wday_sorted = false;
+
+static int
+scan_wday( string str_wday )
+{
+  int retval;
+  if ( ! wday_sorted ) {
+    Array::qsort( strint_compare, wday_tab, 0, size(wday_tab));
+    wday_sorted = true;
+  }
+  pound_case( str_wday );
+  return strint_search( str_wday, wday_tab );
+}
+
+static strint mon_tab[] = {
+  ^strint( "jan", 0 ), ^strint( "january", 0 ),
+  ^strint( "feb", 1 ), ^strint( "february", 1 ),
+  ^strint( "mar", 2 ), ^strint( "march", 2 ),
+  ^strint( "apr", 3 ), ^strint( "april", 3 ),
+  ^strint( "may", 4 ),
+  ^strint( "jun", 5 ), ^strint( "june", 5 ),
+  ^strint( "jul", 6 ), ^strint( "july", 6 ),
+  ^strint( "aug", 7 ), ^strint( "august", 7 ),
+  ^strint( "sep", 8 ), ^strint( "september", 8 ),
+  ^strint( "oct", 9 ), ^strint( "october", 9 ),
+  ^strint( "nov", 10 ), ^strint( "november", 10 ),
+  ^strint( "dec", 11 ), ^strint( "december", 11 )
+};
+static bool mon_sorted = false;
+
+static int
+scan_mon( string str_mon ) {
+
+  if ( ! mon_sorted ) {
+    Array::qsort( strint_compare, mon_tab, 0,  size(mon_tab));
+    mon_sorted = true;
+  }
+  pound_case( str_mon );
+  return strint_search(str_mon, mon_tab);
+}
+
+static bool
+is_leap( int year )
+{
+  return year % 400 != 0 ? 
+    ( year % 100 != 0 ? ( year % 4 != 0 ? false : true ) : false ) : true;
+}
+
+
+/* Basically the same as mktime(). */
+static int monthtab[12] = {
+  0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334 };
+
+static int
+tm_to_time( tm tmP ) {
+  int t;
+
+  /* Years since epoch, converted to days. */
+  t = ( tmP.tm_year - 70 ) * 365;
+  /* Leap days for previous years. */
+  t += ( tmP.tm_year - 68 ) / 4;
+  /* Days for the beginning of this month. */
+  t += monthtab[tmP.tm_mon];
+  /* Leap day for this year. */
+  if ( tmP.tm_mon >= 2 && is_leap( tmP.tm_year ) )
+    ++t;
+  /* Days since the beginning of this month. */
+  t += tmP.tm_mday - 1;	/* 1-based field */
+  /* Hours, minutes, and seconds. */
+  t = t * 24 + tmP.tm_hour;
+  t = t * 60 + tmP.tm_min;
+  t = t * 60 + tmP.tm_sec;
+  
+  return t;
+}
+
+/* DD-mth-YY HH:MM:SS GMT */
+static bool read_tz_1(string buf, int ofs, string tmp, tm tm_ret) 
+{
+  *(int) ofsp = ^(ofs);
+  *(int) int_ret = ^(0);
+  int tm_sec, tm_min, tm_hour, tm_mday, tm_year;
+  int tm_mon, tm_wday;
+  
+/*  equivalent to 	
+    if ( sscanf( cp, "%d-%[a-zA-Z]-%d %d:%d:%d GMT",
+		&tm_mday, str_mon, &tm_year, &tm_hour, &tm_min,
+		&tm_sec ) == 6 &&
+	    scan_mon( str_mon, &tm_mon ) )
+	{
+*/
+  if (!read_int(buf,ofsp,int_ret))
+    return false;
+  tm_mday = int_ret.1;
+
+  if (!eat_pattern(buf,ofsp,"-"))
+    return false;
+
+  if (!read_alphastring(buf,ofsp,tmp,0))
+    return false;
+  tm_mon = scan_mon(tmp);
+  if (tm_mon == -1)
+    return false;
+
+  if (!eat_pattern(buf,ofsp,"-"))
+    return false;
+
+  if (!read_int(buf,ofsp,int_ret))
+    return false;
+  tm_year = int_ret.1;
+
+  eat_whitespace(buf,ofsp);
+
+  if (!read_int(buf,ofsp,int_ret))
+    return false;
+  tm_hour = int_ret.1;
+
+  if (!eat_pattern(buf,ofsp,":"))
+    return false;
+
+  if (!read_int(buf,ofsp,int_ret))
+    return false;
+  tm_min = int_ret.1;
+
+  if (!eat_pattern(buf,ofsp,":"))
+    return false;
+	
+  if (!read_int(buf,ofsp,int_ret))
+    return false;
+  tm_sec = int_ret.1;
+
+  if (!eat_pattern(buf,ofsp," GMT"))
+    return false;
+
+  tm_ret.tm_mday = tm_mday;
+  tm_ret.tm_mon = tm_mon;
+  tm_ret.tm_year = tm_year;
+  tm_ret.tm_hour = tm_hour;
+  tm_ret.tm_min = tm_min;
+  tm_ret.tm_sec = tm_sec;
+  
+  return true;
+}
+
+/* DD-mth-YY HH:MM:SS GMT */
+static bool read_tz_2(string buf, int ofs, string tmp, tm tm_ret) 
+{
+  *(int) ofsp = ^(ofs);
+  *(int) int_ret = ^(0);
+  int tm_sec, tm_min, tm_hour, tm_mday, tm_year;
+  int tm_mon, tm_wday;
+  
+/*  equivalent to 	
+    else if ( sscanf( cp, "%d %[a-zA-Z] %d %d:%d:%d GMT",
+		&tm_mday, str_mon, &tm_year, &tm_hour, &tm_min,
+		&tm_sec) == 6 &&
+	    scan_mon( str_mon, &tm_mon ) )
+*/
+
+  if (!read_int(buf,ofsp,int_ret))
+    return false;
+  tm_mday = int_ret.1;
+
+  eat_whitespace(buf,ofsp);
+
+  if (!read_alphastring(buf,ofsp,tmp,0))
+    return false;
+  tm_mon = scan_mon(tmp);
+  if (tm_mon == -1)
+    return false;
+
+  eat_whitespace(buf,ofsp);
+
+  if (!read_int(buf,ofsp,int_ret))
+    return false;
+  tm_year = int_ret.1;
+
+  eat_whitespace(buf,ofsp);
+
+  if (!read_int(buf,ofsp,int_ret))
+    return false;
+  tm_hour = int_ret.1;
+
+  if (!eat_pattern(buf,ofsp,":"))
+    return false;
+
+  if (!read_int(buf,ofsp,int_ret))
+    return false;
+  tm_min = int_ret.1;
+
+  if (!eat_pattern(buf,ofsp,":"))
+    return false;
+	
+  if (!read_int(buf,ofsp,int_ret))
+    return false;
+  tm_sec = int_ret.1;
+
+  if (!eat_pattern(buf,ofsp," GMT"))
+    return false;
+
+  tm_ret.tm_mday = tm_mday;
+  tm_ret.tm_mon = tm_mon;
+  tm_ret.tm_year = tm_year;
+  tm_ret.tm_hour = tm_hour;
+  tm_ret.tm_min = tm_min;
+  tm_ret.tm_sec = tm_sec;
+  return true;
+}
+
+/* HH:MM:SS GMT DD-mth-YY */
+static bool read_tz_3(string buf, int ofs, string tmp, tm tm_ret) 
+{
+  *(int) ofsp = ^(ofs);
+  *(int) int_ret = ^(0);
+  int tm_sec, tm_min, tm_hour, tm_mday, tm_year;
+  int tm_mon, tm_wday;
+  
+/*  equivalent to 	
+    else if ( sscanf( cp, "%d:%d:%d GMT %d-%[a-zA-Z]-%d",
+		&tm_hour, &tm_min, &tm_sec, &tm_mday, str_mon,
+		&tm_year ) == 6 &&
+	    scan_mon( str_mon, &tm_mon ) )
+*/
+  if (!read_int(buf,ofsp,int_ret))
+    return false;
+  tm_hour = int_ret.1;
+
+  if (!eat_pattern(buf,ofsp,":"))
+    return false;
+
+  if (!read_int(buf,ofsp,int_ret))
+    return false;
+  tm_min = int_ret.1;
+
+  if (!eat_pattern(buf,ofsp,":"))
+    return false;
+	
+  if (!read_int(buf,ofsp,int_ret))
+    return false;
+  tm_sec = int_ret.1;
+
+  if (!eat_pattern(buf,ofsp," GMT "))
+    return false;
+
+  if (!read_int(buf,ofsp,int_ret))
+    return false;
+  tm_mday = int_ret.1;
+
+  if (!eat_pattern(buf,ofsp,"-"))
+    return false;
+
+  if (!read_alphastring(buf,ofsp,tmp,0))
+    return false;
+  tm_mon = scan_mon(tmp);
+  if (tm_mon == -1)
+    return false;
+
+  if (!eat_pattern(buf,ofsp,"-"))
+    return false;
+
+  if (!read_int(buf,ofsp,int_ret))
+    return false;
+  tm_year = int_ret.1;
+
+  tm_ret.tm_hour = tm_hour;
+  tm_ret.tm_min = tm_min;
+  tm_ret.tm_sec = tm_sec;
+  tm_ret.tm_mday = tm_mday;
+  tm_ret.tm_mon = tm_mon;
+  tm_ret.tm_year = tm_year;
+
+  return true;
+}
+
+/* HH:MM:SS GMT DD mth YY */
+static bool read_tz_4(string buf, int ofs, string tmp, tm tm_ret) 
+{
+  *(int) ofsp = ^(ofs);
+  *(int) int_ret = ^(0);
+  int tm_sec, tm_min, tm_hour, tm_mday, tm_year;
+  int tm_mon, tm_wday;
+  
+/*  equivalent to 	
+    else if ( sscanf( cp, "%d:%d:%d GMT %d %[a-zA-Z] %d",
+		&tm_hour, &tm_min, &tm_sec, &tm_mday, str_mon,
+		&tm_year ) == 6 &&
+	    scan_mon( str_mon, &tm_mon ) )
+*/
+
+  if (!read_int(buf,ofsp,int_ret))
+    return false;
+  tm_hour = int_ret.1;
+
+  if (!eat_pattern(buf,ofsp,":"))
+    return false;
+
+  if (!read_int(buf,ofsp,int_ret))
+    return false;
+  tm_min = int_ret.1;
+
+  if (!eat_pattern(buf,ofsp,":"))
+    return false;
+	
+  if (!read_int(buf,ofsp,int_ret))
+    return false;
+  tm_sec = int_ret.1;
+
+  if (!eat_pattern(buf,ofsp," GMT "))
+    return false;
+
+  if (!read_int(buf,ofsp,int_ret))
+    return false;
+  tm_mday = int_ret.1;
+
+  eat_whitespace(buf,ofsp);
+
+  if (!read_alphastring(buf,ofsp,tmp,0))
+    return false;
+  tm_mon = scan_mon(tmp);
+  if (tm_mon == -1)
+    return false;
+
+  eat_whitespace(buf,ofsp);
+
+  if (!read_int(buf,ofsp,int_ret))
+    return false;
+  tm_year = int_ret.1;
+
+  tm_ret.tm_hour = tm_hour;
+  tm_ret.tm_min = tm_min;
+  tm_ret.tm_sec = tm_sec;
+  tm_ret.tm_mday = tm_mday;
+  tm_ret.tm_mon = tm_mon;
+  tm_ret.tm_year = tm_year;
+
+  return true;
+}
+
+/* wdy, DD-mth-YY HH:MM:SS GMT */
+static bool read_tz_5(string buf, int ofs, string tmp, tm tm_ret) 
+{
+  *(int) ofsp = ^(ofs);
+  *(int) int_ret = ^(0);
+  int tm_sec, tm_min, tm_hour, tm_mday, tm_year;
+  int tm_mon, tm_wday;
+  
+/*  equivalent to 	
+    else if ( sscanf( cp, "%[a-zA-Z], %d-%[a-zA-Z]-%d %d:%d:%d GMT",
+		str_wday, &tm_mday, str_mon, &tm_year, &tm_hour, &tm_min,
+		&tm_sec ) == 7 &&
+	    scan_wday( str_wday, &tm_wday ) &&
+	    scan_mon( str_mon, &tm_mon ) )
+	{
+*/
+
+  if (!read_alphastring(buf,ofsp,tmp,0))
+    return false;
+  tm_wday = scan_wday(tmp);
+  if (tm_wday == -1)
+    return false;
+
+  if (!eat_pattern(buf,ofsp,", "))
+    return false;
+
+  if (!read_int(buf,ofsp,int_ret))
+    return false;
+  tm_mday = int_ret.1;
+
+  if (!eat_pattern(buf,ofsp,"-"))
+    return false;
+
+  if (!read_alphastring(buf,ofsp,tmp,0))
+    return false;
+  tm_mon = scan_mon(tmp);
+  if (tm_mon == -1)
+    return false;
+
+  if (!eat_pattern(buf,ofsp,"-"))
+    return false;
+
+  if (!read_int(buf,ofsp,int_ret))
+    return false;
+  tm_year = int_ret.1;
+
+  eat_whitespace(buf,ofsp);
+  
+  if (!read_int(buf,ofsp,int_ret))
+    return false;
+  tm_hour = int_ret.1;
+
+  if (!eat_pattern(buf,ofsp,":"))
+    return false;
+
+  if (!read_int(buf,ofsp,int_ret))
+    return false;
+  tm_min = int_ret.1;
+
+  if (!eat_pattern(buf,ofsp,":"))
+    return false;
+	
+  if (!read_int(buf,ofsp,int_ret))
+    return false;
+  tm_sec = int_ret.1;
+
+  if (!eat_pattern(buf,ofsp," GMT"))
+    return false;
+
+  tm_ret.tm_wday = tm_wday;
+  tm_ret.tm_mday = tm_mday;
+  tm_ret.tm_mon = tm_mon;
+  tm_ret.tm_year = tm_year;
+  tm_ret.tm_hour = tm_hour;
+  tm_ret.tm_min = tm_min;
+  tm_ret.tm_sec = tm_sec;
+
+  return true;
+}
+
+/* wdy, DD mth YY HH:MM:SS GMT */
+static bool read_tz_6(string buf, int ofs, string tmp, tm tm_ret) 
+{
+  *(int) ofsp = ^(ofs);
+  *(int) int_ret = ^(0);
+  int tm_sec, tm_min, tm_hour, tm_mday, tm_year;
+  int tm_mon, tm_wday;
+  
+/*  equivalent to 	
+    else if ( sscanf( cp, "%[a-zA-Z], %d %[a-zA-Z] %d %d:%d:%d GMT",
+		str_wday, &tm_mday, str_mon, &tm_year, &tm_hour, &tm_min,
+		&tm_sec ) == 7 &&
+	    scan_wday( str_wday, &tm_wday ) &&
+	    scan_mon( str_mon, &tm_mon ) )
+*/
+  if (!read_alphastring(buf,ofsp,tmp,0))
+    return false;
+  tm_wday = scan_wday(tmp);
+  if (tm_wday == -1)
+    return false;
+
+  if (!eat_pattern(buf,ofsp,", "))
+    return false;
+
+  if (!read_int(buf,ofsp,int_ret))
+    return false;
+  tm_mday = int_ret.1;
+
+  eat_whitespace(buf,ofsp);
+
+  if (!read_alphastring(buf,ofsp,tmp,0))
+    return false;
+  tm_mon = scan_mon(tmp);
+  if (tm_mon == -1)
+    return false;
+
+  eat_whitespace(buf,ofsp);
+
+  if (!read_int(buf,ofsp,int_ret))
+    return false;
+  tm_year = int_ret.1;
+
+  eat_whitespace(buf,ofsp);
+  
+  if (!read_int(buf,ofsp,int_ret))
+    return false;
+  tm_hour = int_ret.1;
+
+  if (!eat_pattern(buf,ofsp,":"))
+    return false;
+
+  if (!read_int(buf,ofsp,int_ret))
+    return false;
+  tm_min = int_ret.1;
+
+  if (!eat_pattern(buf,ofsp,":"))
+    return false;
+	
+  if (!read_int(buf,ofsp,int_ret))
+    return false;
+  tm_sec = int_ret.1;
+
+  if (!eat_pattern(buf,ofsp," GMT"))
+    return false;
+
+  tm_ret.tm_wday = tm_wday;
+  tm_ret.tm_mday = tm_mday;
+  tm_ret.tm_mon = tm_mon;
+  tm_ret.tm_year = tm_year;
+  tm_ret.tm_hour = tm_hour;
+  tm_ret.tm_min = tm_min;
+  tm_ret.tm_sec = tm_sec;
+
+  return true;
+}
+
+/* wdy mth DD HH:MM:SS GMT YY */
+static bool read_tz_7(string buf, int ofs, string tmp, tm tm_ret) 
+{
+  *(int) ofsp = ^(ofs);
+  *(int) int_ret = ^(0);
+  int tm_sec, tm_min, tm_hour, tm_mday, tm_year;
+  int tm_mon, tm_wday;
+  
+/*  equivalent to 	
+    else if ( sscanf( cp, "%[a-zA-Z] %[a-zA-Z] %d %d:%d:%d GMT %d",
+		str_wday, str_mon, &tm_mday, &tm_hour, &tm_min, &tm_sec,
+		&tm_year ) == 7 &&
+	    scan_wday( str_wday, &tm_wday ) &&
+	    scan_mon( str_mon, &tm_mon ) )
+	{
+*/
+
+  if (!read_alphastring(buf,ofsp,tmp,0))
+    return false;
+  tm_wday = scan_wday(tmp);
+  if (tm_wday == -1)
+    return false;
+
+  eat_whitespace(buf,ofsp);
+
+  if (!read_alphastring(buf,ofsp,tmp,0))
+    return false;
+  tm_mon = scan_mon(tmp);
+  if (tm_mon == -1)
+    return false;
+
+  eat_whitespace(buf,ofsp);
+
+  if (!read_int(buf,ofsp,int_ret))
+    return false;
+  tm_mday = int_ret.1;
+
+  if (!read_int(buf,ofsp,int_ret))
+    return false;
+  tm_hour = int_ret.1;
+
+  if (!eat_pattern(buf,ofsp,":"))
+    return false;
+
+  if (!read_int(buf,ofsp,int_ret))
+    return false;
+  tm_min = int_ret.1;
+
+  if (!eat_pattern(buf,ofsp,":"))
+    return false;
+	
+  if (!read_int(buf,ofsp,int_ret))
+    return false;
+  tm_sec = int_ret.1;
+
+  if (!eat_pattern(buf,ofsp," GMT "))
+    return false;
+
+  if (!read_int(buf,ofsp,int_ret))
+    return false;
+  tm_year = int_ret.1;
+
+  tm_ret.tm_wday = tm_wday;
+  tm_ret.tm_mday = tm_mday;
+  tm_ret.tm_mon = tm_mon;
+  tm_ret.tm_year = tm_year;
+  tm_ret.tm_hour = tm_hour;
+  tm_ret.tm_min = tm_min;
+  tm_ret.tm_sec = tm_sec;
+
+  return true;
+}
+
+static tm tm_ret = ^tm(0,0,0,0,0,0,0,0,false);
+static string tmp = "";
+
+int
+tdate_parse( string str, int ofs )
+{
+  int t;
+
+  if (size(tmp) == 0)
+    tmp = Core::new_string(500);
+
+  tm_ret.tm_wday = 0;
+  tm_ret.tm_mday = 0;
+  tm_ret.tm_mon = 0;
+  tm_ret.tm_year = 0;
+  tm_ret.tm_hour = 0;
+  tm_ret.tm_min = 0;
+  tm_ret.tm_sec = 0;
+
+  /* try reading the time under various patterns */
+  if (!read_tz_1 (str, ofs, tmp, tm_ret))
+  if (!read_tz_2 (str, ofs, tmp, tm_ret))
+  if (!read_tz_3 (str, ofs, tmp, tm_ret))
+  if (!read_tz_4 (str, ofs, tmp, tm_ret))
+  if (!read_tz_5 (str, ofs, tmp, tm_ret))
+  if (!read_tz_6 (str, ofs, tmp, tm_ret))
+  if (!read_tz_7 (str, ofs, tmp, tm_ret))
+    return -1;
+
+  if ( tm_ret.tm_year > 1900 )
+    tm_ret.tm_year -= 1900;
+  else if ( tm_ret.tm_year < 70 )
+    tm_ret.tm_year += 100;
+
+  return tm_to_time( tm_ret );
+}

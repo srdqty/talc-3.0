@@ -1,0 +1,106 @@
+; Standard Library for TAL code
+;
+; Copyright Greg Morrisett, Neal Glew,
+;   January 1999, all rights reserved
+
+	TYPE	<string = Exist[s:Sint].^*[S(s)^r,(^*[array(s,B1^rw)])^r]>
+	TYPE	<arr = fn a:Tm 4 . Exist[s:Sint].^*[S(s)^r,(^*[array(s,a)])^r]>
+
+; For now we use the popcorn calling convention, latter we should convert
+; to a generic C calling convention with EBP callee save rather than the
+; explicit exception handling we have here.
+        TYPE    <?exnname = fn c$0:Tm . ^T^rw(c$0)*[B4^rw]>
+        TYPE    <?exn = Exist[c$0:Tm].^*[(?exnname c$0)^r,string^r,c$0]>
+	TYPE	<?H = fn s:Ts e:Tcap. code {cap: e,EAX: ?exn,ESP: sptr s}>
+	TYPE	<?E = fn s:Ts e:Tcap . (?H s e)::s>
+
+	TYPE	<?Sv = fn ?s1:Ts ?s2:Ts ?e1:Tcap ?e2:Tcap . (code {cap: &[?e1,?e2],EBP: sptr (?E ?s2 ?e2),ESP: sptr ?s1#(?E ?s2 ?e2)})::?s1>
+	TYPE	<?Sf = fn ?s1:Ts ?s2:Ts ?e1:Tcap ?e2:Tcap . (code {cap: &[?e1,?e2],ST0,EBP: sptr (?E ?s2 ?e2),ESP: sptr ?s1#(?E ?s2 ?e2)})::?s1>
+	TYPE	<?S = fn ?ret:T4 ?s1:Ts ?s2:Ts ?e1:Tcap ?e2:Tcap . (code {cap: &[?e1,?e2],EAX: ?ret,EBP: sptr (?E ?s2 ?e2),ESP: sptr ?s1#(?E ?s2 ?e2)})::?s1>
+
+	TYPE	<cfn = fn args:Ts res:T4 . All[s1:Ts s2:Ts e1:Tcap e2:Tcap].code{cap: &[e1,e2], EBP: sptr (?H s2 e2)::s2, ESP: sptr (code{cap: &[e1,e2], EAX: res, EBP: sptr (?H s2 e2)::s2, ESP: sptr args#s1#(?H s2 e2)::s2})::args#s1#(?H s2 e2)::s2}>
+	TYPE	<cproc = fn args:Ts . All[s1:Ts s2:Ts e1:Tcap e2:Tcap].code{cap: &[e1,e2], EBP: sptr (?H s2 e2)::s2, ESP: sptr (code{cap: &[e1,e2], EBP: sptr (?H s2 e2)::s2, ESP: sptr args#s1#(?H s2 e2)::s2})::args#s1#(?H s2 e2)::s2}>
+
+; Environment
+	VAL	_getenv,<cfn `Cstring?::se `Cstring?>
+	VAL	_system,<cfn `Cstring?::se B4>
+
+; I/O
+	TYPE	<FILE?:T4 = ^T(0)`FILE?mem>
+	TYPE	<FILE?mem:Tm>
+
+; Exception information (should really be in pop_runtime, but how to deal
+;   with FILE? reference?)
+    	VAL 	_pop_exn_info,<cproc `FILE?::?exn::se>
+
+; GC
+; normal interface
+	VAL	_GC_gcollect,<All[s1:Ts s2:Ts e1:Tcap e2:Tcap].code {cap: &[e1,e2],EBP: sptr (?E s2 e2),ESP: sptr (?Sv s1 s2 e1 e2)#(?E s2 e2)}>
+        VAL     _GC_gc_no,<^*[B4^rw]>
+        VAL     _GC_quiet,<^*[B4^rw]>
+	VAL	_GC_expand_hp,<All[s1:Ts s2:Ts e1:Tcap e2:Tcap].code {cap: &[e1,e2],EBP: sptr (?E s2 e2),ESP: sptr (?S ^T[0,1] B4::s1 s2 e1 e2)#(?E s2 e2)}>
+	VAL	_GC_get_heap_size,<All[s1:Ts s2:Ts e1:Tcap e2:Tcap].code {cap: &[e1,e2],EBP: sptr (?E s2 e2),ESP: sptr (?S B4 s1 s2 e1 e2)#(?E s2 e2)}>
+; debugging---comment these out if not using debugging GC
+;	VAL	_GC_generate_random_backtrace,<All[s1:Ts s2:Ts e1:Tcap e2:Tcap].code {cap: &[e1,e2],EBP: sptr (?E s2 e2),ESP: sptr (?Sv s1 s2 e1 e2)#(?E s2 e2)}>
+
+	VAL	_tal_stdin,<^*[`FILE?^rw]>
+	VAL	_tal_stdout,<^*[`FILE?^rw]>
+	VAL	_tal_stderr,<^*[`FILE?^rw]>
+	VAL	_fopen,<cfn `Cstring?::`Cstring?::se `FILE?>
+	VAL	_f_length,<cfn `Cstring?::se B4>
+	VAL	_f_close,<cfn `FILE?::se B4>
+	VAL	_fprint_int,<cproc `FILE?::B4::se>
+	VAL	_fprint_char,<cproc `FILE?::B4::se>
+	VAL     _fprint_float,<cproc `FILE?::F4::se>
+	VAL     _fprint_double,<cproc `FILE?::F8::se>
+	VAL	_fprint_string,<cproc `FILE?::string::se>
+	VAL	_fprint_newline,<cproc `FILE?::se>
+	VAL	_fflush,<cproc `FILE?::se>
+	VAL	_fgetc,<cfn `FILE?::se B4>
+	VAL	_ungetc,<cfn `FILE?::B4::se B4>
+	VAL	_f_string_read,<cfn `FILE?::string::B4::B4::se B4>
+	VAL     _fprint_uint,<cproc `FILE?::B4::se>
+
+; tal_start subversion
+	VAL	_tal_errno,<^*[B4^rw]>
+	VAL     _std_args,<cfn se (arr string^rw)>
+	VAL     _std_env,<cfn se (arr string^rw)>
+	VAL	_string_to_Cstring,<cfn string::se `Cstring?>
+	VAL	_Cstring_to_string,<cfn `Cstring?::se string>
+
+	VAL	_new_array,<All[a:T4].(cfn B4::a::se (arr a^rw))>
+	VAL	_new_array_f,<All[a:T4].(cfn B4::(cfn B4::se a)::se (arr a^rw))>
+	VAL	_new_array1,<cfn B4::se string>
+	VAL	_new_array2,<cfn B4::se (Exist[s:Sint].^*[S(s)^r,(^*[array(s,B2^rw)])^r])>
+	VAL	_new_array4,<cfn B4::se (arr B4^rw)>
+	VAL	_new_array4u,<cfn B4::se (arr B4^rw)>
+	VAL	_new_array8,<cfn B4::se (Exist[s:Sint].^*[S(s)^r,(^*[array(s,B8^rw)])^r])>
+
+; Floats
+	VAL	_new_array_float,<cfn B4::se (arr F4^rw)>
+	VAL	_new_array_double,<cfn B4::se (Exist[s:Sint].^*[S(s)^r,(^*[array(s,F8^rw)])^r])>
+	VAL	_str_to_d,<All[s1:Ts s2:Ts e1:Tcap e2:Tcap].code {cap: &[e1,e2],EBP: sptr (?E s2 e2),ESP: sptr (?Sf string::s1 s2 e1 e2)#(?E s2 e2)}>
+	VAL	_d_to_str,<All[s1:Ts s2:Ts e1:Tcap e2:Tcap].code {cap: &[e1,e2],EBP: sptr (?E s2 e2),ESP: sptr (?S string F8::s1 s2 e1 e2)#(?E s2 e2)}>
+	VAL	_str_to_f,<All[s1:Ts s2:Ts e1:Tcap e2:Tcap].code {cap: &[e1,e2],EBP: sptr (?E s2 e2),ESP: sptr (?Sf string::s1 s2 e1 e2)#(?E s2 e2)}>
+	VAL	_f_to_str,<All[s1:Ts s2:Ts e1:Tcap e2:Tcap].code {cap: &[e1,e2],EBP: sptr (?E s2 e2),ESP: sptr (?S string F4::s1 s2 e1 e2)#(?E s2 e2)}>
+
+	VAL	_d_to_hexstr,<All[s1:Ts s2:Ts e1:Tcap e2:Tcap].code {cap: &[e1,e2],EBP: sptr (?E s2 e2),ESP: sptr (?S string F8::s1 s2 e1 e2)#(?E s2 e2)}>
+	VAL	_f_to_hexstr,<All[s1:Ts s2:Ts e1:Tcap e2:Tcap].code {cap: &[e1,e2],EBP: sptr (?E s2 e2),ESP: sptr (?S string F4::s1 s2 e1 e2)#(?E s2 e2)}>
+
+	VAL	_arc_cos,<All[s1:Ts s2:Ts e1:Tcap e2:Tcap].code {cap: &[e1,e2],EBP: sptr (?E s2 e2),ESP: sptr (?Sf F8::s1 s2 e1 e2)#(?E s2 e2)}>
+	VAL	_arc_sin,<All[s1:Ts s2:Ts e1:Tcap e2:Tcap].code {cap: &[e1,e2],EBP: sptr (?E s2 e2),ESP: sptr (?Sf F8::s1 s2 e1 e2)#(?E s2 e2)}>
+
+	VAL	_power,<All[s1:Ts s2:Ts e1:Tcap e2:Tcap].code {cap: &[e1,e2],EBP: sptr (?E s2 e2),ESP: sptr (?Sf F8::F8::s1 s2 e1 e2)#(?E s2 e2)}>
+
+; Hashing
+        VAL     _ptr_compare,<All[a:T4].(cfn a::a::se B4)>
+        VAL     _hash,<All[a:T4].(cfn a::se B4)>
+
+; Timing
+	VAL	_int_time,<cfn se B4>
+
+; Temporary: for debugging
+	VAL	_print_time,<cproc B4::B4::B4::se>
+;	VAL	_get_input,<cproc string::se>
+
+; EOF: stdlib.tali

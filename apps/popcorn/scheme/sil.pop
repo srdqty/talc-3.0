@@ -1,0 +1,360 @@
+
+////////////////////////////////////////////////////////////////////////////
+// scheme-- to TAL compiler written in popcorn, file sil.pop              //
+// Copyright Greg Morrisett, Dan Grossman                                 //
+// January 1999, all rights reserved                                      //
+// Ported from caml code Copyright June 1998, Morrisett, Glew, Weirich    //
+////////////////////////////////////////////////////////////////////////////
+
+// NOTE: had to make coercion into s_coercion because of a conflict
+// with tal.pop and we don't have real modules working yet.
+
+#include "core.h"
+#include "list.h"
+#include "sast.h"
+open Core;
+open List;
+open Sast;
+
+prefix Sil;
+open   Sil;
+
+///////////////////////////////ENTRY POINT//////////////////////////////
+<*(string,ilexp)>list xprog(<*(string,exp)>list defs) {
+  return List::map(def_map_f,defs);
+}
+
+////////////////////////////////IL GENERATION////////////////////////////
+
+exception compilerBug(string);
+
+int max_args = 6;
+
+union tipe {
+  void D, Int, String, Char, Indesc, Outdesc, Pair;
+  int  Fn;
+}
+
+union s_coercion {
+  void Int2D, String2D, Char2D, Indesc2D, Outdesc2D, Pair2D;
+  void D2Int, D2String, D2Char, D2Indesc, D2Outdesc, D2Pair;
+  int  Fn2D;
+  int  D2Fn;
+}
+
+union uexp {
+  int      Int;
+  string   String;
+  char     Char;
+  void     Nil;
+  void     False;
+  void     True;
+  var      Var;
+  illambda Lambda;
+
+  *(var,    ilexp)                  Set;
+  *(ilexp,  <ilexp>list)            App;
+  *(primop, <ilexp>list)            Op;
+  *(<*(string, ilexp) >list, ilexp) Let;
+  *(ilexp, ilexp, ilexp)            If;
+  <ilexp>list                       Seq;
+
+  *(s_coercion,ilexp)               Coerce;
+}
+struct ilexp {
+  uexp e;
+  tipe t;
+}
+struct illambda {
+  <string>list args; // caml implementation gives args tipe.D -- why bother?
+  ilexp body;
+}
+
+static exception IdentityCoercion;
+
+static bool tipe_equal(tipe c1, tipe c2) { 
+  // baked in structeq to caml is nice, eh?
+  // another way to do this is how Greg did compare_reg in tal.pop
+  switch c1 {
+  case D:       switch c2 { case D:       return true; default: return false;}
+  case Int:     switch c2 { case Int:     return true; default: return false;}
+  case String:  switch c2 { case String:  return true; default: return false;}
+  case Char:    switch c2 { case Char:    return true; default: return false;}
+  case Indesc:  switch c2 { case Indesc:  return true; default: return false;}
+  case Outdesc: switch c2 { case Outdesc: return true; default: return false;}
+  case Pair:    switch c2 { case Pair:    return true; default: return false;}
+  case Fn(i):   switch c2 { case Fn(j):   return i==j; default: return false;}
+  }
+}
+
+static *(tipe,tipe) coercion_tipe(s_coercion c) {
+  switch c {
+  case Int2D:     return ^(^tipe.Int,     ^tipe.D);
+  case String2D:  return ^(^tipe.String,  ^tipe.D);
+  case Char2D:    return ^(^tipe.Char,    ^tipe.D);
+  case Indesc2D:  return ^(^tipe.Indesc,  ^tipe.D);
+  case Outdesc2D: return ^(^tipe.Outdesc, ^tipe.D);
+  case Pair2D:    return ^(^tipe.Pair,    ^tipe.D);
+  case D2Int:     return ^(^tipe.D,       ^tipe.Int);
+  case D2String:  return ^(^tipe.D,       ^tipe.String);
+  case D2Char:    return ^(^tipe.D,       ^tipe.Char);
+  case D2Indesc:  return ^(^tipe.D,       ^tipe.Indesc);
+  case D2Outdesc: return ^(^tipe.D,       ^tipe.Outdesc);
+  case D2Pair:    return ^(^tipe.D,       ^tipe.Pair);
+  case Fn2D(i):   return ^(^tipe.Fn(i),   ^tipe.D);
+  case D2Fn(i):   return ^(^tipe.D,       ^tipe.Fn(i));
+  }
+}
+
+static s_coercion d2tipe (tipe t) {
+  switch t {
+  case D:       raise  IdentityCoercion();
+  case Int:     return ^s_coercion.D2Int;
+  case String:  return ^s_coercion.D2String;
+  case Char:    return ^s_coercion.D2Char;
+  case Indesc:  return ^s_coercion.D2Indesc;
+  case Outdesc: return ^s_coercion.D2Outdesc;
+  case Pair:    return ^s_coercion.D2Pair;
+  case Fn(i):   return ^s_coercion.D2Fn(i);
+  }
+}
+
+static s_coercion tipe2d (tipe t) {
+  switch t {
+  case D:       return raise  IdentityCoercion();
+  case Int:     return ^s_coercion.Int2D;
+  case String:  return ^s_coercion.String2D;
+  case Char:    return ^s_coercion.Char2D;
+  case Indesc:  return ^s_coercion.Indesc2D;
+  case Outdesc: return ^s_coercion.Outdesc2D;
+  case Pair:    return ^s_coercion.Pair2D;
+  case Fn(i):   return ^s_coercion.Fn2D(i);
+  }
+}
+
+static bool cancel(s_coercion coerce1, s_coercion coerce2) {
+  *(tipe,tipe) t1 = coercion_tipe(coerce1);
+  *(tipe,tipe) t2 = coercion_tipe(coerce2);
+  tipe d1 = t1.1;
+  tipe c1 = t1.2;
+  tipe d2 = t2.1;
+  tipe c2 = t2.2;
+  return tipe_equal(d1,c2) && tipe_equal(c1,d2);
+}
+
+// this would be better as static const function variables as in C
+// using an array to help cut down on verbosity -- typedef would be better!
+
+static *(<tipe>list,tipe) primop_types[] = {
+  ^(^list(^tipe.Int, ^list(^tipe.Int, null)), ^tipe.Int),   // i, i    -> i
+  ^(^list(^tipe.Int, ^list(^tipe.Int, null)), ^tipe.D),     // i, i    -> D
+  ^(^list(^tipe.D,   ^list(^tipe.D,   null)), ^tipe.D),     // D, D    -> D
+  ^(^list(^tipe.D,   null),                   ^tipe.D),     // D       -> D
+  ^(^list(^tipe.D,   ^list(^tipe.D,   null)), ^tipe.Pair),  // D, D    -> P
+  ^(^list(^tipe.Pair,null),                   ^tipe.D),     // P       -> D
+  ^(^list(^tipe.Pair,^list(^tipe.D,   null)), ^tipe.D),     // P, D    -> D
+  ^(^list(^tipe.String, null),              ^tipe.Indesc),  // S       -> I
+  ^(^list(^tipe.String, null),              ^tipe.Outdesc), // S       -> O
+  ^(^list(^tipe.Indesc, null),              ^tipe.D),       // I       -> D
+  ^(^list(^tipe.Outdesc,null),              ^tipe.D),       // O       -> D
+  ^(^list(^tipe.Char,^list(^tipe.Outdesc,null)),  ^tipe.D), // c, O    -> D
+  ^(^list(^tipe.String,^list(^tipe.Fn(0), null)), ^tipe.D), // S, F()  -> D
+  ^(^list(^tipe.Int,^list(^tipe.Char, null)),  ^tipe.String),// i,c    -> S
+  ^(^list(^tipe.String, null),                   ^tipe.Int),// S       -> i
+  ^(^list(^tipe.String, ^list(^tipe.Int, null)), ^tipe.Char),// S, i    -> c
+                                                            // S, i, c -> D
+  ^(^list(^tipe.String, ^list(^tipe.Int, ^list(^tipe.Char, null))), ^tipe.D),
+  ^(^list(^tipe.Int,  null),                    ^tipe.Char), // i -> c
+  ^(^list(^tipe.Char, null),                    ^tipe.Int)   // c -> i
+};
+static int ii_i  = 0;
+static int ii_D  = 1;
+static int DD_D  = 2;
+static int D_D   = 3;
+static int DD_P  = 4;
+static int P_D   = 5;
+static int PD_D  = 6;
+static int S_I   = 7;
+static int S_O   = 8;
+static int I_D   = 9;
+static int O_D   = 10;
+static int cO_D  = 11;
+static int SF0_D = 12;
+static int ic_S  = 13;
+static int S_i   = 14;
+static int Si_c  = 15;
+static int Sic_D = 16;
+static int i_c   = 17;
+static int c_i   = 18;
+
+*(<tipe>list, tipe) primop_type(primop p) {
+  int index;
+  switch p {
+  case Plus:        index = ii_i;
+  case Minus:       index = ii_i;
+  case Times:       index = ii_i;
+  case Div:         index = ii_i;
+  case Inteq:       index = ii_D;
+  case Ptreq:       index = DD_D;
+  case Not:         index = D_D;
+  case Less:        index = ii_D;
+  case Greater:     index = ii_D;
+  case Lesseq:      index = ii_D;
+  case Greatereq:   index = ii_D;
+  case Isint:       index = D_D;
+  case Isbool:      index = D_D;
+  case Isnil:       index = D_D;
+  case Ispair:      index = D_D;
+  case Isfn:        index = D_D;
+  case Ischar:      index = D_D;
+  case Isstring:    index = D_D;
+  case Isindesc:    index = D_D;
+  case Isoutdesc:   index = D_D;
+  case Cons:        index = DD_P;
+  case Car:         index = P_D;
+  case Cdr:         index = P_D;
+  case Setcar:      index = PD_D;
+  case Setcdr:      index = PD_D;
+  case Openin:      index = S_I;
+  case Openout:     index = S_O;
+  case Closein:     index = I_D;
+  case Closeout:    index = O_D;
+  case Flushout:    index = O_D;
+  case Getchar:     return ^(null, ^tipe.D); // not Char b/c of EOF
+  case Peekchar:    return ^(null, ^tipe.D);
+  case Putchar:     index = cO_D;
+  case Write:       index = D_D; // for now just to stdout
+  case Currentin:   return ^(null, ^tipe.Indesc);
+  case Currentout:  return ^(null, ^tipe.Outdesc);
+  case Winfile:     index = SF0_D;
+  case Woutfile:    index = SF0_D;
+  case Iseof:       index = D_D;
+  case Newstring:   index = ic_S;
+  case Sizes:       index = S_i;
+  case Subs:        index = Si_c;
+  case Sets:        index = Sic_D;
+  case Chr:         index = i_c;
+  case Ord:         index = c_i;
+  }
+  return primop_types[index];
+}
+
+static ilexp coerce (s_coercion c, ilexp e) {
+  *(tipe,tipe) ts = coercion_tipe(c);
+  if (!tipe_equal(ts.1, e.t))
+    raise compilerBug("coercion types don't agree");
+  switch e.e {
+  case Coerce(x): if (cancel(x.1, c)) return x.2;
+  default:        ;
+  }
+  return ^ilexp(^uexp.Coerce(^(c,e)),ts.2);
+}
+
+static *(<a>list, <a>list) split<a>(int count, <a>list args) {
+  <a>list front = null;
+  while (count < 0 && args != null) {
+    front = ^list(args.hd, front);
+    args  = args.tl;
+    count--;
+  }
+  return ^(List::rev(front), args);
+}
+
+static ilexp xexp(exp e) {
+  switch e {
+
+  case Int(i):
+    return coerce(^s_coercion.Int2D,    ^ilexp(^uexp.Int(i),    ^tipe.Int));
+  case String(s): 
+    return coerce(^s_coercion.String2D, ^ilexp(^uexp.String(s), ^tipe.String));
+  case Char(c):
+    return coerce(^s_coercion.Char2D,   ^ilexp(^uexp.Char(c),   ^tipe.Char));
+
+  case Nil:     return ^ilexp(^uexp.Nil,    ^tipe.D);
+  case False:   return ^ilexp(^uexp.False,  ^tipe.D);
+  case True:    return ^ilexp(^uexp.True,   ^tipe.D);
+  case Var(v):  return ^ilexp(^uexp.Var(v), ^tipe.D);
+  case Set(x):  return ^ilexp(^uexp.Set(^(x.1, xexp(x.2))), ^tipe.D);
+
+  case Lambda(l):
+    int i = List::length(l.args);
+    if (i > max_args) {
+      *(<string>list, <string>list) arglists = split(max_args, l.args);
+      return xexp(^exp.Lambda
+                  (^lambda(arglists.1,
+			   ^exp.Lambda(^lambda(arglists.2, l.body)))));
+    }
+    return coerce(^s_coercion.Fn2D(i), 
+                  ^ilexp(^uexp.Lambda(^illambda(l.args, xexp(l.body))),
+		         ^tipe.Fn(i)));
+
+  case App(x):
+    int i = List::length(x.2);
+    if (i > max_args) {
+      *(<exp>list, <exp>list) arglists = split(max_args, x.2);
+      return xexp(^exp.App(^(^exp.App(^(x.1, arglists.1)), arglists.2)));
+    }
+    return ^ilexp(^uexp.App(^(coerce(^s_coercion.D2Fn(i), xexp(x.1)),
+			      List::map(xexp, x.2))),
+                  ^tipe.D);
+
+  case Op(x):
+    *(<tipe>list, tipe) ts = primop_type(x.1);
+    ilexp uncoerced        = ^ilexp(^uexp.True, ^tipe.D);
+    <ilexp>list es         = null;
+    try 
+      es = List::map2(op_xexp_fun, x.2, ts.1);
+    handle y
+      switch y { 
+      case List_mismatch: raise compilerBug("primop arg length mismatch");
+      default:            raise (y);
+    }
+    uncoerced = ^ilexp(^uexp.Op(^(x.1,es)), ts.2);
+    try
+      return coerce(tipe2d(ts.2), uncoerced);
+    handle y
+      switch y {
+      case IdentityCoercion: return uncoerced;
+      default: raise (y);
+    }
+    
+  case Let(x):
+    ilexp xe = xexp(x.2);
+    return ^ilexp(^uexp.Let(^(List::map(let_xexp_fun, x.1), xe)), xe.t);
+
+  case Letrec(x):
+    <exp>list setfs = List::map(set_lambda, x.1);
+    return xexp(^exp.Let(^(List::map(wrap_nil, x.1), 
+			   ^exp.Seq(List::append(setfs, ^list(x.2, null))))));
+
+  case If(x):
+    return ^ilexp(^uexp.If(^(xexp(x.1), xexp(x.2), xexp(x.3))), ^tipe.D);
+
+  case Seq(x):
+    return ^ilexp(^uexp.Seq(List::map(xexp, x)), ^tipe.D);
+  }
+}
+
+static ilexp op_xexp_fun(exp e, tipe t) {
+  ilexp xe = xexp(e);
+  try
+    return coerce(d2tipe(t), xe);
+  handle y 
+    switch y {
+    case IdentityCoercion: return xe;
+    default: raise (y);
+  }
+}
+static *(string, ilexp) let_xexp_fun(*(string, exp) x) {
+  return ^(x.1, xexp(x.2));
+}
+static *(string, exp) wrap_nil(*(string, lambda) x) {
+  return ^(x.1, ^exp.Nil);
+}
+static exp set_lambda(*(string, lambda) x) {
+  return ^exp.Set(^(^var(x.1,0), ^exp.Lambda(x.2)));
+}
+
+static *(string,ilexp) def_map_f (*(string,exp)x) {
+  return ^(x.1, xexp(x.2));
+}

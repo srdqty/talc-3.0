@@ -1,0 +1,22 @@
+	TYPE	<?arr = fn c:T4 . Exist[?sz:Sint].^*[S(?sz)^r,array(?sz,c^rw)]>
+	TYPE	<?str = Exist[?sz:Sint].^*[S(?sz)^r,array(?sz,B1^rw)]>
+	TYPE	<?exnname = fn c$0:Tm . ^T^rw(c$0)*[junk 4]>
+	TYPE	<?exn = Exist[c$0:Tm].^*[(?exnname c$0)^r,c$0]>
+	TYPE	<?H = fn s:Ts cg:Tt . code {TLA: ^*[cg^rw],EAX: ?exn,ESP: sptr s}>
+	TYPE	<?E = fn s:Ts cg:Tt . (?H s cg)::s>
+	TYPE	<?S = fn ?ret:T4 ?s1:Ts ?s2:Ts cg:Tt . (code {TLA: ^*[cg^rw],EAX: ?ret,EBP: sptr (?E ?s2 cg),ESP: sptr ?s1@(?E ?s2 cg)})::?s1>
+	TYPE	<?Sv = fn ?s1:Ts ?s2:Ts cg:Tt . (code {TLA: ^*[cg^rw],EBP: sptr (?E ?s2 cg),ESP: sptr ?s1@(?E ?s2 cg)})::?s1>
+	TYPE	<?Ha = fn ?s1:Ts ?s2:Ts cg:Tt . (sptr (?E ?s2 cg))::(?s1@(?E ?s2 cg))>
+
+type < fntype = fn ret:T4 args:Ts. \
+ (All[s1:Ts s2:Ts cg:Tt]. code {TLA: ^*[cg^rw], EBP: sptr (?E s2 cg), ESP: sptr  \
+   (?S ret (args@s1) s2 cg)@(?E s2 cg)})>
+
+type <prod_int2int = *[(fntype B4 (B4::se))^rw] >
+type <prod_2xint2int = *[(fntype B4 (B4::se))^rw,(fntype B4 (B4::se))^rw]  >
+
+VAL 	_pop_load,<All[s1:Ts s2:Ts cg:Tt].code {TLA: ^*[cg^rw],EBP: sptr (?E s2 cg), \ 
+	ESP: sptr (?S (`Core?Opt? ^prod_int2int) ?str::?str::s1 s2 cg)@(?E s2 cg)}>
+
+VAL	_pop_load2,<All[s1:Ts s2:Ts cg:Tt].code {TLA: ^*[cg^rw],EBP: sptr (?E s2 cg), \ 
+	ESP: sptr (?S (`Core?Opt? ^prod_2xint2int) ?str::?str::s1 s2 cg)@(?E s2 cg)}>

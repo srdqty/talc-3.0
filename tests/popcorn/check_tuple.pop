@@ -1,0 +1,25 @@
+// check_tuple.pop
+// Test tuples.  Make sure they are in fact writable.
+
+extern void print_int(int);
+extern void print_newline();
+extern void print_string(string);
+
+void pop_main()
+{
+ 
+ *(int,int) x = new (5,4);
+
+ print_int((x.1));
+ print_string(" ");
+ print_int(x.2); 
+ print_newline();
+
+ x.1 = x.2 = 3;
+
+ print_int(x.1);
+ print_string(" ");
+ print_int(x.2); 
+ print_newline();
+
+}

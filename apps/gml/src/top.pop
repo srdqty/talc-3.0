@@ -1,0 +1,33 @@
+
+#include "core.h"
+#include "math.h"
+
+open Core;
+open Math;
+
+#define DOUBLES
+// KEEP IN SYNC WITH TOP.H
+#ifdef DOUBLES
+#define FP double
+#else
+#define FP float
+#endif
+
+exception GMLFailure(string);
+
+void print_double(double d) {
+  fprint_double(tal_stdout,d);
+}
+
+void print_float(float f) {
+  fprint_float(tal_stdout,f);
+}
+
+
+FP deg_to_rad(FP deg) {
+  return pi * (deg / 180.0f);
+}
+
+FP rad_to_deg(FP rad) {
+  return (180.0f * rad) / pi;
+}

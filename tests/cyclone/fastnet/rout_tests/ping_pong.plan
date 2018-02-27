@@ -1,0 +1,6 @@
+(* bounces back and forth between two hosts until the resource bound (RB)
+   is exhausted *)
+fun ping_pong(pingHost, pongHost) =
+ (print("Current RB is "); print(getRB()); print("\n");
+  OnRemote (|ping_pong| (pongHost, pingHost),
+	    pongHost, getRB (), defaultRoute))

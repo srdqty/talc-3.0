@@ -1,0 +1,135 @@
+#include "core.h"
+open Core;
+
+/**********************************************************************/
+/* Test using exncon's with a void exception.  In catch_exn below,
+   all three cases will be tested by test_void_exn(). */
+
+exception void_exn;
+exception void_exn2;
+
+<void>exncon y = void_exn;
+<void>exncon y2 = Not_found; // initialize from external
+
+<void>exncon get_void_exn() {
+  return void_exn;
+}
+
+void raise_exn(int i) {
+  <void>exncon x;
+  if (i == 0)  
+    x = get_void_exn();
+  else
+    x = Not_found;
+  raise (new x());
+}
+
+bool catch_exn(<void>exncon x, int i) {
+  try
+    raise_exn(i);
+  handle z {
+    switch z {
+    case x:
+      { print_string("caught passed exception\n"); 
+        return true; }
+    case y:
+      { print_string("caught globally-defined exception y\n"); 
+        return true; }
+    case y2:
+      { print_string("caught globally-defined exception y2\n"); 
+        return true; }
+    case void_exn:
+      { print_string("caught void_exn\n");
+        return false; }
+    default:
+      { print_string("error: default\n");
+        return false; }
+    }
+  }
+  print_string("error: didn't catch exception\n");
+  return false;
+}
+
+void test_void_exn() {
+  catch_exn(get_void_exn(),0);
+  catch_exn(void_exn2,0);
+  y = void_exn2;
+  catch_exn(void_exn2,0);
+  catch_exn(void_exn2,1);
+}
+
+/**********************************************************************/
+/* Now test value-carrying exception constructors.  We create a
+   structure which holds a function-carrying exncon, and then 
+   check if a raised exception matches the con in the structure.
+   We similarly check normal int-carrying exceptions. */
+
+exception fn_exn(bool <a>(a));
+exception string_exn(string);
+exception string_exn2(string);
+
+struct imports_t {
+  <bool <a>(a)>exncon e;
+  <string>exncon e2;
+}
+imports_t s = new imports_t(fn_exn,string_exn);
+
+bool catch_val_exn(exn a) {
+  <bool <a>(a)>exncon e = s.e;
+  <string>exncon e2 = s.e2;
+  try
+    raise(a);
+  handle z {
+    switch z {
+    case string_exn(s2):
+      { printf("caught string_exn(%s)\n", s2);
+        return false; }
+    case e(f):
+      { print_string("caught fn-exn in struct\n"); 
+        return true; }
+    case e2(s2):
+      { printf("caught string-exn in struct (%s)\n", s2);
+        return false; }
+    default:
+      { print_string("error: default\n");
+        return false; }
+    }
+  }
+  print_string("error: didn't catch exception\n");
+  return false;
+}
+     
+void test_val_exn() {
+  exn se = new string_exn("foo");
+  exn fe = new fn_exn(true_f);
+  catch_val_exn(se);
+  catch_val_exn(fe);
+  fe = new fn_exn(false_f);
+  catch_val_exn(fe);
+  s.e2 = InvalidArg; // externally defined exception
+  catch_val_exn(se);
+  se = new InvalidArg("invalid arg");
+  catch_val_exn(se);
+}
+
+/* this shouldn't typecheck, due to free typevar in c */
+/*  <a>Opt f<a>(<a>exncon c,exn e) { */
+/*    try */
+/*      raise(e); */
+/*    handle z { */
+/*      switch z { */
+/*      case c(x):   */
+/*        return ^Opt(x); */
+/*      default: */
+/*        return null; */
+/*      } */
+/*    } */
+/*    return null; */
+/*  } */
+
+int pop_main()
+{
+  test_void_exn();
+  test_val_exn();
+  return 1;
+}

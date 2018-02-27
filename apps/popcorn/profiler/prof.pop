@@ -1,0 +1,12 @@
+// This file is only used to generate a TALI file.
+
+// Shape of this struct does not matter.  
+// Actual contents are private to profiler.
+
+abstract struct prof_t { int x; }
+
+void prof_init() { return; } /* Initialize the profiler. */
+void prof_enter(prof_t p) { return; } /* Call on function entry. */
+void prof_leave(prof_t p) { return; } /* Call on function exit. */
+void prof_handler(prof_t p) { return; } /* Call on handler entry. */
+void prof_end() { return; }

@@ -1,0 +1,168 @@
+#include "core.h"
+#include "list.h"		
+#include "string.h"
+#include "arg.h"
+#include "tal_sockets.h"	
+
+#define list List::list
+#define	TAL_INADDR_ANY	(0)
+#define	SIGINT		2	/* Interrupt (ANSI).  */
+#define	SIGTERM		15	/* Termination (ANSI).  */
+
+<FILE> list wait_fds;	/* file descriptors waited on (by select) */
+<FILE> list ready_fds;	/* (read) file descriptors ready to process */
+FILE listen_sock;	/* main server socket */
+
+/* (Should go in popcorn/lib/list.pop eventually) */
+<a> list list_del<a>(a val, <a> list lst)
+{
+  <a> list ret_val = null;
+  
+  if(lst == null)
+    return null;
+  else
+    if (lst.hd == val)
+      return list_del(val, lst.tl);
+    else
+      return ^list(lst.hd, list_del(val, lst.tl));
+}
+
+/*
+ *  STREAM
+ */
+
+void proc_stream_fds(FILE sockfd)
+{
+  if (sockfd == listen_sock) {
+    *(FILE, sockaddr) accept_pair = tal_accept(listen_sock);
+    wait_fds = ^list(accept_pair.1, wait_fds);
+  } else {
+    string str = sock_read(sockfd);
+    
+    if(size(str) == 0) {	/* EOF */
+      wait_fds = list_del(sockfd, wait_fds);
+      tal_close(sockfd);
+    } else {
+      printf("process_client_message: %s\n", str);
+      sock_send(sockfd, Core::strconcat("PREFIX-->", str));
+    }
+  }
+}
+
+void stream_rs(FILE sockfd, sockaddr serv_addr_un)
+{
+  /* listen */
+  tal_listen(sockfd, 15);
+  
+  /* Process file descriptors as they become ready */
+  wait_fds = ^list(sockfd, null);
+  while(true)
+    List::iter(proc_stream_fds, tal_select(wait_fds, null, null, 0));
+}
+
+void unix_stream_serv()
+{
+  sockaddr serv_addr_un = ^sockaddr.ADDR_UNIX("/tmp/serversockpath");
+  printf("PF_UNIX, SOCK_STREAM\n");
+
+  /* socket */
+  listen_sock = tal_socket(^socket_domain.PF_UNIX,^socket_type.SOCK_STREAM, 0);
+
+  /* bind */
+  tal_bind(listen_sock, serv_addr_un);
+
+  stream_rs(listen_sock, serv_addr_un);
+
+  /* unlink */
+  tal_unlink("/tmp/serversockpath");
+}
+
+
+void inet_stream_serv()
+{
+  sockaddr serv_addr_un=
+    /* ^sockaddr.ADDR_INET(^(tal_gethostbyname("cyclone"), 4000)); */
+    ^sockaddr.ADDR_INET(^(TAL_INADDR_ANY, 4000));
+  printf("PF_INET, SOCK_STREAM\n");
+
+  /* socket */
+  listen_sock=tal_socket(^socket_domain.PF_INET, ^socket_type.SOCK_STREAM, 0);
+
+  /* bind */
+  tal_bind(listen_sock, serv_addr_un);
+
+  stream_rs(listen_sock, serv_addr_un);
+}
+
+/*
+ *  DATAGRAM
+ */
+
+void dgram_rs(FILE serv_sock, sockaddr serv_addr, sockaddr cli_addr)
+{
+  *(int, sockaddr) recv_pair;
+  string str = Core::new_string(100);
+
+  tal_bind(serv_sock, serv_addr);
+
+  recv_pair = tal_recvfrom(serv_sock, str, cli_addr);
+  printf("process_client_message: %s\n", str);
+  tal_sendto(serv_sock, str, recv_pair.2);
+}
+
+void unix_dgram_serv()
+{
+  printf("PF_UNIX, SOCK_DGRAM\n");
+
+  dgram_rs(tal_socket(^socket_domain.PF_UNIX, ^socket_type.SOCK_DGRAM, 0),
+	   ^sockaddr.ADDR_UNIX("/tmp/serversockpath"),
+	   ^sockaddr.ADDR_UNIX(""));
+
+  tal_unlink("/tmp/serversockpath");
+}
+
+void inet_dgram_serv()
+{
+  printf("PF_INET, SOCK_DGRAM\n");
+
+  dgram_rs(tal_socket(^socket_domain.PF_INET, ^socket_type.SOCK_DGRAM, 0),
+	   /* ^sockaddr.ADDR_INET(^(tal_gethostbyname("cyclone"), 4000)), */
+	   ^sockaddr.ADDR_INET(^(TAL_INADDR_ANY, 4000)),     
+	   ^sockaddr.ADDR_INET(^(0, 0)));
+}
+
+void handle_sigint()
+{
+  printf("SIGINT\n");
+  tal_unlink("/tmp/serversockpath");
+}
+
+void handle_sigterm()
+{
+  printf("SIGTERM\n");
+  tal_unlink("/tmp/serversockpath");
+}
+
+void pop_main()
+{
+  string argv[] = std_args();	/* command line arguments */
+  int addr;
+
+  tal_signal(SIGINT, fun void _() { tal_unlink("/tmp/serversockpath"); });
+  tal_signal(SIGTERM, fun void _() { tal_unlink("/tmp/serversockpath"); });
+
+  try
+    if (size(argv) == 2)  {
+      if (Core::strcmp(argv[1], "1") == 0)
+	unix_stream_serv();
+      else if (Core::strcmp(argv[1], "2") == 0)
+	inet_stream_serv();
+      else if (Core::strcmp(argv[1], "3") == 0)
+	unix_dgram_serv();
+      else if (Core::strcmp(argv[1], "4") == 0)
+	inet_dgram_serv();
+    } else
+      printf("ERROR main\n");
+  handle e 
+    printf("Exception raised\n");
+}

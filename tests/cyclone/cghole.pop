@@ -1,0 +1,21 @@
+/* Test file for Cyclone holes, assembly to be modified by hand */
+
+#include "core.h"
+open Core;
+
+
+void my_print() {
+  print_string("Entering my_print\n");
+  print_int(33);                       /* hex 11 */
+  print_string("\n Exiting my_print\n");
+}
+
+void pop_main()
+{
+  print_string("\nCyclone hole test #1\n");
+
+  my_print();
+
+  print_string("\nCyclone hole test #1 complete\n");
+}
+

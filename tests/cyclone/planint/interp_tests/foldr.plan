@@ -1,0 +1,27 @@
+(* will return list of pairs; fst(pair) = thisHost(), snd(pair)
+   = each element of the provided list, in the same order *)
+fun cons(i:unit, j:unit) : unit = 
+  let val name : unit = hd (thisHost()) in
+    (name,i)::j
+  end
+
+fun test1(v:unit) : unit =
+  foldr (cons,v,[])
+
+fun sub(i:unit, j:unit) : unit =
+  i - j
+
+
+
+(* tests both foldl and foldr -- output ( 2, -10 ) *)
+fun test2() : unit =
+  let val l:unit = [4;3;2;1] in
+(*
+    (foldr(sub,l,0),
+     foldl(sub,0,l))
+*)
+     foldr(sub,l,0)
+  end
+
+(* fun main () : unit = (test1(3), test2()) *)
+fun main () : unit = (foldr(sub,[1],0), test2())

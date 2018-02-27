@@ -1,0 +1,29 @@
+// check_array2.pop
+// Test arrays declared with sizes
+
+#include "core.h"
+
+void print_array(int a[])
+{
+ Core::print_string("array = {");
+ for(int i=0;i<size(a);i++)
+   {
+    Core::print_int(a[i]);
+    if (i<size(a)-1) Core::print_string(", ");
+   }
+ Core::print_string("}\n");
+}
+
+#define HSIZE 5
+
+void pop_main()
+{
+  int a[HSIZE+HSIZE];
+  a[0]=3;
+  int i;
+
+  for (i=1;i<HSIZE+HSIZE;i++) {
+    a[i] += a[i-1]+i;
+  }
+  print_array(a);
+}

@@ -1,0 +1,1863 @@
+<!doctype html public "-//w3c//dtd html 4.0 transitional//en">
+<html>
+
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1">
+<meta name="GENERATOR" content="Microsoft FrontPage 3.0">
+<meta name="Template" content="C:\PROGRAM FILES\MICROSOFT OFFICE\OFFICE\html.dot">
+<title>New Page 2</title>
+</head>
+
+<body link="#0000FF" vlink="#800080">
+
+<hr>
+
+<h1 align="center">Popcorn Reference Manual</h1>
+
+<h1 align="center">DRAFT</h1>
+
+<h2 align="center">November 1999</h2>
+
+<h2 align="center">Greg Morrisett et al.</h2>
+
+<h2>Contents:</h2>
+
+<ul>
+  <li><a href="#overview">Overview</a>&nbsp;</li>
+  <li><a href="#examples">Examples</a></li>
+  <li><a href="#language">Language</a></li>
+  <ul>
+    <li><a href="#language">Pre-processor, namespaces, lexical conventions</a>&nbsp;</li>
+    <li><a href="#types">Types</a></li>
+    <li><a href="#declarations">Declarations</a></li>
+    <li><a href="#expressions">Expressions</a></li>
+    <li><a href="#statements">Statements</a></li>
+    <li><a href="#programs">Programs</a></li>
+  </ul>
+  <li><a href="#library">Library</a></li>
+  <li><a href="#tools">Tools</a></li>
+  <ul>
+    <li>&nbsp;<a href="#lex">popocamllex</a></li>
+    <li>&nbsp;<a href="#bison">bison</a></li>
+  </ul>
+</ul>
+
+<h2><a NAME="overview"></a>Overview:</h2>
+
+<p>Popcorn is a research prototype programming language that we (and others) are using to
+explore various issues in type-safe language design, type-directed compilation, proof
+carrying code, safe runtime code generation, and other issues that arise in modern
+language design and implementation.&nbsp; Syntactically, Popcorn resembles a mix of C,
+C++, and Java and most of the control constructs and scoping mechanisms are lifted
+directly from these languages.&nbsp; With respect to type and type structure, Popcorn is
+more akin to the ML family of languages, in that it provides support for parametric
+polymorphism, some type inference, algebraic datatypes with pattern matching, etc.&nbsp;
+In practice, it is relatively straightforward to port C code to Popcorn.&nbsp;&nbsp;
+Porting ML code is also straightforward though the syntax and emphasis on imperative
+aspects makes this a bit more involved.&nbsp; In the near future, we are planning support
+for various kinds of objects, classes and subtyping, perhaps along the lines of LOOM [?],
+Cecil [?], or Moby [?] with the goal of being able to port code from C++, Java, or these
+OO-based languages relatively easily. </p>
+
+<p>Smoothly integrating all of these facilities is extremely difficult and we view Popcorn
+as a vehicle for exploring tradeoffs.&nbsp; Consequently, we expect the definition of the
+language to evolve quite rapidly over time.&nbsp; To limit the scope of exploration, we
+have a determined a set of (loose) goals that we wish to follow as the language
+evolves.&nbsp; In particular, Popcorn should be: 
+
+<ul>
+  <li><b>Type Safe: </b>The benefits of type safety are overwhelming (we take this as an axiom
+    and the prime directive).&nbsp; We believe that advanced, static type systems provide the
+    best linguistic mechanism to build and organize the abstractions needed to for large,
+    reliable, secure, and high-performance systems.</li>
+  <li><b>Close to C:</b> Though this goal seems in direct conflict with the previous goal, our
+    aim is to make it easy for C programmers to port or write Popcorn code.&nbsp; As such, we
+    hope for the Popcorn type system to enable more idioms from C as long as they continue to
+    be type-safe.&nbsp; Already, we have ported some tools (e.g., bison) from C to Popcorn and
+    have found this to be relatively easy.&nbsp; A major long-term goal is to make it easy to
+    reason about the run-time costs of Popcorn code -- a programmer should be able to
+    determine the big-O space and time complexity of Popcorn code relatively easy.&nbsp;
+    Currently, this is not the case because of the reliance on a (conservative) garbage
+    collector but part of our research is aimed at getting rid of, or replacing the collector
+    with some more explicit mechanism without sacrificing type safety.</li>
+  <li><b>Easy to Interface: </b>One of the best things about C code is that it is relatively
+    easy to interface it to existing standards (including libraries written in C!).&nbsp; By
+    standards, I mean things like COM or CORBA, device drivers, Tk, Unix, Win32, sockets
+    etc.&nbsp; Most if not all of these &quot;standard tools&quot; provide interfaces that are
+    easy to access using C type definitions and function calls.&nbsp;&nbsp; Popcorn should
+    also make it easy to work with and use these existing tools to the best degree
+    possible.&nbsp; In contrast, type-safe languages such as Java, ML, or Scheme make it hard
+    to interface to such facilities without writing a lot of &quot;glue&quot; and often this
+    glue must be written in a language like C.&nbsp; In part, this is because such languages
+    do not provide explicit facilities for invoking C code, and in part because they do not
+    provide facilities for defining and manipulating a rich set of data representations.</li>
+  <li><b>Easy to Compile:</b> Our research is primarily in type systems, not advanced compiler
+    optimizations.&nbsp; As such, we wish to take advantage of compilation techniques that
+    have been or are being developed by the rest of the language and compiler
+    communities.&nbsp; If by changing the Popcorn language, we can make it easier to generate
+    good, high-performance code, then we should as long as the change does not conflict with
+    the other goals.</li>
+</ul>
+
+<p>As it stands, Popcorn fails to achieve all of these goals in a nice way (thankfully --
+that's why there's work to do!) but goes pretty far in comparison to other
+languages.&nbsp;&nbsp; As such, we think it can be used today to build interesting systems
+and would encourage anyone to try it and give us feedback about the design and/or
+implementation.&nbsp;&nbsp; Some good questions for us to answer are: 
+
+<ul>
+  <li><b>Why shouldn't you just use Java?&nbsp; </b>Though Java shares with Popcorn many
+    syntactic and control-flow constructs, the type system of Java is relatively
+    weak.&nbsp;&nbsp; There is no support for parametric or F-bounded polymorphism, sub-typing
+    is confused with sub-classing, there is little or no support for modules, algebraic
+    datatypes, etc.&nbsp; Though we think Java is a relatively clean and simple design,
+    Popcorn allows us to explore alternatives that we think are equally interesting and
+    useful.&nbsp; Furthermore, compiling Java to good code is extremely difficult because the
+    memory model is so constrained, and the synchronization/thread model is in our opinion
+    fairly poor.</li>
+  <li><b>Why shouldn't you just use ML?&nbsp; </b>Though ML provides many of the same typing
+    facilities as Popcorn (and in some ways more), the syntax and shift to a functional
+    paradigm have, in my opinion, alienated many programmers who would otherwise enjoy such a
+    language.&nbsp; Interfacing ML systems to C libraries and code is do-able, but not
+    completely transparent.&nbsp; Compiling ML to good code is also doable, but in my opinion,
+    requires a much more sophisticated compiler.&nbsp; I think the Ocaml project at Inria has
+    demonstrated the benefits of evolving a language rapidly to incoporate facilities that,
+    while of little interest to the language theory community, in practice, provide real
+    benefit to users.&nbsp; So, to a large degree, we are hoping to emulate and provide some
+    of the benefits of the Ocaml project but in the context of a (largely) imperative
+    language.</li>
+  <li><b>Why shouldn't you just use Modula-3 or Eiffel?&nbsp; </b>Part of the issue is a
+    simple one of syntax -- it's relatively easy for a C, C++, or Java programmer to pick up
+    the syntax of Popcorn and get going immediately.&nbsp; Part of the issue is library design
+    -- again, it's easy to use existing libraries written in C.&nbsp; And part of the issue is
+    a desire to further explore typing issues that are not covered by these languages.</li>
+  <li><b>Why shouldn't you just use C?&nbsp; </b>C is no where near type safe.&nbsp;&nbsp;
+    Though it is possible to insert lots of extra dynamic checks, and lots of extra state to
+    achieve an implementation that allows standard C code to execute, the truth of the matter
+    is that C is a lousy language for building abstractions because it provides no mechanism
+    for enforcing abstractions.&nbsp; You basically get functions and blocks of memory and
+    that's about it.</li>
+</ul>
+
+<p>This document is meant to give you a brief overview of the syntax, type-system, dynamic
+semantics, and tools that currently make up the Popcorn language.&nbsp; We have tried to
+detail the strengths and weaknesses of the language here and to point out areas where we
+expect the language to improve (or at least change in some substantial way.)&nbsp; We
+would appreciate any criticism, comments, suggestions, etc. from users. </p>
+
+<h3>Popcorn and Typed Assembly Language:</h3>
+
+<p>Originally, Popcorn was developed as a vehicle for showing that type-safe, high level
+languages could be compiled to <i>Typed Assembly Language</i> (TAL).&nbsp;&nbsp; Thus, to
+understand some of the design issues of Popcorn, it is useful to know a little bit about
+TAL. </p>
+
+<p>Like the Java Virtual Machine Language (JVML), TAL is a <i>statically typed</i>
+low-level language intended to serve as the output of a compiler for a type-safe
+high-level language.&nbsp; Such languages are extremely useful in security contexts where
+we wish to ensure that a number of &quot;bad&quot; things cannot happen when code is
+executed.&nbsp; In particular, type-safety (in the TAL sense) at least implies address
+space isolation, so it is not necessary to use hardware-enforced address translation to
+ensure that a TAL program does not read or write locations in memory that are not in its
+conceptual address space.&nbsp; As with JVML, the type system of TAL ensures many stronger
+safety properties, including the fact that &quot;private&quot; fields of data structures
+cannot be read or written, all functions are passed the right number (and type) of
+arguments, stack frames from a caller are protected from a callee reading or writing local
+variables, etc. </p>
+
+<p>But unlike the JVML, TAL instructions correspond to real Intel 80x86 instructions
+instead of virtual machine instructions. Consequently, there is no overhead for
+interpretation, and we can use a fully optimizing compiler to produce our TAL code, but
+still be able to type-check.&nbsp; Indeed, for critical loops, it is possible to code
+directly in TAL to achieve the best possible performance (subject to the limitations of
+the type system.)&nbsp;&nbsp; Thus, TAL seems like a more attractive target for systems
+such as the PLAN Active Networks project at the University of Pennsylvania [?] that need
+safe but highly efficient code to achieve their goals. </p>
+
+<p>Furthermore, the TAL type system provides a set of general type constructors which may
+be used to encode typing abstractions for a number of type-safe, high-level languages such
+as SML, Scheme, or Modula-3.&nbsp; In contrast, the JVML type system is closely related to
+the Java source language and is not very well suited to compiling other languages.&nbsp;
+For instance, it is not possible to eliminate tail-calls to another method using JVML, but
+it is trivial to do so in TAL.&nbsp; This is because the JVML design bakes in a fixed
+notion of method, calling conventions, etc., whereas TAL provides a set of general-purpose
+type constructors that can be used to build custom procedural abstractions, custom calling
+conventions, etc.&nbsp; As another example, it is difficult to compile high-level
+languages such as SML that provide parametric polymorphism or higher-order type
+constructors to JVML because the type system of JVML does not have such facilities.&nbsp;
+Rather, a compiler must insert additional run-time checks (downcasts) to convince the JVML
+static verifier to pass the code, and these run-time checks can hurt performance.&nbsp;
+Again, because TAL provides support for features like parametric polymoprhism, it is not
+necessary to insert run-time checks to get such code past the verifier. </p>
+
+<p>Popcorn was designed as a relatively simple, type-safe language that could be easily
+compiled to TAL in order to demonstrate all of these claims about the advantages of
+TAL.&nbsp; For more information on TAL, please refer to the following publications: <br>
+&nbsp; <br>
+&nbsp; 
+
+<ul>
+  <li><font face="Book Antiqua">Greg Morrisett, Karl Crary, Neal Glew, Dan Grossman, Richard
+    Samuels, Frederick Smith, David Walker, Stephanie Weirich, and Steve Zdancewic, <b>TALx86:
+    A Realistic Typed Assembly Language</b> submitted to the<i> 1999 ACM SIGPLAN Workshop on
+    Compiler Support for System Software</i>.</font></li>
+  <li><br>
+    <font face="Book Antiqua">(<a
+    href="http://www.cs.cornell.edu/talc/papers/talx86-wcsss-abstract.html">abstract</a>, <a
+    href="http://www.cs.cornell.edu/talc/papers/talx86-wcsss.dvi">dvi</a>, <a
+    href="http://www.cs.cornell.edu/talc/papers/talx86-wcsss.pdf">pdf</a>)</font> </li>
+  <li><font face="Book Antiqua">Neal Glew and Greg Morrisett. <b>Type-Safe Linking and Modular
+    Assembly Language</b> <i>Twenty-Sixth Symposium on Principles of Programming Languages
+    (POPL '99), </i>pages 250-261, San Antonio, January 1999.</font></li>
+  <li><br>
+    <font face="Book Antiqua">(<a
+    href="http://www.cs.cornell.edu/talc/papers/mtal-abstract.html">abstract</a>, <a
+    href="http://www.cs.cornell.edu/talc/papers/mtal.dvi">dvi</a>, <a
+    href="http://www.cs.cornell.edu/talc/papers/mtal.pdf">pdf</a>)</font> </li>
+  <li><font face="Book Antiqua">Karl Crary, David Walker, and Greg Morrisett. <b>Typed Memory
+    Management in a Calculus of Capabilities.</b> <i>Twenty-Sixth Symposium on Principles of
+    Programming Languages (POPL '99), </i>pages 262-275, San Antonio, January 1999.</font></li>
+  <li><br>
+    <font face="Book Antiqua">(<a
+    href="http://www.cs.cornell.edu/talc/papers/capabilities-abstract.html">abstract</a>, <a
+    href="http://www.cs.cornell.edu/talc/papers/capabilities.ps.gz">postscript</a>, <a
+    href="http://www.cs.cornell.edu/talc/papers/capabilities.dvi">dvi</a>)</font> </li>
+  <li><font face="Book Antiqua">Karl Crary, Stephanie Weirich, and Greg Morrisett. <b>Intensional
+    Polymorphism in Type-Erasure Semantics.</b> <i>1998 International Conference on Functional
+    Programming,</i> pages 301-312, Baltimore, September 1998.</font></li>
+  <li><br>
+    <font face="Book Antiqua">(<a
+    href="http://www.cs.cornell.edu/talc/papers/typepass-abstract.html">abstract</a>, <a
+    href="http://www.cs.cornell.edu/talc/papers/typepass.ps.gz">postscript</a>, <a
+    href="http://www.cs.cornell.edu/talc/papers/typepass.dvi">dvi</a>)</font> </li>
+  <li><font face="Book Antiqua">Greg Morrisett, Karl Crary, Neal Glew, and David Walker. <b>Stack-Based
+    Typed Assembly Language.</b> <i>1998 Workshop on Types in Compilation.</i> Published in
+    Xavier Leroy and Atsushi Ohori, editors, <i>Lecture Notes in Computer Science</i>, volume
+    1473, pages 28-52. Springer-Verlag, 1998.</font></li>
+  <li><br>
+    <font face="Book Antiqua">(<a
+    href="http://www.cs.cornell.edu/talc/papers/stal-abstract.html">abstract</a>, <a
+    href="http://www.cs.cornell.edu/talc/papers/stal.ps.gz">postscript</a>, <a
+    href="http://www.cs.cornell.edu/talc/papers/stal.dvi">dvi</a>)</font> </li>
+  <li><font face="Book Antiqua">Greg Morrisett, David Walker, Karl Crary, and Neal Glew. <b>From
+    System F to Typed Assembly Language.</b> In <i>Twenty-Fifth ACM Symposium on Principles of
+    Programming Languages,</i> pages 85-97, San Diego, January 1998.</font></li>
+  <li><br>
+    <font face="Book Antiqua">(<a
+    href="http://www.cs.cornell.edu/talc/papers/tal-abstract.html">abstract</a>, <a
+    href="http://www.cs.cornell.edu/talc/papers/tal.ps.gz">postscript</a>, <a
+    href="http://www.cs.cornell.edu/talc/papers/tal.dvi">dvi</a>)</font></li>
+</ul>
+
+<p>or visit the TAL project homepage at <a href="http://www.cs.cornell.edu/talc">http://www.cs.cornell.edu/talc</a>.
+<br>
+</p>
+
+<hr>
+
+<h2><a NAME="examples"></a>Some Popcorn Examples:</h2>
+
+<hr>
+
+<h2><a NAME="language"></a>The Popcorn Language Reference:</h2>
+
+<hr WIDTH="100%">
+
+<h3>Pre-processor:</h3>
+
+<p>Popcorn's syntax is (grudgingly) designed so that it passes through the C pre-processor
+without confusion.&nbsp; We think of the pre-processor as separate from the Popcorn
+language, but in practice the Popcorn compiler first passes source files through the C
+pre-processor.&nbsp; Thus we provide the same conveniences (and pitfalls!) provided by the
+macro facilities of C.&nbsp; Large Popcorn programs generally use header files and <tt>#include</tt>
+directives much as in C.&nbsp; There are some important differences and caveats, however: 
+
+<ul>
+  <li>In C, a type declaration (such as a struct) may be made multiple times.&nbsp; This is
+    not true in Popcorn.&nbsp; Hence a struct declaration in a header file will generally have
+    the <tt>extern</tt> qualifier whereas the coresponding implementation file must have the
+    same declaration without the qualifier.&nbsp; The header file should <i>not </i>be
+    included by the corresponding implementation file, even indirectly.</li>
+</ul>
+
+<ul>
+  <li>Because the &quot;semantics&quot; of #include is textual substitution, it is unwise to
+    the semicolon forms of prefix and open in a header file.&nbsp; These forms extend their
+    scope over the rest of the file, where &quot;rest of the file&quot; refers to the file <i>after</i>
+    pre-processing.</li>
+</ul>
+
+<p>Given these differences, the standard idiom for a header file looks like this: </p>
+
+<p><tt>----------</tt> <br>
+<tt>#ifndef FOO_H</tt> <br>
+<tt>#define FOO_H</tt> </p>
+
+<p><tt>// other includes here, for example:</tt> <br>
+<tt>#include &quot;bar.h&quot;</tt> </p>
+
+<p><tt>prefix Foo {</tt> <br>
+<tt>open&nbsp;&nbsp; Foo {</tt> <br>
+<tt>&nbsp; // declarations for public members of the Foo namespace here</tt> <br>
+<tt>}</tt> <br>
+<tt>}</tt> <br>
+<tt>#endif</tt> <br>
+<tt>----------</tt> </p>
+
+<p><tt>Then the implementation of the Foo namespace could be in a file foo.pop with this
+idiom:</tt> </p>
+
+<p><tt>----------</tt> <br>
+<tt>// this prevents foo.h from being included here, even if other header files include
+it:</tt> <br>
+<tt>#define FOO_H</tt> </p>
+
+<p><tt>// other includes, for example:</tt> <br>
+<tt>#include &quot;bar.h&quot;</tt> </p>
+
+<p><tt>prefix Foo; // semicolon form okay because we won't include this file elsewhere</tt>
+<br>
+<tt>open Foo;</tt> </p>
+
+<p><tt>// implementation here</tt> <br>
+<tt>----------</tt> </p>
+
+<p>Note that if there are not cycles among header files, then the <tt>#define</tt> in the
+implementation file is unncessary. </p>
+
+<hr>
+
+<h3>Lexical Conventions:</h3>
+
+<p>To do:&nbsp; similar to C and Java.&nbsp; Key thing to note, comments can be either
+C-style (/* ... */) or C++/Java style (// ...). Upper/lower case is significant, etc. </p>
+
+<p>Also note certain name conflicts with the runtime (for example, <tt>GC_Malloc</tt>) are
+not caught until link-time. </p>
+
+<p><b>Reserved Words</b>: </p>
+
+<pre><b>abstract abstype array bool break byte case catch char chr 
+const continue default do else&nbsp;exn exception extern finally 
+for fprintf handle if int new new_array new_string&nbsp;null open
+ord prefix printf public raise return short signed size 
+sprintf static&nbsp;string struct switch try union unsigned void 
+while with</b></pre>
+
+<hr>
+
+<h3>Namespaces:</h3>
+
+<p><br>
+To do:&nbsp; similar to C++.&nbsp; Use Foo::bar where Foo is the &quot;name space&quot;
+(think structure or module).&nbsp; You can write prefix Foo { &lt;top-level-decls&gt; } to
+cause the Foo:: to be implicitly appended to the front of identifiers defined within the
+braces.&nbsp; You can write open Foo { ... } in a context where you don't want to have to
+write Foo::bar all the time and just want to write bar.&nbsp;&nbsp; The forms prefix Foo;
+and open Foo; are the same except that the rest of the file is considered to be
+&quot;within the braces.&quot;&nbsp;&nbsp; Scoping and shadowing at the namespace level
+works as follows.&nbsp; If an identifier <tt>bar</tt> is in scope without any namespace
+prefix, then that binding is used.&nbsp; Else the innermost opened namespace that defines <tt>bar</tt>
+is used to bind the identifier. </p>
+
+<hr>
+
+<h3><a NAME="types"></a>Type Expressions:</h3>
+
+<p>Note: We will soon go to a Java-style definite assignment rule in which case the
+&quot;default values&quot; described in this section are no longer relevant. </p>
+
+<p>Popcorn provides a number of primitive types and type constructors similar to that of
+ML.&nbsp; In particular, the language defines a void type (similar to ML's unit type
+except there is no value of type void), various integer types (signed and unsigned),
+string and array types, (polymorphic) function types, (polymorphic) struct and union
+types, abstract types, and exception types.&nbsp; In this section, we detail the syntax
+and informal semantics of type expressions and declarations. </p>
+
+<pre>&nbsp; &lt;type-exp&gt; ::= &lt;prim-type&gt; &lt;type-modifiers&gt;
+&nbsp; &lt;prim-type&gt; ::= &lt;type-var&gt; | <b>void </b>| &lt;integer-type&gt; | <b>bool </b>| <b>char</b> |&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <b>string</b> | *(&lt;type-exp&gt;,...,&lt;type-exp&gt;) | <b>exn</b> |&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; [&lt;&lt;type-exp&gt;,...,&lt;type-exp&gt;&gt;]&lt;id&gt; | &lt;type_exp&gt;<strong>array</strong>
+&nbsp; &lt;type-var&gt; ::= [a-zA-Z_][a-zA-Z0-9_]*
+&nbsp; &lt;integer-type&gt; ::= [<b>unsigned</b>] <b>int</b> | [<b>unsigned</b>] <b>short</b> | [<b>unsigned</b>] <b>byte
+</b>&nbsp; &lt;type-modifiers&gt; ::= &lt;empty&gt; | [] &lt;type-modifiers&gt; |
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; &lt;fntype-modifier&gt; &lt;type-modifiers&gt;
+&nbsp; &lt;fntype-modifier&gt; ::= [&lt;id&gt;][&lt;&lt;type-var&gt;,...,&lt;type-var&gt;&gt;](&lt;type-exp&gt;,...,&lt;type-exp&gt;)</pre>
+
+<h4>Type Variables:</h4>
+
+<pre>&nbsp; a, b, foo</pre>
+
+<p>Type variables are written as identifiers.&nbsp; Type variables are used within
+polymorphic type expressions (e.g., the types of polymorphic functions) or within
+declarations of polymorphic type constructors (e.g., structs, unions, and abstypes).&nbsp;
+Currently, not all types may be used to instantiate a given type variable.&nbsp;
+Intuitively, only types whose size is a word (4 bytes) may be used to instantiate a type
+variable, and void may not be used to instantiate a variable. </p>
+
+<p>The type variable lists for function types, struct declarations, union declarations,
+and abstype declarations are binding occurrences which shadow type names already in scope,
+including struct and union names.&nbsp; In practice this rarely occurs since programmers
+tend to use different identifiers for type variables and type names. </p>
+
+<h4>The Void Type:</h4>
+
+<pre>&nbsp; <b>void</b></pre>
+
+<p>The void type is used to indicate that a function returns no values or that a union
+data constructor (or exception) carries no values.&nbsp; It is illegal to instantiate a
+type variable with void.&nbsp; It is expected that this restriction will be lifted at some
+point in the future.&nbsp; There are no values of type void. </p>
+
+<h4>Integers Types:</h4>
+
+<pre>&nbsp; <font face="Arial">[</font><b>unsigned</b><font face="Arial">]</font> <b>int
+</b>&nbsp; <font
+face="Arial">[</font><b>unsigned</b><font face="Arial">]</font> <b>short</b>&nbsp;
+&nbsp; <font
+face="Arial">[</font><b>unsigned</b><font face="Arial">]</font> <b>byte</b></pre>
+
+<p>There are 6 types corresponding to integers:&nbsp; int, unsigned int, short, unsigned
+short, byte, and unsigned byte.&nbsp; The int type represents a signed, 32-bit integer
+value.&nbsp; The short type represents a signed, 16-bit value, and the byte type
+represents a signed, 8-bit value.&nbsp; Clearly, the unsigned qualifier represents the
+unsigned 32, 16, or 8-bit value space.&nbsp; We expect to add support for long and
+unsigned long (64-bit integer values) as well as floats and doubles in the near
+future.&nbsp;&nbsp; Arithmetic on these types should work the same as under C, and
+operators such as +,-,*, etc. are overloaded as appropriate.&nbsp; Note that the C
+semantics for performing arithmetic on mixed-size objects requires that the values be cast
+up to the largest appropriate size.&nbsp; See the C reference manual for details. </p>
+
+<p>Decimal-based integer constants are written as in C.&nbsp; Popcorn also supports&nbsp;
+hexadecimal (e.g., 0xfeedface), octal and binary. </p>
+
+<p>The default initial value for variables of the integer types is 0 (zero). </p>
+
+<h4>The Boolean Type:</h4>
+
+<pre>&nbsp; <b>bool</b></pre>
+
+<p>The type bool represents the type of boolean values.&nbsp; The constants true and false
+are used to create boolean values.&nbsp; Most comparison operations (e.g., &quot;==&quot;,
+&quot;&lt;=&quot;, &quot;!=&quot;, etc.) return a boolean value and both the conditional
+expression and conditional statement expect boolean expressions as their first argument. </p>
+
+<p>The default initial value for variables of type bool is false. </p>
+
+<h4>The Character Type:</h4>
+
+<pre><b>&nbsp; char</b></pre>
+
+<p>The type char is distinct from the integer types but one may convert chars to and from
+integers via ord () and chr().&nbsp; Currently, chars are 8-bit, ASCII representations of
+characters.&nbsp; At some point, we may have a separate type for unicode characters or
+change char to unicode.&nbsp; Character literals are as in C (e.g., 'a', 'b', '\n')
+including escaped characters.&nbsp; Switch expressions can perform a match on character
+expressions and some simple arithmetic (may be?) is supported on characters. </p>
+
+<p>The default initial value for variables of type char is '\000'. </p>
+
+<h4>The String Type:</h4>
+
+<pre>&nbsp; <b>string</b></pre>
+
+<p>Strings are like arrays of chars, but they are not the same.&nbsp; Unlike Java, they
+are mutable and unlike C or C++, strings are not \000 terminated and come with their own
+size.&nbsp;&nbsp; String subscript and update are written in a style analogous to array
+subscript and update (e.g., s[i] = s[i+1]).&nbsp; Operations on strings, as with arrays,
+check that the index is in bounds before proceeding and raise the ArrayBoundsExceptions
+exception if the index is out of bounds.&nbsp; (Actually, this currently causes program
+termination, but this should change soon.)&nbsp; String literals are written as in C
+(e.g., &quot;foobar&quot;, &quot;baz\n&quot;) including escaped characters.&nbsp;&nbsp;
+New (\000-filled) strings may be created by using the new_string function defined in the
+core library.&nbsp; The library also provides other string manipulation functions similar
+to the C standard library (e.g., strcmp, strcopy, etc.) </p>
+
+<p>The string type is distinct from the type of character arrays.&nbsp; Hence none of the
+following are well-typed Popcorn statements: <br>
+<tt>string x&nbsp;&nbsp; = {'a', 'b'};</tt> <br>
+<tt>char&nbsp;&nbsp; y[] = &quot;ab&quot;;</tt> <br>
+<tt>x = y;</tt> <br>
+but the following is well-formed: <br>
+<tt>string x&nbsp;&nbsp; = &quot;ab&quot;;</tt> <br>
+<tt>char&nbsp;&nbsp; y[] = {'c', 'd'};</tt> <br>
+<tt>x[0] = y[0];</tt> </p>
+
+<p>The default initial value for variables of type string is the empty string
+(&quot;&quot;). </p>
+
+<p>We expect to add more built-in operations on strings including some forms of pattern
+matching. </p>
+
+<h4>The Array Type:</h4>
+
+<pre>&nbsp; <b>int</b>[]&nbsp;&nbsp; <i><font color="#0000FF">// an array of integers
+</font></i>&nbsp; <b>char</b>[]&nbsp; <i><font
+color="#0000FF">// an array of characters
+</font></i>&nbsp; <b>int</b>[][] <i><font
+color="#0000FF">// an array of an array of integers
+  </font></i><b>&lt;int</b>&gt;<strong>array</strong> <i><font
+color="#0000FF">// alternative syntax for array types</font></i></pre>
+
+<p>As in C, array types are declared by putting a pair of brackets ([]) after a type
+expression.&nbsp;&nbsp; You can specify the size of an array in the type, but this is
+discouraged and is only provided for ease of porting C.&nbsp;Unlike C, you cannot specify
+multi-dimensional arrays directly.&nbsp; In this respect, the arrays of Popcorn are more
+like Java arrays.&nbsp; Association of [] is to the left.&nbsp; As a convenience and to
+avoid confusion when combining array types with function types, Popcorn provides the
+alternative syntax &lt;t&gt;array.</p>
+
+<p>Arrays literals, as in C, are created using {exp1,...,expn}.&nbsp; Empty arrays (arrays
+of size 0) have a special syntax:&nbsp; {:&lt;type-exp&gt;} so that the type-checker can
+easily identify the type of the expression.&nbsp; Array subscript and update are written
+as in C (e.g., x[i] = x[i+1]) and the indices are always checked to see if they are in
+bounds.&nbsp;&nbsp; Currently, an out of bound index causes program termination, but in
+the near future we expect to raise the pre-defined ArrayBoundsException exception
+instead.&nbsp; New arrays may be created by calling the polymorphic new_array function
+which takes an initial element of the appropriate type and an integer size (greater than
+or equal to 0).&nbsp; An array with elements of an integer type may be created either with
+new_array or with new_array4.&nbsp; The latter does not require an initial element and may
+be more efficient. </p>
+
+<p>The default initial value for variables of type array is a 0-sized array unless the
+size appears in the type.&nbsp; In the latter case, the default initial value is an array
+of the appropriate size with elements equal to the default initial value of the element
+type.&nbsp; If the element type has no default initial value then neither does the array
+type with size included. </p>
+
+<h4>Tuple Types:</h4>
+
+<pre><b>&nbsp; </b>*(<b>int</b>,<b>int</b>)&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <i><font
+color="#0000FF">// the type of a pair of integers
+</font></i>&nbsp; *(<b>int</b>,<b>string</b>,<b>char</b>) <i><font
+color="#0000FF">// a triple of an int, string, and character
+</font></i>&nbsp; *(<b>int</b>[],<b>int</b> f())&nbsp;&nbsp; <i><font
+color="#0000FF">// a pair of an integer array, function</font></i></pre>
+
+<p>Tuples are ordered n-tuples of their respective component types.&nbsp;&nbsp; Tuples are
+particularly useful for returning multiple values or for packaging up multiple values
+within a union, especially since Popcorn requires that you name your struct types (i.e.,
+does not support anonymous structs.)&nbsp;&nbsp; If e is an expression of type type, then
+the components of e may be accessed by writing &quot;e.1&quot;, &quot;e.2&quot;,
+&quot;e.3&quot;, etc.&nbsp; New tuples may be created by writing
+&quot;^*(&lt;exp&gt;,...,&lt;exp&gt;)&quot; or &quot;new
+*(&lt;exp&gt;,...,&lt;exp&gt;)&quot;. </p>
+
+<p>Currently, tuples are mutable but we might change this or might allow additional
+qualifiers to declare whether a field is mutable or not.&nbsp; We expect to add tuple
+pattern support in the near future. </p>
+
+<p>The default initial value for variables of tuple type is a tuple of the default initial
+values of the respective component types. </p>
+
+<h4>Function Type Expressions:</h4>
+
+<pre><b>&nbsp; int</b> f(<b>short</b>,<b>short</b>) <i><font color="#0000FF">// a function that takes two shorts and returns an int
+</font></i>&nbsp; <b>int</b> (<b>short</b>,<b>short</b>)&nbsp; <i><font
+color="#0000FF">// also a function that takes two shorts and returns an int
+</font></i>&nbsp; <b>int</b> (<b>short</b> x,<b>short</b> y) <i><font
+color="#0000FF">// ditto -- you can also name arguments
+</font></i>&nbsp; <b>int</b>[] (<b>char</b>) <i><font
+color="#0000FF">// takes a char and returns an integer array
+</font></i>&nbsp; <b>int</b> length&lt;a&gt;(&lt;a&gt;list) <i><font
+color="#0000FF">// for all types a, takes an &lt;a&gt;list and</font>&nbsp;
+</i>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <i><font
+color="#0000FF">// returns an int
+</font></i>&nbsp; <b>int</b> &lt;a&gt;(&lt;a&gt;list x)&nbsp;&nbsp;&nbsp;&nbsp; <i><font
+color="#0000FF">// same as previous
+</font></i>&nbsp; <b>int</b> &lt;a&gt;(&lt;a&gt;list)&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <i><font
+color="#0000FF">// same as previous
+</font></i>&nbsp; b&nbsp; &lt;a,b&gt;(b f(a,b), &lt;a&gt;list, b accum)&nbsp;
+&nbsp;&nbsp;&nbsp; <i><font
+color="#0000FF">// takes three arguments, the first is a function from a and b to
+&nbsp;&nbsp;&nbsp; // b, the second is an &lt;a&gt;list, and the third is a b.&nbsp; The entire
+&nbsp;&nbsp;&nbsp; // function returns a b value.
+</font></i>&nbsp; <b>int</b> (<b>int</b>)[]&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <i><font
+color="#0000FF">// an array of functions from int to int</font></i>
+<i><font
+color="#0000FF">  </font></i><b>&lt;int</b> (<b>int</b>)&gt;<strong>array</strong>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<i><font
+color="#0000FF">// an array of functions from int to int</font></i></pre>
+
+<p>Function type syntax is by far the most confusing because C fundamentally gets this
+wrong.&nbsp; However, porting C code with a different notation for types is quite
+difficult so we have attempted to keep the C syntax as much as possible. </p>
+
+<p>For monomorphic, first-order functions, the syntax is essentially the same as in
+C:&nbsp; the result type comes first, followed by an [optional] identifier, then a left
+parenthesis, followed by a comma-separated list of argument types, and then a right
+parentheses.&nbsp;&nbsp; In addition, the arguments can be given an optional identifier
+for a name.&nbsp; Optional identifiers for the function name and the argument names are
+ignored by the type system, so &quot;int f(short x,short y)&quot; is equivalent to
+&quot;int (short,short)&quot;. </p>
+
+<p>For polymorphic functions, the type parameters must be explicit.&nbsp;&nbsp; As in C++,
+these are enclosed by &quot;&lt;&quot; and &quot;&gt;&quot; and are comma separated type
+variables.&nbsp;&nbsp; So, for instance, &quot;'a id&lt;a&gt;(a)&quot; is the type of the
+polymorphic identity function and is equivalent to a (a)&quot;.&nbsp; Declaring a function
+and its type is detailed in Section [?].&nbsp; There is no default value for variables of
+function type -- that is, programmers must explicitly supply such a value. </p>
+
+<h4>The Exception Type:</h4>
+
+<pre>&nbsp; <b>exn</b></pre>
+
+<p>Exception values are created with a new expression by applying an exception constructor
+to a value of the appropriate type.&nbsp; The resulting value has type exn and may be used
+by a raise expression.&nbsp; When a try/handle expression is executed, if the body of the
+try block raises an exception, then the handle is given an exn value.&nbsp; The handle
+expression typically performs a switch on the exn value to determine which exception was
+raised and to extract any value(s) placed in the exn data structure.&nbsp; In this
+respect, exn values are much like ML's exn type.&nbsp; New exception constructors are
+declared using the exception declaration (see Section [?]). </p>
+
+<p>There is no default value for variables of exn type. </p>
+
+<h4>Type Constructor Expressions:</h4>
+
+<pre><font face="Arial">&nbsp; </font>bar&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <i><font
+color="#0000FF">// the bar type takes no arguments
+</font></i>&nbsp;&lt;<b>int</b>&gt;list&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <i><font
+color="#0000FF">// the list type takes one argument -- int in this case
+</font></i>&nbsp;&lt;<b>int</b>,<b>string</b>&gt;dict&nbsp;&nbsp; <i><font
+color="#0000FF">// the dict type takes two arguments: int &amp; string here
+</font></i>&nbsp;&lt;<b>int</b>[]&gt;list&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <i><font
+color="#0000FF">// a list of integer arrays
+</font></i> &lt;<b>&lt;int</b>&gt;<strong>array</strong>&gt;list&nbsp;&nbsp;&nbsp;<i><font
+color="#0000FF">// a list of integer arrays</font></i></pre>
+
+<p>Type constructors are, as in ML, applied to type arguments to produce a type
+expression.&nbsp; Also as in ML, the application occurs on the left.&nbsp; As in C++, the
+arguments to the constructor are placed in &quot;&lt;&quot; and &quot;&gt;&quot; brackets
+and are comma-separated. </p>
+
+<p>Type constructors are created either through a struct declaration (see Section [?]),
+&nbsp; a union declaration (see Section [?]), or an abstype declaration (see
+Section[?]).&nbsp; In the examples above, let us assume that we have declared the
+following struct declarations: </p>
+
+<pre><b>&nbsp;</b> <b>struct</b> bar {<b>int </b>x; <b>int </b>y; <b>int</b> z; }
+&nbsp; ?<b>struct</b> &lt;a&gt;list { a hd; &lt;a&gt;list tl; }
+&nbsp; <b>struct</b> &lt;a,b&gt;dict { <b>int </b>comp(a,a); &lt;*(a,b)&gt;list contents; }</pre>
+
+<p>Then bar is declared as a type constructor with no arguments, list is a type
+constructor with one argument, and dict is a type constructor with two
+arguments.&nbsp;&nbsp; Using the type expression &quot;&lt;int&gt;list&quot; is similar to
+writing the following monomorphic struct declaration and using it instead: </p>
+
+<pre>&nbsp; ?struct int_list { <b>int</b> hd; int_list tl; }</pre>
+
+<p>However, the type system treats &quot;&lt;int&gt;list&quot; and &quot;int_list&quot; as
+different types. </p>
+
+<p>The default initial value of a ?struct type is null (similar to Java objects).&nbsp;
+The default initial value of a struct type is the value of that type with fields
+containing the default initial values of the field types of the struct declaration.&nbsp;
+If any field type has no default initial value, then neither does the struct type.&nbsp;
+The default initial value of a union type depends entirely on the first variant of the
+type declaration.&nbsp; If the variant has type void, the default value of the untion type
+is a value with this variant.&nbsp; Else the default value of the union type is a value
+with this variant and its corresponding value being the default value of the variant's
+type.&nbsp; If this type has no default value, then the union type has no default value. </p>
+
+<p>Note: Default values may go away in the future. </p>
+
+<hr>
+
+<h3><a NAME="declarations"></a>Declarations:</h3>
+
+<h4>Top-Level Variable Declarations:</h4>
+
+<pre>&nbsp; &lt;top-var-decl&gt; ::= [&lt;scope&gt;]&lt;type-exp&gt; &lt;qid&gt;&lt;type-modifiers&gt;[= &lt;const-exp&gt;];</pre>
+
+<pre>&nbsp; <b>static int</b> x;&nbsp; <i><font color="#0000FF">// a top-level, private variable x of type int
+</font></i>&nbsp; <b>int</b> x = 1; <i><font
+color="#0000FF">// a top-level, public variable x of type int, initial value 1
+</font></i>&nbsp; <b>int</b> x,y=3,z; <i><font
+color="#0000FF">// x, y, and z all public of type int, y has initial value 3
+</font></i>&nbsp; <b>static int</b>[] a; <i><font
+color="#0000FF">// a is a private array of integers
+</font></i>&nbsp; <b>static int</b> a[]; <i><font
+color="#0000FF">// same as previous
+
+</font></i>&nbsp; <b>extern int </b>x;<i> <font
+color="#0000FF">// x is an externally-defined integer variable
+</font></i>&nbsp; <b>extern string</b> z; <i><font
+color="#0000FF">// z is an externally-defined string variable</font></i></pre>
+
+<p>Top-level declarations for variables are prefixed with an optional scope modifier
+(either &quot;extern&quot; or &quot;static&quot;), followed by a type and then the
+variable named, followed by an optional initial value.&nbsp; Multiple variable definitions
+may be collapsed if they have the same scope and type.&nbsp; Initial values for top-level
+expressions must be &quot;constant&quot; expressions and may not include function
+calls.&nbsp; Constant expressions are detailed in Section [?], but roughly speaking
+consist of integer constants, string and array constants, new expressions (where the
+arguments are constants), null, and a few other expressions.&nbsp; Top-level variables are
+not allowed to be polymorphic, though they may contain values that refer to polymorphic
+functions. </p>
+
+<p>To support C-style declarations of variables of array type or functional type, it is
+possible to move part of the type expression onto the variable being declared.&nbsp;&nbsp;
+For instance, we may write &quot;int x[]&quot; to declare x to be an array of integers. </p>
+
+<p>The static qualifier defines a variable whose scope is the current compilation unit
+(usually a file).&nbsp; That is, the variable is only accessible to those functions
+defined in the same compilation unit. </p>
+
+<p>The extern qualifier claims that such a variable is defined by some other compilation
+unit with the associated type.&nbsp; Obviously, only one of static or extern may apply to
+a given definition. </p>
+
+<p>If no initializer is provided for the variable, then the compiler implicitly inserts an
+initializer.&nbsp; Not all types admit a default initial value and so programmers must
+provide them.&nbsp; Refer to Section [?] which describes types to see which types admit
+default initial values and if so, what those values are. </p>
+
+<p>In the future, we expect additional qualifiers including &quot;const&quot; (immutable
+variables).&nbsp; The restriction that all variables must be initialized is a painful one,
+especially with top-level variables of abstract type and we hope to lift this restriction
+some day.&nbsp; However, the TAL module system only supports primitive data values (much
+like a standard assembler) and does not support function calls for initializing variables,
+hence the restriction.&nbsp; In the meantime, it is relatively easy to work around the
+restriction.&nbsp; For example, if you wish to define a variable x of abstract type FOO
+but don't have an initial value of type FOO, then you can instead define x to have type
+&lt;FOO&gt;Opt where Opt is a struct defined as: </p>
+
+<pre>&nbsp; ?<b>struct</b> &lt;a&gt;Opt { a v; }</pre>
+
+<p>(For ML users, Opt is similar to the option datatype.)&nbsp; Initially, x will have
+value null.&nbsp; The value may then be later initialized (e.g., in main()) as
+follows:&nbsp; If e is the expression that computes the initial FOO value, we
+assign:&nbsp;&nbsp; &quot;x = ^Opt(e)&quot;&nbsp; (i.e., x gets new Opt(e)).&nbsp; To
+extract or modify the value from x, it is necessary to write &quot;x.v&quot; instead of
+just &quot;x&quot;.&nbsp;&nbsp; Note that the use of &quot;x.v&quot; causes an implicit
+check for null to be inserted by the compiler which is necessary to ensure that the
+variable is not used before it is initialized.&nbsp; Finally, note that the Opt
+constructor is defined as above in &lt;core.h&gt;. </p>
+
+<p>Top-level variables may not currently have a function type.&nbsp; This (somewhat rare)
+inconvenience can be circumvented with a level of indirection such as with the Opt type. </p>
+
+<h4>Local Variable Declarations:</h4>
+
+<pre>&nbsp; &lt;var-decl&gt; ::= &lt;type-exp&gt; &lt;id&gt;[&lt;type-modifiers&gt;][= &lt;exp&gt;];</pre>
+
+<p>Similar to top-level declarations except that there are no scope qualifiers.&nbsp;
+Unlike Java, we require all variables to be initialized (or else insert an implicit
+initialization to the default value for the variable's type.)&nbsp; We expect to lift this
+restriction someday, by performing a simple flow-insensitive dataflow analysis (a la JVML)
+to ensure that variables are initialized before they are used. </p>
+
+<h4>Struct Declarations:</h4>
+
+<pre>&nbsp; &lt;struct-decl&gt; ::= [&lt;scope&gt;] [?] <b>struct</b> [&lt;&lt;type-var&gt;,...,&lt;type-var&gt;&gt;] { &lt;struct-field&gt;;+ }
+&nbsp; &lt;struct-field&gt;::= [<b>const</b>] &lt;type-exp&gt; &lt;id&gt; &lt;type-modifiers&gt;</pre>
+
+<pre>&nbsp; <b>struct</b> point {<b>int</b> x; <b>int</b> y; }&nbsp;<i> <font
+color="#0000FF">// a record of two integer fields, x &amp; y
+</font></i>&nbsp; <b>struct</b> point {<b>const</b> <b>int</b> x; <b>const</b> <b>int</b> y; } <i><font
+color="#0000FF">// same but x and y are immutable</font>&nbsp;
+</i>&nbsp; ?<b>struct</b> point {<b>int</b> x; <b>int</b> y; } <i><font
+color="#0000FF">// same as above but point values can be null
+</font></i>&nbsp; ?<b>struct</b> pointlist {point p; pointlist next; }&nbsp; <i><font
+color="#0000FF">// lists of points
+</font></i>&nbsp; <b>static</b> <b>struct</b> point {<b>int</b> x,y;}<i> <font
+color="#0000FF">// the type declaration is private
+</font></i>&nbsp; <b>abstract</b> <b>struct</b> point {<b>int</b> x,y; } <i><font
+color="#0000FF">// the type declaration is exported abstractly
+</font></i>&nbsp; ?<b>struct</b> &lt;a&gt;list {a hd; &lt;a&gt;list tl; }<i> <font
+color="#0000FF">// polymorphic lists
+</font></i>&nbsp; ?<b>struct</b> &lt;a,b,c&gt;triple {a x; b y; c z; } <i><font
+color="#0000FF">// polymorphic triple</font></i></pre>
+
+<pre>&nbsp; <b>extern</b> <b>struct</b> point {<b>int</b> x; <b>int</b> y;} <i><font
+color="#0000FF">// point is defined publicly elsewhere
+</font></i>&nbsp; <b>extern</b> point;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <i><font
+color="#0000FF">// point is defined (perhaps abstractly) elsewhere
+</font></i>&nbsp; <b>extern</b> ?point;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<i> <font
+color="#0000FF">// point is an ? struct defined elsewhere</font></i></pre>
+
+<p>Struct declarations are essentially type declarations for &quot;pointers to records of
+values&quot;.&nbsp; If no question mark appears before the struct declaration, then values
+of that type are always valid pointers to records (i.e., never null).&nbsp; If a question
+mark appears before the type (so-called option-structs), then the pointer may be
+null.&nbsp; When dereferencing an option-struct value, the compiler inserts implicit
+checks for null and raises the NullPointerException exception if the value is found to be
+null.&nbsp; Hence, before setting or reading a field in a struct, a programmer should
+always check to see whether the value is null. </p>
+
+<p>Before the struct declaration, one can write an optional scope qualifier.&nbsp;&nbsp;
+Lack of a qualifier indicates that the type declaration is to be fully exported to the
+outside world.&nbsp; The qualifier static indicates that the type declaration is to be
+fully hidden to the outside world.&nbsp; The qualifier abstract indicates that the name of
+the type constructor, the number of type arguments it takes, and whether it is an
+option-struct&nbsp; is exported to the outside world, but the definition is not.&nbsp; The
+extern qualifier is used when some other compilation unit defines the struct (and exports
+it at least in part).&nbsp; There is currently no way to export a struct without revealing
+whether or not it is an option-struct. </p>
+
+<p>The fields of the struct are given types and names as identifiers and may be optionally
+prefixed with &quot;const&quot; to indicate that the field is immutable.&nbsp;&nbsp;
+Fields are accessed using the &quot;dot&quot; notation.&nbsp; For example, to access the x
+component of a point&nbsp; p we would write &quot;p.x&quot;.&nbsp; To create a struct
+value, we write &quot;new &lt;struct-name&gt;(&lt;exp1&gt;,...,&lt;expn&gt;)&quot; or
+&quot;^&lt;struct-name&gt;(&lt;exp1&gt;,...,&lt;expn&gt;)&quot; where the expression
+arguments are used as the initial values of the fields.&nbsp; Thus, it is impossible to
+create a struct value with uninitialized fields.&nbsp; </p>
+
+<p>Alternatively, one may create a struct value by writing &quot;new
+&lt;struct-name&gt;{&lt;field1&gt; = &lt;exp1&gt;,...,&lt;fieldn&gt;=&lt;expn&gt;}&quot;
+or more commonly,
+&quot;^&lt;struct-name&gt;{&lt;field1&gt;=&lt;exp1&gt;,...,&lt;fieldn&gt;=&lt;expn&gt;}&quot;.
+&nbsp; Unlike the notation above, the expressions need not be listed in the order that the
+fields are declared. </p>
+
+<p>Structs may be recursive as in the pointlist and list examples above.&nbsp;&nbsp; Thus,
+the scope of a struct name includes its definition. <br>
+In fact, the scope of a struct name is an entire compilation unit (except where shadowed
+by a type variable), so mutually recursive struct definitions can be made without the
+acrobatics required by languages such as C. </p>
+
+<p>Structs may also be polymorphic in any number of type arguments.&nbsp; For parsing
+reasons, we placed the type parameters to the left of the constructor instead of the
+right.&nbsp; This allows us to easily determine type expressions from polymorphic function
+declarations.&nbsp; In the list example above, a value of type &lt;int&gt;list is either
+null, or a pointer to a struct that contains an int in its hd field, and an
+&lt;int&gt;list in its tail field.&nbsp; Any type but void may be used to instantiate the
+type variables. </p>
+
+<p>There is no need (and in fact, no way) to explicitly instantiate the type variables of
+a polymorphic struct.&nbsp; Rather, the type checker automatically determines the
+instantiation through unification in a style similar to ML type inference.&nbsp;&nbsp;
+Similarly, when one writes &quot;null&quot;, it can represent any option-struct -- there
+is no need to explicitly say which type.&nbsp; We expect that sometime in the future, we
+will provide syntax for explicitly instantiating a polymorphic type constructor and for
+explicitly writing at which type null is meant to be.&nbsp; As a simple example, the
+following polymoprhic function calculates the length of a list: </p>
+
+<pre>&nbsp; <b>int</b> list_length&lt;a&gt;(&lt;a&gt;list x) {
+&nbsp;&nbsp;&nbsp; <b>int</b> len = 0;
+
+&nbsp;&nbsp;&nbsp; <b>while</b> (x != <b>null</b>) {
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; len++;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; x = x.tl;&nbsp;<i> <font
+color="#0000FF">// implicit check for null here
+</font></i>&nbsp;&nbsp;&nbsp; }
+&nbsp;&nbsp;&nbsp; <b>return</b>(len)
+&nbsp; }</pre>
+
+<p>Notice that the code is able to calculate the length regardless of the type of the
+components in the list.&nbsp; Notice also that we explicitly check for null before
+dereferencing the list.&nbsp; Currently, the popcorn compiler inserts an implicit check
+for null at the point where &quot;x.tl&quot; is dereferenced, but as the optimizations in
+the compiler are improved, we expect this overhead to disappear.&nbsp; As another example,
+the following code computes and returns a list of the first n integers: </p>
+
+<pre>&nbsp; &lt;<b>int</b>&gt;list f(<b>int</b> n) {
+&nbsp;&nbsp;&nbsp; &lt;<b>int</b>&gt;list r;&nbsp;<i> <font
+color="#0000FF">// implicitly initialized to null
+
+</font></i>&nbsp;&nbsp;&nbsp; <b>while</b> (n != 0) {
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; r = ^list(n,r);&nbsp;<i> <font
+color="#0000FF">// new list struct created here
+      </font></i>r = ^list{tl=r,hd=n};&nbsp;<i> <font
+color="#0000FF">// equivalent to previous line
+</font></i>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; n--;
+&nbsp;&nbsp;&nbsp; }
+&nbsp;&nbsp;&nbsp; <b>return</b>(r);
+&nbsp; }</pre>
+
+<p>Notice that the variable r is implicitly initialized to the value null.&nbsp;&nbsp; In
+practice, implicit initialization like this is not a good idea, and one should write
+&quot;&lt;int&gt;list r = null&quot; to make the code more clear.&nbsp; Notice also that
+in the body of the while loop, a new list node is created using
+&quot;^list(n,r)&quot;.&nbsp; One could also write &quot;new list(n,r)&quot; to make the
+code appear a bit more like Java (at the price of more keystrokes).&nbsp; Alternatively,
+we may write &quot;^list{tl=r,hd=n}&quot; or &quot;new {hd=n,tl=r}&quot; as in ML.
+&nbsp; Using the explicit field names means that we don't have to worry about getting the
+order of the fields right.</p>
+
+<p>Type equivalence on structs is not done structurally as in Standard ML or in C.&nbsp;
+Rather, struct equivalence is by name.&nbsp; Thus, if one defines: </p>
+
+<pre>&nbsp; <b>struct</b> point1 {<b>int</b> x; <b>int</b> y;}
+&nbsp; <b>struct</b> point2 {<b>int</b> x; <b>int</b> y;}</pre>
+
+<pre>&nbsp; <b>int</b> f(point1 p)&nbsp;
+&nbsp; { <b>return</b>(p.x + p.y) }</pre>
+
+<p>Then one may pass a point1 value to f, but not a point2 value.&nbsp; The decision to
+use name equivalence instead of structural equivalence makes supporting recursive struct
+definitions easier at the TAL level and it makes it easier to build a type-preserving
+compiler, because we need not expand type definitions eagerly.&nbsp;&nbsp; However, it
+interferes with the addition of several desirable features including sub-typing so this
+decision will perhaps be re-visited in the future. </p>
+
+<p>There is no current support for &quot;flattening&quot; one struct into another, nor for
+creating arrays of flattened structs.&nbsp; Rather, as in Java,&nbsp; we are forced to
+manipulate pointers (or references) to the record.&nbsp; Though TAL supports flattened
+records and structs, we have not yet found a simple, elegant way to export this
+functionality to a source language like Popcorn but hope to some day. </p>
+
+<h4>Union Declarations:</h4>
+
+<pre>&nbsp; &lt;union-decl&gt; ::= [&lt;scope&gt;] <b>union</b>[&lt;&lt;type-var&gt;,...,&lt;type-var&gt;&gt;] {
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; &lt;type-exp&gt; &lt;id&gt; &lt;type-modifiers&gt;; ... &lt;type-exp&gt; &lt;id&gt; &lt;type-modifiers&gt;; }</pre>
+
+<pre>&nbsp; <b>union</b> &lt;a&gt;list { <b>void</b> Null; *(a,&lt;a&gt;list) Cons; }
+&nbsp;&nbsp;&nbsp; <i><font
+color="#0000FF">// the list declaration above is similar to the ?struct&nbsp;
+&nbsp;&nbsp;&nbsp; // declaration given in the previous section, and approximates
+&nbsp;&nbsp;&nbsp; // the ML datatype:&nbsp; datatype 'a list = Nil | Cons of 'a*'a list
+&nbsp;&nbsp;&nbsp; // however, the union approach requires an extra level of indirection
+&nbsp;&nbsp;&nbsp; // for each Cons cell.
+
+</font></i>&nbsp; <b>union</b> exp { <b>string</b> Var; *(<b>string</b>,exp) Lambda; *(exp,exp) App; }
+&nbsp;&nbsp;&nbsp; <i><font
+color="#0000FF">// a recursive tagged union representing lambda expressions</font></i></pre>
+
+<p>Unions in Popcorn are more like ML datatypes than like C unions.&nbsp;&nbsp; That is,
+union values are fundamentally disjoint or tagged sums.&nbsp; The tag is necessary so that
+we can dynamically determine the actual type carried by the union value.&nbsp;&nbsp; As
+with structs (and ML-style datatypes), unions can be recursive and polymorphic, and their
+visibility can be controlled via public, static, abstract, and extern qualifiers.&nbsp;
+(See Section [?].) </p>
+
+<p>The field names of a union are used as the datatype constructors.&nbsp; To create a
+value of a union type we write
+&quot;^&lt;union-name&gt;.&lt;field-name&gt;(&lt;arg1&gt;,...,&lt;argn&gt;)&quot; (or use
+the keyword &quot;new&quot; instead of &quot;^&quot;.)&nbsp; For example, to create an exp
+value representing the variable x, we would write &quot;^exp.Var(&quot;x&quot;)&quot;. </p>
+
+<p>Union fields are not mutable. </p>
+
+<p>When we have a value x of some union type, then we can use a switch expression to
+determine what its tag and underlying value is, similar to the case-expression and pattern
+matching constructs of SML.&nbsp; For instance, the following function prints out exp
+values: </p>
+
+<pre>&nbsp; <b>void</b> print_exp(exp e) {
+&nbsp;&nbsp;&nbsp; <b>switch</b> (e) {
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <b>case</b> Var(x):&nbsp; <b>printf</b>(&quot;%s&quot;,x);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <b>case</b> Lam(p):&nbsp; <b>printf</b>(&quot;(lambda %s &quot;,p.1);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; print_exp(p.2);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <b>printf</b>(&quot;)&quot;);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <b>case</b> App(p):&nbsp; <b>printf</b>(&quot;(&quot;); print_exp(p.1); <b>printf</b>(&quot; &quot;);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; print_exp(p.2); <b>printf</b>(&quot;)&quot;);
+&nbsp;&nbsp;&nbsp; }
+&nbsp; }</pre>
+
+<p>A switch on a union type requires cases for each of the fields (or else a default:
+case).&nbsp; Each field's case also defines a local variable (or more generally a pattern)
+that has the type of the field which may be used locally within the
+switch-case-clause.&nbsp; For instance, in the example above, the Var field has type
+string, so the x variable associated with the Var case has type string within the block of
+code corresponding to that case.&nbsp; The Lam field has type *(string,exp) (a tuple of a
+string and expression) so p is assigned this type within the Lam case.&nbsp; Finally, the
+App field has type *(exp,exp) so p is assigned this type within the App case.&nbsp; Cases
+for void variants do not define local variables.&nbsp; Notice that unlike C, switch cases
+do <i>not</i> implicitly fall through to the next case, primarily because the scope of
+variables bound within the cases does not extend across cases.&nbsp; Correspondingly,
+break does <i>not</i> cause control to be transferred out of the switch but rather out of
+the nearest enclosing loop.&nbsp; In the future, we may change this by forcing programmers
+to explicitly write &quot;break&quot; to make it easier to port C code. </p>
+
+<p>It is also possible to deconstruct a union value by simply using the &quot;dot&quot;
+notation.&nbsp; For instance, we can write &quot;e.Var&quot; and this is equivalent to
+writing &quot;switch (e) { case Var(x): return(x); default: raise
+UnionVariantException;}&quot;. </p>
+
+<p>Wildcards (&quot;_&quot;) and tuple-patterns (&quot;*(x1,...,xn)&quot;) may also be
+used within a switch to provide a bit more pattern matching a la ML.&nbsp; In particular,
+the switch expression above may be rewritten as follows:</p>
+
+<pre>&nbsp;&nbsp;&nbsp; <strong>switch</strong> (e) {
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <strong>case</strong> Var(x):&nbsp; printf(&quot;%s&quot;,x);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <strong>case</strong> Lam*(var,body):&nbsp; // var and body form a tuple-pattern
+                    printf(&quot;(lambda %s &quot;,var);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; print_exp(body);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; printf(&quot;)&quot;);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <strong>case</strong> App*(fn,arg):&nbsp;   // fn and arg form a tuple-pattern
+                    printf(&quot;(&quot;); print_exp(fn); printf(&quot; &quot;);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; print_exp(arg); printf(&quot;)&quot;);
+&nbsp;&nbsp;&nbsp; }</pre>
+
+<h4>Abstype Declarations:</h4>
+
+<pre>  &lt;abstype-decl&gt; ::= [&lt;scope&gt;] <strong>abstype</strong> 
+                      [&lt;&lt;type-var&gt;,...&lt;type-var&gt;&gt;]id
+                      [[&lt;type-var&gt;,...,&lt;type-var&gt;]] = &lt;type-exp&gt;;</pre>
+
+<p>Abstypes are a form of first-class abstract data types, similar in many respects to a
+very primitive form of object type. They are particularly useful when one wants to
+manipulate heterogeneous data structures. Like a struct or union, an abstype can be
+polymorphic.&nbsp; Unlike structs or unions, an abstype can <em>abstract</em> or <em>hide</em>
+certain types as well.&nbsp; The typical use of an abstype is when we want to export some
+but not all information about a type.&nbsp; For instance, when representing objects, we
+may want to hide the types of the instance variables but expose the types of the methods.
+&nbsp; Furthermore, the methods should take the instance variables as extra arguments.
+&nbsp; As another example, a <em>closure</em> may be represented by an abstract
+environment and a function which, when given the environment and an argument, produces a
+result.&nbsp; </p>
+
+<p>Like structs and unions, abstype values are created by using the &quot;new&quot; or
+&quot;^&quot; construct.&nbsp; To manipulate an abstype value, we must use the
+&quot;with&quot; construct to open up the abstracted type in some scope.&nbsp; </p>
+
+<p>As a simple example, suppose we have two different representations for 2-dimensional
+points, polar and caretesian, with appropriate operations defined on them:</p>
+
+<pre>  <strong>extern struct</strong> polar {<strong>int</strong> xcoord; <strong>int</strong> ycoord;}
+  <strong>extern</strong> polar add_polar(polar x, polar y);
+  <strong>extern</strong> polar sub_polar(polar x, polar y);
+  <strong>extern</strong> polar mul_polar(polar x, polar y);
+
+  <strong>extern</strong> <strong>struct</strong> cartesian {<strong>int</strong> mag; <strong>int</strong> angle;}
+  <strong>extern </strong>cartesian add_cart(cartesian x, cartesian y);
+  <strong>extern </strong>cartesian sub_cart(cartesian x, cartesian y);
+  <strong>extern </strong>cartesian mul_cart(cartesian x, cartesian y);</pre>
+
+<p>Unfortunately, Popcorn does not allow one to mix polar and cartesian objects directly.
+&nbsp; For example, it's impossible to have a list that mixes polar and cartesian points.
+&nbsp; Now one could define a point union with a field for polars and a field for
+cartesians, and then manipulate lists of these unions.&nbsp; But what if we want to add a
+third kind of point?&nbsp; Abstypes allow us to abstract the particular representation of
+a type (in this case, whether a point is polar or cartesian) and package up the operations
+on values of those types.&nbsp; For example, we might define a generic point object as
+follows:</p>
+
+<pre>  <strong>struct </strong>&lt;a&gt;point_rep { a data; 
+                        a add_point(a,a);
+                        a sub_point(a,a);
+                        a mul_point(a,a); };
+
+  <strong>abstype </strong>point[p] = &lt;p&gt;point_rep;</pre>
+
+<p>This definition defines a new type point that hides or abstracts the representation of
+the field data (p) allowing us to mix different point representations.&nbsp; For example,
+we might define:</p>
+
+<pre>  point polar_point(int mag, int angle) {
+    &lt;polar&gt;point_rep pol = ^point_rep(^polar(mag, angle),
+                                      add_polar, sub_polar, mul_polar);
+    <strong>return</strong> ^point(pol); 
+  }
+
+  point cartesian_point(int x, int y) {
+    &lt;cartesian&gt;point_rep car = ^point_rep(^cartesian(x, y),
+                                          add_cart, sub_cart, mul_cart);
+    <strong>return</strong> ^point(car);
+  }</pre>
+
+<p>Notice that both function definitions return point values and that the return type
+makes no mention of whether the representation of the point is polar or cartesian.
+&nbsp; Indeed, at the point where we create a point (^point(pol) or ^point(car)), we've
+abstracted the representation.&nbsp; This is a lot like casting an object of a particular
+class in Java to one of the interface types that the class implements -- you lose the
+specific information about what kind of object it is and must manipulate it through its
+abstract interface.&nbsp; </p>
+
+<p>With these two definitions for creating points that are either polar or cartesian, we
+can define, for instance, a list that mixes both kinds of points:</p>
+
+<pre>  &lt;point&gt;list points = ^list(polar_point(10,15),
+                             ^list(cartesian_point(0,0),
+                                   ^list(polar_point(3,3),null)));</pre>
+
+<p>We can then write a function to manipulate the list through the exposed interface.
+&nbsp; A simple example follows:<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; </p>
+
+<pre>  &lt;a&gt;point_rep double_point_rep&lt;a&gt;(&lt;a&gt;point_rep pr) {
+     a new_data = pr.add_point(pr.data,pr.data);
+     <strong>return</strong> ^point_rep(new_data,pr.add_point,pr.sub_point,pr.mul_point);
+  }
+
+  point double_point(point x) {
+     <strong>with</strong> pr[p] = x {
+       &lt;p&gt;point_rep new_pr = double_point_rep(pr);
+       <strong>return</strong> ^point(new_pr);
+     }
+  }</pre>
+
+<pre>  List::map(double_point, points);</pre>
+
+<p>In this example code, we first define a polymorphic function which, when given a
+point_rep where the data has type a, we return a new point representation where the data
+has the same type.&nbsp; We do so by simply adding the old point representation data to
+itself and packaging this up with the operations.&nbsp; But this function manipulates
+&lt;a&gt;point_rep values, not points.&nbsp; The double_point function does what we need
+to take a point with any representation and apply the double_point_rep function to that
+representation.&nbsp; </p>
+
+<p>The body of double_point use a <em>with</em> statement to &quot;open up&quot; the
+abstract point x.&nbsp; Within the scope of the <em>with</em> statement, the variable pr
+is bound to the point representation and the type variable p is bound to the type of the
+point representation's data. That is, pr has type &lt;p&gt;point_rep (for some type named
+by p) and can only be used within the scope of the <em>with </em>body.&nbsp; Within the
+body, we call the double_point_rep function on pr.&nbsp; Given any type p,
+double_point_rep will take a &lt;p&gt;point_rep and produce a &lt;p&gt;point_rep,
+&nbsp; thus we get back a &lt;p&gt;point_rep for a result.&nbsp; We then abstract p again
+by placing the new &lt;p&gt;point_rep value new_pr in a point.&nbsp; Finally, we return
+the new point as the result of the function.&nbsp; </p>
+
+<p>The <em>with</em> statement allows us to unpack or open up an abstract data type within
+some scope.&nbsp; All this really means is that it gives us a way to <em>name</em> the
+type for a limited amount of code and to get to the underlying value.&nbsp; Notice that if
+we open up two different points, then the type-checker forces us to use different names
+for the two points and thus, their respective point representation types cannot be treated
+as the same:</p>
+
+<pre>  point point1,point2;
+
+  <strong>with</strong> pr1[p1] = point1 {
+    <strong>with</strong> pr2[p2] = point2 {
+      pr2.add_point(p1.data,p2.data);  <em><font
+color="#0000FF">// fails to type-check!</font></em>
+    }
+  }</pre>
+
+<p>In the above example, the attempt to add a point1's data and point2's data fails to
+type-check.&nbsp; The reason is that point1's representation might be incompatible with
+point2's representation.&nbsp; One might be tempted to rewrite the code so that we replace
+p2 with p1:</p>
+
+<pre>  <strong>with</strong> pr1[p1] = point1 {
+    <strong>with</strong> pr2[p1] = point2 {     <em><font
+color="#0000FF">// fails to type-check!</font></em>
+      pr2.add_point(p1.data,p2.data);  
+    }
+  }</pre>
+
+<p>but the Popcorn type-checker will reject this.&nbsp; In general, Popcorn requires that
+you keep distinct type variables syntactically distinct (i.e., it does not implicitly
+alpha-vary them for you.)&nbsp; This avoids a number of potential problems and keeps the
+language type-safe.</p>
+
+<p>Another simple example of using abstypes is to define closures.&nbsp; A closure is a
+pair of some code (a function pointer) and an environment.&nbsp; The code is intended to
+take the environment and an argument and produce a result.&nbsp; Different closures may
+want to have different types of environments, even though they take and return arguments
+and results of the same type.&nbsp; Without abstypes, we'd have to assign such closures
+different types.&nbsp; But in functional languages like ML, no such distinction is made in
+their type.&nbsp; Fortunately, we can use abstypes to hide or abstract the type of the
+environment in a closure.&nbsp; Furthermore, we can use Popcorn's polymorphism to build
+closures and operations on them once and for all.&nbsp; The following code defines an
+abstype for closures and a polymorphic composition function which, when given a closure
+from a-&gt;b and a closure from a b-&gt;c, produces a closure from a-&gt;c.&nbsp; The code
+takes advantage of the ability to define local, static functions.</p>
+
+<pre>  <strong>abstype </strong>&lt;a,b&gt;closure[c] = *(b code(env c,arg a), c);
+
+  &lt;a,c&gt;closure compose&lt;a,b,c&gt;(&lt;a,b&gt;closure f1, &lt;b,c&gt;closure f2) {
+
+       c code&lt;a,b,c&gt;(*(&lt;a,b&gt;closure,&lt;b,c&gt;closure) env, a arg) {
+         <strong>with </strong>f1[d] = env.1 { 
+          <strong>with </strong>f2[e] = env.2 {
+            b f1code(d,a) = f1.1;
+            c f2code(e,b) = f2.2;
+            d f1env = f1.2;
+            e f2env = f2.2;
+            <strong>return</strong> f2code(f2env,f1code(f1env,arg));
+          }
+         }
+       };
+
+       <strong>return </strong>^closure(code,^(f1,f2));
+  }</pre>
+
+<h4>Exception Declarations:</h4>
+
+<pre>&nbsp; &lt;exn-decl&gt;&nbsp; ::= [&lt;scope&gt;] <b>exception</b> &lt;qid&gt;; |&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; [&lt;scope&gt;] <b>exception</b> &lt;qid&gt;(&lt;type-exp&gt;);</pre>
+
+<p>Exceptions may only be declared at the top-level.&nbsp; As with identifiers and other
+values, the exception's scope can be controlled by an optional scope qualifier.&nbsp;
+Exceptions can carry values of a specific type, in which case the second syntactic form
+should be used. </p>
+
+<h4>Function Declarations:</h4>
+
+<p>Very similar to C except that there are provisions for polymorphism. <br>
+</p>
+
+<hr>
+
+<h3><a NAME="expressions"></a>Expressions:</h3>
+
+<p>Most expressions have the same syntax and (intended) semantics as in C or Java.&nbsp;
+We detail the various expression forms here for completeness and give examples.&nbsp; The
+grammar for the abstract syntax of expressions is as follows: </p>
+
+<pre>&nbsp; &lt;exp&gt; ::=&nbsp; &lt;const-exp&gt; | &lt;qid&gt; | &lt;if-exp&gt; | &lt;assign-exp&gt; | &lt;inst-exp&gt; |
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; &lt;new-exp&gt; | &lt;dot-exp&gt; | &lt;subscript-exp&gt; | &lt;raise-exp&gt; |&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; &lt;seq-exp&gt; | &lt;cast-exp&gt; | &lt;fun-call&gt; | &lt;fun-exp&gt; | &lt;sprintf-exp&gt;</pre>
+
+<h4>Constant Expressions:</h4>
+
+<pre>&nbsp; &lt;const-exp&gt; ::= <b>true</b> | <b>false</b> | &lt;number&gt; | &lt;char&gt; | &lt;string&gt; | <b>null</b> |
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; &lt;fun-inst&gt; |&nbsp;&nbsp;^*(&lt;const-exp&gt;,...,&lt;const-exp&gt;) |&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ^&lt;qid&gt;[.&lt;id&gt;](&lt;const-exp&gt;,...,&lt;const-exp&gt;) |&nbsp;
+                  ^&lt;qid&gt;{&lt;id&gt;=&lt;const-exp&gt;,...,&lt;id&gt;=&lt;const-exp&gt;} |
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; {&lt;const-exp&gt;,...,&lt;const-exp&gt;} | {:&lt;type-exp&gt;} </pre>
+
+<p>Constant expressions include boolean constants (true, false), integer constants (e.g.,
+345, 0xfeedface), character constants (e.g., 'a', 'b', '\n', '\000), string constants
+(e.g., &quot;foo&quot;, &quot;bar\n&quot;), and null.&nbsp; Constructed constant
+expressions include tuples of constant expressions (e.g.,
+*(&lt;const-exp&gt;,...,&lt;const-exp&gt;)), new structs and unions of constant
+expressions (e.g., list(3,null)), and array constant expressions (e.g.,
+{3,4,5,6}).&nbsp;&nbsp; The key use of constant expressions is to serve as initializers
+for top-level data structures. </p>
+
+<p>In the future, we may allow things like arithmetic on constant expressions and a few
+other forms. </p>
+
+<h4>Variables:</h4>
+
+<pre>&nbsp; &lt;qid&gt; ::= [&lt;id&gt;::]&lt;id&gt;
+&nbsp; &lt;id&gt;&nbsp; ::= [a-zA-Z][a-zA-Z0-9_]*</pre>
+
+<p>Value variables are composed of a sequence of upper and lower-case letters, digits, and
+underscore, except that variables may not begin with an underscore.&nbsp; Qualified
+identifiers are prefixed with an identifier (usually with the first-letter in uppercase)
+followed by &quot;::&quot; (double-colon).&nbsp;&nbsp; When used on the right-hand side of
+an expression, they denote the value contained in the variable.&nbsp; When used as the
+left-hand-side of an assignment, they denote the location of the variable (as in C). </p>
+
+<h4>Conditional Expressions:</h4>
+
+<pre>&nbsp; &lt;if-exp&gt; ::= &lt;exp&gt; ? &lt;exp&gt; : &lt;exp&gt;</pre>
+
+<p>The first expression must have type bool and the other two expressions must have the
+same type.&nbsp; When evaluated, if the first-expression yield true, then the second
+expression is evaluated and the result is returned as the value of the entire
+expression.&nbsp; Otherwise, when the first-expression yields false, the third expression
+is evaluated. </p>
+
+<h4>Assignment Expressions:</h4>
+
+<pre>&nbsp; &lt;assign-exp&gt; ::= &lt;lhs-exp&gt; = &lt;exp&gt; | &lt;lhs-exp&gt; &lt;arithop&gt;= &lt;exp&gt; |
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; &lt;lhs-exp&gt;++ | &lt;lhs-exp&gt;-- | ++&lt;lhs-exp&gt; | --&lt;lhs-exp&gt;
+&nbsp; &lt;lhs-exp&gt;&nbsp;&nbsp;&nbsp; ::= &lt;qid&gt; | &lt;lhs-path&gt;
+&nbsp; &lt;lhs-path&gt;&nbsp;&nbsp; ::= &lt;exp&gt;.&lt;id&gt; | &lt;exp&gt;.&lt;num&gt; | &lt;exp&gt;[&lt;exp&gt;] |&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; &lt;lhs-path&gt;.&lt;id&gt; | &lt;lhs-path&gt;[&lt;exp&gt;]</pre>
+
+<p>The normal case of an assignment is of the form &lt;id&gt; = &lt;exp&gt; and simply
+evaluates the given expression and assigns the resulting value to the given
+variable.&nbsp; The value of the assignment is the value placed into the variable as in
+C.&nbsp;&nbsp; In general, the left-hand-side can be a field of a struct or tuple or some
+subscripted element of an array.&nbsp; In addition, Popcorn supports a number of the
+shortcut assignment operators provided by C and Java.&nbsp; For instance, the expressions
+&quot;x += 1&quot; and &quot;++x&quot; are both equivalent to &quot;x = x + 1&quot;. </p>
+
+<h4>Function Calls:</h4>
+
+<pre>&nbsp; &lt;fun-call&gt; ::= &lt;exp&gt;(&lt;exp&gt;,...,&lt;exp&gt;)</pre>
+
+<p>The first expression must evaluate to a function.&nbsp; If the function is not
+polymorphic, then the argument expressions must have types equal to the formal argument
+types of the function, and the type of the entire expression is the result type of the
+function.&nbsp; If the function is polymorphic, then there must exist some instantiation
+of the function's type variables such that the argument types match.&nbsp;&nbsp; The same
+instantiation is used to calculate the result type.&nbsp; For example, in a context where
+the function f has type a (*(a,b)) (a polymorphic function accepting 2-tuples with any
+pair of types returning something of the same type as the first component of the tuple),
+then the function call f(^*(3,&quot;foo&quot;)) is type-correct and has type int. </p>
+
+<p>Similar to ML, polymorphic functions are implicitly instantiated when they are
+called.&nbsp; They are not instantiated in any other context unless done explicilty. </p>
+
+<h4>Instantiation Expressions:</h4>
+
+<pre>&nbsp; &lt;inst-exp&gt; ::= &lt;exp&gt; @ &lt;&lt;type-exp&gt;,...,&lt;type-exp&gt;&gt;</pre>
+
+<p>The expression must evaluate to a polymorphic function.&nbsp; The function is
+instantiated with the given type parameters.&nbsp; For instance, if f is a function that
+has type 'a &lt;'a,'b&gt;(*'a,'b)), then the expression f @ &lt;int,string&gt; has type
+int (int,string) (i.e., a function from an int and a string to an int.) </p>
+
+<h4>New Expressions:</h4>
+<tt>
+
+<p>&nbsp; &lt;new-exp&gt; ::= &lt;new&gt; &lt;qid&gt;[(&lt;exp&gt;,...,&lt;exp&gt;)] |
+&lt;new&gt; &lt;qid&gt;.&lt;id&gt;(&lt;exp&gt;)<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; &lt;new&gt;
+&lt;qid&gt;{&lt;id&gt;=&lt;exp&gt;,...,&lt;id&gt;=&lt;exp&gt;} |<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; &lt;new&gt;
+*(&lt;exp&gt;,...,&lt;exp&gt;)</tt></p>
+
+<p><tt>&nbsp; &lt;new&gt; ::= <strong>new</strong> | ^ </tt></p>
+
+<p>New expressions are used to create struct, tuple, union, exn, and abstype values.
+&nbsp; Either the keyword &quot;new&quot; or a carat (&quot;^&quot;) may be used to start
+the expression.&nbsp; The former makes it easier to port Java and C++ code, the latter is
+a lot less verbose.&nbsp; </p>
+
+<p>To create a new struct, one may either use the struct name, followed by a
+parenthesis-enclosed list of (unlablled) expressions or else a brace-enclosed list of
+expressions labelled by field name.&nbsp;&nbsp; The former implicitly associates the field
+names in the order in which they were declared in the struct definition with the given
+expressions.&nbsp; The latter form ignores the order that the fields were declared in.
+&nbsp; Both forms evaluate the expressions left-to-right.&nbsp; I generally use the
+unlabelled form for small structs (e.g., lists) and the labelled form for larger structs
+where I can't remember in which order the fields go or where I feel like the reader may
+need more documentation.&nbsp; </p>
+
+<p>Creating tuples is similar to creating structs with the unlabelled form.&nbsp; The only
+difference is that one uses &quot;*&quot; instead of the name of the struct.&nbsp; </p>
+
+<p>For unions, new requires the name of the union followed by a period and the name of the
+field (i.e., the data constructor).&nbsp; If the field carries void type, then no argument
+expression should be supplied.&nbsp; Otherwise, if the field carries type T, then an
+argument expression of type T should be applied. &nbsp; </p>
+
+<h4>Dot Expressions:</h4>
+
+<pre>&nbsp; &lt;dot-exp&gt; ::= &lt;exp&gt;.&lt;id&gt;</pre>
+
+<p>A dot expression is used to extract a field from a struct or to implicitly check that a
+union value is of a particular type.&nbsp; In the former case, &lt;exp&gt; must be of a
+struct type with a field named by &lt;id&gt;.&nbsp; The type of the resulting expression
+is the type of the associated field.&nbsp; If the struct is an option-struct, then
+executing the dot-expression will cause the NullPointerException to be raised when the
+option-struct is null.&nbsp; In the latter case, &lt;exp&gt; must be of a union type with
+a field named by &lt;id&gt;.&nbsp; The resulting expression has the type associated with
+the field in the union declaration.&nbsp; When executed, the tag on the union value is
+tested and the underlying value is extracted and returned if the tag matches the field
+specified.&nbsp; Otherwise, the UnionVariantException is raised.&nbsp; We discourage the
+use of dot-expressions for unions and encourage the use of switch statements
+instead.&nbsp;&nbsp; However, the dot-notation is particularly convenient for porting C
+code. </p>
+
+<h4>Subscript Expressions:</h4>
+
+<pre>&nbsp; &lt;subscript-exp&gt; ::= &lt;exp&gt;[&lt;exp&gt;]</pre>
+
+<p>The first expression must have an array type or be of type string, and the second
+expression should have type unsigned int.&nbsp; (Note that signed integers are implicitly
+coerced to unsigned integers, and both shorts and bytes are implicitly coerced to
+ints.)&nbsp; If the second expression evaluates to the integer i, then the ith value is
+extracted from the array or string, as long as i is between 0 and the size of the array or
+string.&nbsp; Otherwise, the ArrayBoundsExcpetion is raised.&nbsp; (Actually, currently
+the program is terminated, but this should change soon.) </p>
+
+<h4>Raise Expressions:</h4>
+
+<pre>&nbsp; &lt;raise-exp&gt; ::= <b>raise</b> &lt;qid&gt;([&lt;exp&gt;]) | <b>raise</b> (&lt;exp&gt;)</pre>
+
+<p>In the first syntax, the qualified identifier must be an exception name in scope.&nbsp;
+If the optional expression is present and has type T, then the exception must have been
+declared to carry type T.&nbsp; In the second syntax, &lt;exp&gt; must have type
+exn.&nbsp; As in Java, the semantics of a raise expression is to transfer control to the
+nearest (dynamically) enclosing try/handle statement.&nbsp; The type of the raise
+expression is arbitrary. </p>
+
+<p>In the future,&nbsp; we are also likely to make the application of an exception
+constructor a general expression form in which case, the first syntactic form will be
+unecessary.&nbsp; Note that for parsing reasons, parentheses are required regardless as to
+whether an exception carries values or not. </p>
+
+<h4>Expression Sequences:</h4>
+
+<pre>&nbsp; &lt;seq-exp&gt; ::= &lt;exp&gt; , &lt;exp&gt;</pre>
+
+<p>As in C, the first expression is evaluated and its result is discarded.&nbsp;&nbsp;
+Then the secon expression is evaluated and its result is returned as the value of the
+compound expression.&nbsp; It is often necessary to insert parentheses around the
+expression to disambiguate the parsing in contexts that also use commas as a separator
+(e.g., tuple expressions or initialization arguments for structs or constant arrays.) </p>
+
+<h4>Cast Expressions:</h4>
+
+<pre>&nbsp; &lt;cast-exp&gt; ::= (:&lt;type-exp&gt;)&lt;exp&gt;</pre>
+
+<p>Cast expressions allow values of one type to be explicitly coerced to another
+type.&nbsp; Currently, casting is only supported on integral types.&nbsp; We chose to
+require a colon before the type expression, unlike C, in order to simplify parsing. </p>
+
+<h4>Fun Expressions:</h4>
+
+<pre>  &lt;fun-exp&gt; ::= <strong>fun </strong>&lt;type-exp&gt; &lt;pid&gt;[&lt;&lt;type-var&gt;,...,&lt;type-var&gt;&gt;]
+                      (&lt;type-exp&gt; &lt;id&gt;,...,&lt;type-exp&gt; &lt;id&gt;) &lt;block&gt;</pre>
+
+<p>Fun expressions are a convenient way to define a static function within the middle of
+some computation.&nbsp; The syntax is pretty straightforward:&nbsp; Just use the keyword
+&quot;fun&quot; followed by a function declaration as at the top-level.&nbsp; Unlike
+functional languages such as ML or Scheme, these expressions do not close over their free
+variables.&nbsp; That is, the function cannot mention any local variables, type-variables,
+or arguments of the enclosing function.&nbsp; In essence, the function is type-checked as
+if it was declared at the top-level.&nbsp; </p>
+
+<p>There is a short-cut for declaring a variable of function type and binding it to a
+function expression.&nbsp; In particular, it is legal to write a function declaration
+like:</p>
+
+<pre>  <strong>int</strong> foo(<strong>int</strong> x,<strong>string</strong> y) { <strong>return</strong> x+<strong>ord</strong>(y[3]); };</pre>
+
+<p>within another function.&nbsp; This is equivalent to the following local declaration:</p>
+
+<pre>  <strong>int </strong>foo(<strong>int,string</strong>) = <strong>fun </strong>foo(<strong>int</strong> x,<strong>string </strong>y) { <strong>return </strong>x+<strong>ord</strong>(y[3]); };
+</pre>
+
+<hr>
+
+<h3><a NAME="statements"></a>Statements:</h3>
+
+<pre>&nbsp; &lt;stmt&gt; ::= &lt;null-stmt&gt; | &lt;exp&gt;; | &lt;stmt&gt; &lt;stmt&gt; | &lt;if-stmt&gt; |
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; &lt;return-stmt&gt;; | &lt;while-stmt&gt; | &lt;do-stmt&gt; | &lt;for-smt&gt; |
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; &lt;break-stmt&gt; | &lt;continue-stmt&gt; | &lt;switch-stmt&gt; | &lt;try-stmt&gt; |
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; &lt;labelled-stmt&gt; | &lt;block-stmt&gt; | &lt;printf-stmt&gt;</pre>
+
+<h4>Null Statement:</h4>
+
+<pre>&nbsp; &lt;null-stmt&gt; ::= ;</pre>
+
+<p>An empty (null, skip) statement is represented by a semi-colon. </p>
+
+<h4>Expression Statements:</h4>
+
+<p>An expression may be used in any syntactic context for statements.&nbsp;&nbsp; The
+value of the expression is discarded. </p>
+
+<h4>Compound Statements:</h4>
+
+<p>Two adjacent statements are executed in sequential order. </p>
+
+<h4>Conditional Statements:</h4>
+
+<pre>&nbsp; &lt;if-stmt&gt; ::= <b>if</b> (&lt;exp&gt;) &lt;stmt&gt; | <b>if</b> (&lt;exp&gt;) &lt;stmt&gt; <b>else</b> &lt;stmt&gt;</pre>
+
+<p>An if statement requires that the &lt;exp&gt; argument have type bool.&nbsp;&nbsp; The
+expression is evaluated and if it results in true, then the first &lt;stmt&gt; is
+executed.&nbsp; In the first syntactic case, if the expression evaluates to false, then
+the statement has no (additional) effect.&nbsp; In the second syntactic case, the second
+&lt;stmt&gt; is executed.&nbsp; Thus, &quot;if (e) s&quot; is equivalent to &quot;if (e) s
+else ;&quot;.&nbsp; Nested if-expressions are disambiguated as in C. </p>
+
+<h4>Return Statements:</h4>
+
+<pre>&nbsp; &lt;return-stmt&gt; ::= <b>return</b>; | <b>return</b> &lt;exp&gt;;</pre>
+
+<p>Return is used to terminate execution of a function (immediately) and to optionally
+return a value to the caller.&nbsp; If the enclosing function has result type void, then
+the first form must be used.&nbsp; (Actually, for obscure reasons we allow the second form
+provided that the exception has type void.)&nbsp; If the enclosing function has a type
+other than void, then the second form must be used and &lt;exp&gt; must have that
+type.&nbsp;&nbsp; The compiler attempts to ensure that along all control-flow paths within
+a function, there is a return statement.&nbsp; However, the analysis is fairly simple and
+flow-insensitive so it is sometimes necessary for programmers to insert extra return or
+raise statements even when the programmer is sure that the return will never be
+executed.&nbsp;&nbsp; In such situations, it is usual to raise an exception indicating
+that a purportedly impossible situation has arisen. </p>
+
+<h4>While Statements:</h4>
+
+<pre>&nbsp; &lt;while-stmt&gt; ::= <b>while</b> (&lt;exp&gt;) &lt;stmt&gt;</pre>
+
+<p>The &lt;exp&gt; must have type bool.&nbsp; Execution of the statement proceeds by first
+evaluating the expression.&nbsp; If it evaluates to true, then the body &lt;stmt&gt; of
+the loop is executed, followed again by the entire while expression.&nbsp;&nbsp; Thus, the
+statement is roughly equivalent to &quot;if (&lt;exp&gt;) { &lt;stmt&gt;; while
+(&lt;exp&gt;) &lt;stmt&gt; }&quot; (ignoring break and continue.) </p>
+
+<h4>For Statements:</h4>
+
+<pre>&nbsp; &lt;for-stmt&gt; ::= <b>for</b> ([&lt;exp&gt;] ; [&lt;exp&gt;]; [&lt;exp&gt;]) &lt;stmt&gt; |
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <b>for</b> (&lt;var-decl&gt; [&lt;exp&gt;]; [&lt;exp&gt;]) &lt;stmt&gt;</pre>
+
+<p>For-statements are meant to be as similar to C as possible, while admitting a certain
+convenience from Java for declaring a loop index variable within the statement.&nbsp; As
+in C, the first expression (or variable declaration) is executed initially.&nbsp; Then the
+second expression, which must have type bool, is evaluated.&nbsp;&nbsp; If the result is
+false, then execution of the statement terminates.&nbsp;&nbsp; Otherwise, the statement
+body is executed followed by the third expression.&nbsp;&nbsp; Then the second test
+expression is evaluated again, followed if true by the body, etc.&nbsp; Thus, the for
+statement &quot;for (e1;e2;e3) s&quot; is equivalent to &quot;e1; while (e2) { s; e3
+}&quot; modulo break and continue issues. </p>
+
+<h4>Do Statements:</h4>
+
+<pre>&nbsp; &lt;do-stmt&gt; ::= <b>do</b> &lt;stmt&gt; <b>while</b> (&lt;exp&gt;)</pre>
+
+<p>Similar to the while statement, except that the body of the loop is executed before the
+test expression.&nbsp; Thus, ignoring break and continue, the construct is equivalent to
+&quot;&lt;stmt&gt;; while (exp) &lt;stmt&gt;&quot;. </p>
+
+<h4>Break Statements:</h4>
+
+<pre>&nbsp; &lt;break-stmt&gt; ::= <b>break</b>; | <b>break</b> &lt;id&gt;;</pre>
+
+<p>Execution of a simple break statement causes control to be transferred out of the
+nearest lexically enclosing while, for, or do loop.&nbsp; Control is transferred to the
+statement immediately succeeding the enclosing loop.&nbsp; If the break does not occur
+within a loop, then an error will be signalled at compile time.&nbsp; Note that break is <i>not</i>
+used to transfer control out of switch statements as is done in C, C++, and Java. </p>
+
+<p>Execution of break &lt;id&gt; causes control to be transferred to the statement
+labelled with the identifier &lt;id&gt;.&nbsp; Control may only be transferred within the
+same block or to an outer block.&nbsp; That is, it is impossible to jump into a block
+(which may potentially define new variables). </p>
+
+<h4>Continue Statements:</h4>
+
+<pre>&nbsp; &lt;continue&gt; ::= <b>continue</b>; | <b>continue</b> &lt;id&gt;;</pre>
+
+<p>Execution of a simple continue statement causes control to be transferred to the
+&quot;test&quot; portion of the nearest lexically enclosing loop.&nbsp; If the continue
+does not occur within a loop, then an error will be signalled at compile time. </p>
+
+<p>Execution of continue &lt;id&gt; causes control to be transferred to the statement
+labelled with the identifier &lt;id&gt; and has restrictions similar to that of break
+&lt;id&gt;.&nbsp; In fact, as I'm writing this, I'm not sure why we provide both labelled
+break and continue instead of just goto and expect that Fred will clear this up for me. </p>
+
+<h4>Switch Statements:</h4>
+
+<pre>&nbsp; &lt;switch-stmt&gt; ::= &lt;int-switch&gt; | &lt;char-switch&gt; |&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; &lt;union-switch&gt; | &lt;exn-switch&gt;
+&nbsp; &lt;int-switch&gt; ::= <b>switch</b> (&lt;exp&gt;) { <b>case</b> &lt;num&gt;: &lt;stmt&gt; ...&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <b>case</b> &lt;num&gt;: &lt;stmt&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <b>default</b>: &lt;stmt&gt; }
+&nbsp; &lt;char-switch&gt; ::= <b>switch</b> (&lt;exp&gt;) { <b>case</b> &lt;char&gt;: &lt;stmt&gt; ...
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <b>case</b> &lt;char&gt;: &lt;stmt&gt;&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <b>default</b>: &lt;stmt&gt; }
+&nbsp; &lt;union-switch&gt; ::= <b>switch</b> (&lt;exp&gt;) { <b>case</b> &lt;id&gt;[&lt;pat&gt;]: &lt;stmt&gt; ...
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <b>case</b> &lt;id&gt;[&lt;pat&gt;]: &lt;stmt&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; [<b>default</b>: &lt;stmt&gt;] }
+&nbsp; &lt;exn-switch&gt; ::= <b>switch</b> (&lt;exp&gt;) { <b>case</b> &lt;qid&gt;[&lt;pat&gt;]: &lt;stmt&gt; ...
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <b>case</b> &lt;qid&gt;[&lt;pat&gt;]: &lt;stmt&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <b>default</b>: &lt;stmt&gt; }
+  &lt;pat&gt; ::= ( &lt;prim-pat&gt; ) | *( &lt;prim-pat&gt;,...,&lt;prim-pat&gt; )
+  &lt;prim-pat&gt; ::= _ | &lt;id&gt; </pre>
+
+<p>There are four different kinds of switch expressions.&nbsp; The &lt;int-switch&gt; is
+used to test integers, &lt;char-switch&gt; to test characters, &lt;union-switch&gt; to
+test values of union type and to extract the values carried by a data constructor, and the
+&lt;exn-switch&gt; to test and extract values carried by an exception constructor.&nbsp;
+The syntax for all four kinds of switches is quite similar and the semantics is close to,
+but subtly different than C. </p>
+
+<p>In particular, <i>switch does not support implicit fall-through from one case to the
+next.</i>&nbsp; Thus, it is as if an implicit C &quot;break&quot; is inserted before each
+case or default label.&nbsp; Furthermore, a break statement within a switch does not cause
+control to be transferred out of the nearest lexically enclosing switch, but rather the
+nearest lexically enclosing loop.&nbsp; This was always a brain-damaged part of C (witness
+the AT&amp;T switch crash) and we are happy to drop it.&nbsp; In addition, as explained in
+Section [?], cases for union switches and exception switches introduce bound variables
+whose scope is the associated case's &lt;stmt&gt;.&nbsp;&nbsp; Supporting implicit
+fall-through would thus allow a statement to access an undefined variable. </p>
+
+<p>In all of the switch constructs, it is necessary for the cases to be disjoint and
+complete.&nbsp; This constraint is enforced by the type-checker.&nbsp; A switch is
+disjoint is no case matches the same integer, character, union field, or exception
+constructor.&nbsp; A switch is complete if every integer, character, union field, or
+exception has a case.&nbsp; (Note, in fact one can leave the default off of an exception
+switch and the type-checker inserts a default case which raises the exception being
+tested.)&nbsp; </p>
+
+<p>Union switches allow a primitive form of pattern matching in the style of ML.&nbsp; In
+particular, if the argument union expression evaluates to a value with a tag corresponding
+to field f, then the case for f will be selected when the switch is executed.&nbsp; If f
+carries type void, then it is an error for the case to define the optional pattern.&nbsp;
+If the field carries any type&nbsp; T besides void, then the case must include the
+optional pattern.&nbsp; The pattern can either be a wild-card (underscore), a variable, or
+a tuple pattern.&nbsp; Wild-card and variable patterns can be used for any type, but
+tuple-patterns may only be used for tuple-types.&nbsp; A tuple pattern provides either
+wild-card or variable sub-patterns for binding the components of the tuple.&nbsp; Within
+the scope of the case's associated statement, the variables of the pattern (if any) are
+bound to the appropriate values.&nbsp; </p>
+
+<p>Exception switches are similar to union switches except that instead of matching on
+fields within a union, the switch takes an exn value and matches cases with exception
+constructor names.&nbsp; As with unions, if an exception carries no type, then no optional
+pattern should be supplied.&nbsp; Otherwise, if the exception is declared to carray values
+of type T, then an optional pattern should be supplied. </p>
+
+<p>Note that integer and character cases require numbers or characters, which is slightly
+more restrictive than C which allows some expressions such as &quot;2+3&quot;.&nbsp; In
+the future, we expect to add more support for pattern matching, &quot;or-patterns&quot;,
+ranges for character and integer switches, etc. </p>
+
+<h4>Try Statements:</h4>
+
+<pre>&nbsp; &lt;try-stmt&gt; ::= <b>try</b> &lt;stmt&gt; <b>handle</b> &lt;id&gt; &lt;stmt&gt; | 
+                 <strong>try </strong>&lt;stmt&gt; <strong>catch </strong>{ <strong>case </strong>&lt;qid&gt;[&lt;pat&gt;]: &lt;stmt&gt; ...
+                                    <strong>case &lt;</strong>qid&gt;[&lt;pat&gt;]: &lt;stmt&gt;
+                                    [<strong>default: </strong>&lt;stmt&gt;] }</pre>
+
+<p>In both forms, execution proceeds by evaluating the first statement.&nbsp; If this does
+not cause an uncaught exception to be raised, then the statement terminates without
+executing the second clause.&nbsp; If an exception is raised during evaluation of the
+first statement and is not caught by an intervening (dynamic) handler, then control is
+transferred to the second clause.&nbsp; In the case of a try/handle statement, the
+exception value of type exn passed to raise is bound to the identifier &lt;id&gt; within
+the scope of the second statement.&nbsp;&nbsp; Typically, the second statement performs an
+exception switch on the identifier to determine what exception was raised and to take
+appropriate action.&nbsp; This pattern is so frequent that we provide the more
+convenenient &quot;catch&quot; form as in Java which allows one to immediately start
+switching on the exception without having to name it.&nbsp; </p>
+
+<p>In the future, we expect to drop the try/handle form and to add try/finally and
+try/catch/finally similar to Java.</p>
+
+<h4>Labelled Statements:</h4>
+
+<pre>&nbsp; &lt;label-stmt&gt; ::= &lt;id&gt; : &lt;stmt&gt;</pre>
+
+<p>Labels are placed on statements to support easy break and continue to a specified
+location. </p>
+
+<h4>Block Statements:</h4>
+
+<pre>&nbsp; &lt;block-stmt&gt; ::= { &lt;var-decl&gt; ... &lt;var-decl&gt; &lt;stmt&gt; }</pre>
+
+<p>A block statement supports both nested variable declarations and a way to disambiguate
+the parsing of certain statement patterns (e.g., the dangling else problem with
+if.)&nbsp;&nbsp; Control may only be transferred into the beginning of a block (see break
+and continue). </p>
+
+<h4>Printf and Fprintf Statements and Sprintf Expressions:</h4>
+
+<pre>&nbsp;&nbsp;&nbsp; &lt;printf-stmt&gt; ::= <b>printf</b>(&lt;desc&gt;,&lt;exp&gt;,...&lt;exp&gt;) |&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <b>fprintf</b>(&lt;exp&gt;,&lt;desc&gt;,&lt;exp&gt;,...,&lt;exp&gt;)
+
+    &lt;sprintf-exp&gt; ::= <strong>sprintf</strong>(&lt;desc&gt;,&lt;exp&gt;,...&lt;exp&gt;)</pre>
+
+<p>The printf and fprintf statements are used for printing integers, strings, and
+characters to files or terminals, similar to the printf and frpintf functions of the C
+standard library.&nbsp; The sprintf expression is similar but produces a string as a
+result instead of writing to some kind of stream.&nbsp; The &lt;desc&gt; argument must be
+a string literal and is parsed at compile time to determine the appropriate number and
+types of the additional arguments to printf.&nbsp;&nbsp; In the case of fprintf, the first
+argument expression is meant to be a FILE value such as tal_stdout.&nbsp; Descriptors
+follow the conventions of C.&nbsp; So for instance, &quot;%d&quot; is used for signed
+integers, &quot;%u&quot; for unsigned, &quot;%x&quot; for lower-case hex, &quot;%s&quot;
+for strings, and &quot;%c&quot; for characters. Currently, there is no support for
+precision in the output, other types, etc.&nbsp;&nbsp; These statements were included
+purely to make porting C code easier and to simplify mundane output tasks. </p>
+
+<hr>
+
+<h3><a NAME="programs"></a>Program Structure:</h3>
+
+<hr>
+
+<h3>BNF Grammar:</h3>
+
+<hr>
+
+<h2><a NAME="library"></a>The Popcorn Library:</h2>
+
+<p>For now, see the header files in the library directory of the distribution.&nbsp; Note
+that Core exports some types and values that are actually defined in the runtime, such as
+the FILE type. <br>
+</p>
+
+<hr>
+
+<h3>Core</h3>
+
+<p>For new_array, the first expression should evaluate to an unsigned integer indicating
+the size of the array, and the second expression should be a value of the array
+type.&nbsp; This value is used to initialize the contents of the array. </p>
+
+<p>For new_string, the argument should evaluat to an unsigned integer indicating the
+desired size of the string.&nbsp; The string is filled with unspecified values. </p>
+
+<hr>
+
+<h3>Id </h3>
+
+<hr WIDTH="100%">
+
+<h3>Set </h3>
+
+<hr WIDTH="100%">
+
+<h3>List</h3>
+
+<hr>
+
+<h3>Dict</h3>
+
+<hr>
+
+<h3>Queue</h3>
+
+<hr>
+
+<h3>Set</h3>
+
+<hr>
+
+<p><br>
+&nbsp; </p>
+
+<h2><a NAME="tools"></a>The Popcorn Tools:</h2>
+
+<hr>
+
+<h3>The popcorn Compiler:</h3>
+
+<hr>
+
+<h3>The talc Type Checker and Assembler:</h3>
+
+<hr>
+
+<h3><a NAME="lex"></a>The poplex Lexer Generator:</h3>
+
+<p>The developers of OCaml graciously allowed us to retarget their lexer generator to
+Pocporn.&nbsp; That is, popocamllex is an ocaml program that given a lexer specification,
+produces a Popcorn file.&nbsp; It is a modified version of the ocamllex program that we
+did not write.&nbsp;&nbsp; Here is how to use popocamllex: </p>
+
+<p>Use popocamllex exactly as you would use ocamllex except: 
+
+<ul>
+  <li>&nbsp;Give your files extension .popl</li>
+  <li>&nbsp;Result file will be .pop</li>
+  <li>&nbsp;Make your header, trailer, and actions Popcorn code.</li>
+  <li>&nbsp;// style comments aren't supported so be careful with them (basically don't&nbsp;
+    put troubling characters like unmatched braces and &quot; in them).&nbsp; /* */
+    style&nbsp; should be supported.</li>
+  <li>Actions should <i>return</i> a value of type int.&nbsp; Yes, you should use the Popcorn
+    keyword return.</li>
+  <li>Files lexing.pop and lexing.h are in the Popcorn standard library and must be used with
+    all generated lexers.&nbsp; This recipe works:</li>
+  <ol>
+    <li>Put #include &quot;lexing.h&quot; in your .popl file.</li>
+    <li>Link in lexing.pop.</li>
+  </ol>
+</ul>
+
+<p>Note that all of the lex-specific syntax (for rules, patters, etc) is as in ocamllex. </p>
+
+<p>Interfacing with popbison is exceptionally tricky since the two programs are not really
+on the same wavelength.&nbsp; This should help: 
+
+<ol>
+  <li>Have some main function create a lexbuf by calling the from_function function in the
+    lexing module.&nbsp; Put the result in a global variable (use an Opt so it can be
+    initialized).</li>
+  <li>Write a yylex() function which calls a lexer entry point with the lexbuf.&nbsp; (Hint:
+    each rule is translated to a function of the same name.)</li>
+  <li>Bison creates a header file you'll want to include.&nbsp; Note this header file may
+    refer to other types that it doesn't define -- you currently must extern them by other
+    means.</li>
+  <li>In your actions, put values of type YYSTYPE in yylval.</li>
+  <li>Define and manipulate int yyline and void yyerror(string) appropriately.</li>
+  <li>Make sure the eof actions return a negative integer or you will get parse errors.</li>
+</ol>
+
+<hr>
+
+<h3><a NAME="bison"></a>The popbison Parser Generator:</h3>
+
+<p>We have modified the publicly available Bison program to produce parsers written in
+Popcorn.&nbsp; That is, popbison is a C program that given a parser specification,
+produces a Popcorn file.&nbsp; It is a modified version of the Bison program which we did
+not write.&nbsp; Here is how to use popbison: </p>
+
+<p>Use popbison exactly as you would bison except: 
+
+<ul>
+  <li>Give your files extension .y</li>
+  <li>Result files be _tab.pop and _tab.h</li>
+  <li>Make your header, trailer, and actions Popcorn code.</li>
+  <li>Use the %union,&nbsp; and ^$ notation as described below.</li>
+</ul>
+
+<p>The .h file is suitable for including within a lexer or some other tool. However, it
+does not include any other header files, so if it mentions types from other modules, you
+will have to include them by other means.&nbsp;&nbsp; The parser contains all of the
+tables as well as the parse engine.&nbsp; It's invoked by calling yyparse() which in turn
+calls yylex() expecting that yylex() produces an integer token and a semantic value in
+yylval. </p>
+
+<p>The type of yylval is specified with the <tt>%union</tt> declaration.&nbsp; This is <b>required</b>
+for us (but optional for C-bison.)&nbsp; The syntax for the union <br>
+declaration does not mention the type -- it becomes YYSTYPE.&nbsp; Note that this union
+should have as its initial field something that can be used at top level for
+initialization.&nbsp; For instance, the union should not be polymorphic and the first
+field should carry a type (such as int, <br>
+bool, void, ?struct, etc.) that has a default value. </p>
+
+<p>One declares tokens using the %token &lt;id&gt; notation as in bison. </p>
+
+<p>One declares the type of tokens (terminals) and non-terminals using %type &lt;field&gt;
+t1 t2 ... tn where &lt;field&gt; is a field of the union type, and t1,t2,...,tn are
+[non-]terminals. </p>
+
+<p>The grammar rules work just as in bison/yacc.&nbsp; The biggest difference is within
+the actions of the grammar rules.&nbsp; In particular, $$ refers <br>
+to yylval.&nbsp; Because it's declared to be of type YYSTYPE, anything that goes into $$
+should have this type.&nbsp; If you use it as an r-value, <br>
+then you probably need to switch on it or use the new union projection (e.g., $$.foo). </p>
+
+<p>$1 $2 and so forth continue to refer to the semantic elements of the rule. They are
+translated as (yysv[yysvp_offset-i]).&lt;field&gt; where &lt;field&gt; is associated with
+that particular terminal/non-terminal in a %type declaration. That is, a reference to $1
+will implicitly &quot;downcast&quot; to the &quot;type&quot; of the [non-]terminal. </p>
+
+<p>Some new syntax is ^$.&nbsp; This is essentially translated to ^YYSTYPE.&lt;field&gt;
+where &lt;field&gt; is the field name of the union associated with $$ (i.e., the rule's
+left-hand-side.) </p>
+
+<p>So for instance, in the grammar below, for the &quot;+&quot; case, we have as the
+action: </p>
+
+<p><tt>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; exp : exp exp '+' { $$ = ^$($1 + $2); }</tt>
+</p>
+
+<p>The $1 gets the exp value.&nbsp; Since exp is associated with the foo label of the
+union, this means that the semantic value is cast to &quot;int&quot; from <br>
+YYSTYPE.&nbsp; Similarly for $2.&nbsp; The default semantic value would be there for the
+token '+'.&nbsp; Anyway, because $1 and $2 are automatically cast to integers, we can add
+them to produce an integer.&nbsp; But we can't just place the result in $$ -- rather, we
+have to &quot;cast up&quot;, hence the ^$ wrapped around the expression. </p>
+
+<p><tt>---file rpcalc.y--------------------------------------------------------------</tt>
+<br>
+<tt>%{</tt> <br>
+<tt>extern void print_string(string);</tt> <br>
+<tt>extern int print_int(int);</tt> <br>
+<tt>%}</tt> </p>
+
+<p><tt>%union {</tt> <br>
+<tt>&nbsp; int&nbsp;&nbsp;&nbsp; foo;</tt> <br>
+<tt>&nbsp; short&nbsp;&nbsp;&nbsp; x;</tt> <br>
+<tt>}</tt> </p>
+
+<p><tt>%token NUM</tt> <br>
+<tt>%type &lt;foo&gt; exp NUM</tt> <br>
+<tt>%type &lt;x&gt; line input</tt> </p>
+
+<p><tt>%% /* Grammar rules and actions follow */</tt> </p>
+
+<p><tt>input:&nbsp;&nbsp; /*empty*/&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; { $$ = ^$(3); }</tt> <br>
+<tt>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; | input line&nbsp;&nbsp; { $$ = ^$(4); }</tt>
+<br>
+<tt>;</tt> </p>
+
+<p><tt>line:&nbsp;&nbsp; '\n'&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; { $$ = ^$(6); }</tt> <br>
+<tt>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; | exp '\n' { print_string
+(&quot;RESULT=&quot;);</tt> <br>
+<tt>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+print_int($1);</tt> <br>
+<tt>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+$$ = ^$(5); }</tt> <br>
+<tt>;</tt> </p>
+
+<p><tt>exp:&nbsp;&nbsp;&nbsp; NUM { $$ = ^$($1); }</tt> <br>
+<tt>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; | exp exp '+' { $$ = ^$($1 + $2); }</tt> <br>
+<tt>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; | exp exp '-' { $$ = ^$($1 - $2); }</tt> <br>
+<tt>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; | exp exp '*' { $$ = ^$($1 - $2); }</tt> </p>
+
+<p><tt>;</tt> <br>
+<tt>%%</tt> <br>
+&nbsp; </p>
+
+<hr>
+</body>
+</html>

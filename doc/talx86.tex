@@ -1,0 +1,41 @@
+\documentclass{article}
+
+\title{An Overview of TALx86}
+\author{Greg Morrisett, Karl Crary, Neal Glew, \& Dave Walker \\
+	Cornell University}
+
+\begin{document}
+\maketitle
+\section{Introduction}
+
+TALx86 is a typed version of Intel's IA32 ({\em i.e.}, the 32-bit,
+flag segment subset of the 80x86 architecture.)  The type system
+allows programmers and compilers to build strong abstractions at the
+level of assembly language.  In this respect, TALx86 is similar to
+Java VM bytecodes -- we can compile high-level languages to it
+and still verify that the target code respects the source-level
+typing abstractions.  However, unlike Java VM, there is no need
+for a trusted just-in-time (JIT) compiler.  In particular, the
+only thing necessary to turn a TALx86 program into an executable
+is an assembler (notably Microsoft's MASM version 6.11) and a linker
+(notably Microsoft's Visual C++ linking tool).  In future
+releases, we expect to provide tools for manipulating typed
+{\em binaries} or DLLs, thereby avoiding the need for an assembler.
+
+Included in our distribution are tools for parsing, printing, and
+type-checking TALx86 assembly code.  We've also included two very
+simple, prototype compilers that generate TALx86 code.  The first
+compiler, {\tt popcorn}, compiles a type-safe subset of a C-like
+programming language, and includes support for features such as arrays
+and structs, separate compilation, abstract data types, {\em etc.}
+The second compiler, {\tt mini-scheme}, compiles a (dynamically-typed)
+lambda-calculus based language similar to Scheme.
+
+This document attempts to explain the TALx86 type system and how
+to use it as a target programming language.  We use the {\tt popcorn}
+and {\tt mini-scheme} compilers to demonstrate how various language
+features may be compiled to assembly language in a type-preserving
+manner.
+
+
+\end{document}

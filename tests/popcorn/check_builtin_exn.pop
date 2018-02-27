@@ -1,0 +1,41 @@
+// Check that the built in exceptions NullPointer, 
+// and UnionVariant work as advertised.
+// ArrayBounds is also available for the stack-based compiler,
+// but not yet for the new compiler.
+
+#include "core.h"
+open Core;
+
+?struct foo { int x; }
+
+union bar { int x; int y; }
+
+void pop_main () {
+  foo a = null;
+
+  bar b = ^bar.x(5);
+
+  int c[4] = {1,2,3,4};
+
+  try {
+    a.x = 1;
+  } handle y switch y {
+  case NullPointer: print_string("Successfully caught NullPointer.\n");
+  }
+
+  try {
+    if (b.y == 3) print_string("Impossible!");
+  } handle y switch y {
+  case UnionVariant: print_string("Successfully caught UnionVariant.\n");
+  }
+
+  try {
+    if (c[5]>0) print_string("Impossible!");
+  } handle y switch y {
+  case ArrayBounds: print_string("Successfully caught ArrayBounds.\n");
+  }
+
+  print_string("\nCausing uncaught NullPointer exception.\n");
+  a.x=2;
+
+}

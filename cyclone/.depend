@@ -1,0 +1,91 @@
+src/parse_tab.to: src/parse_tab.pop ../popcorn/lib/fn.h ../popcorn/lib/list.h ../popcorn/lib/core.h src/pp.h src/synpp.h src/absyn.h ../apps/popcorn/toplevel/gcdfec.h ../apps/popcorn/toplevel/lineno.h ../popcorn/lib/arg.h ../popcorn/lib/string.h ../popcorn/lib/set.h ../popcorn/lib/lexing.h
+src/lex.to: src/lex.pop ../popcorn/lib/dict.h ../popcorn/lib/list.h ../popcorn/lib/core.h ../apps/popcorn/toplevel/gcdfec.h ../apps/popcorn/toplevel/lineno.h ../popcorn/lib/arg.h ../popcorn/lib/string.h src/parse.h src/parse_tab.h src/absyn.h ../popcorn/lib/lexing.h ../popcorn/lib/hashtable.h ../popcorn/lib/set.h
+src/absyn.to: src/absyn.pop ../apps/popcorn/toplevel/gcdfec.h ../apps/popcorn/toplevel/lineno.h ../popcorn/lib/arg.h ../popcorn/lib/list.h ../popcorn/lib/core.h ../popcorn/lib/string.h
+src/cyclone.to: src/cyclone.pop src/tc.h src/absyn.h ../apps/popcorn/toplevel/gcdfec.h ../apps/popcorn/toplevel/lineno.h ../popcorn/lib/arg.h ../popcorn/lib/list.h ../popcorn/lib/core.h ../popcorn/lib/string.h src/tcutil.h src/tcenv.h ../popcorn/lib/dict.h ../popcorn/lib/set.h src/synpp.h src/pp.h src/parse.h src/parse_tab.h ../popcorn/lib/lexing.h ../popcorn/lib/id.h ../popcorn/lib/sys.h ../popcorn/lib/filename.h
+src/pp.to: src/pp.pop ../popcorn/lib/fn.h ../popcorn/lib/list.h ../popcorn/lib/core.h ../popcorn/lib/hashtable.h ../popcorn/lib/string.h
+src/synpp.to: src/synpp.pop ../popcorn/lib/string.h ../popcorn/lib/list.h ../popcorn/lib/core.h ../popcorn/lib/buffer.h src/absyn.h ../apps/popcorn/toplevel/gcdfec.h ../apps/popcorn/toplevel/lineno.h ../popcorn/lib/arg.h src/pp.h
+src/evexp.to: src/evexp.pop src/synpp.h src/absyn.h ../apps/popcorn/toplevel/gcdfec.h ../apps/popcorn/toplevel/lineno.h ../popcorn/lib/arg.h ../popcorn/lib/list.h ../popcorn/lib/core.h ../popcorn/lib/string.h src/pp.h
+src/tcutil.to: src/tcutil.pop src/evexp.h ../apps/popcorn/toplevel/gcdfec.h ../apps/popcorn/toplevel/lineno.h ../popcorn/lib/arg.h ../popcorn/lib/list.h ../popcorn/lib/core.h ../popcorn/lib/string.h src/absyn.h src/tcenv.h ../popcorn/lib/dict.h ../popcorn/lib/set.h src/synpp.h src/pp.h
+src/tcexp.to: src/tcexp.pop src/evexp.h ../apps/popcorn/toplevel/gcdfec.h ../apps/popcorn/toplevel/lineno.h ../popcorn/lib/arg.h ../popcorn/lib/list.h ../popcorn/lib/core.h ../popcorn/lib/string.h src/absyn.h src/tcutil.h src/tcenv.h ../popcorn/lib/dict.h ../popcorn/lib/set.h src/synpp.h src/pp.h
+src/tcenv.to: src/tcenv.pop src/absyn.h ../apps/popcorn/toplevel/gcdfec.h ../apps/popcorn/toplevel/lineno.h ../popcorn/lib/arg.h ../popcorn/lib/list.h ../popcorn/lib/core.h ../popcorn/lib/string.h ../popcorn/lib/dict.h ../popcorn/lib/set.h
+src/tcpat.to: src/tcpat.pop src/tcstmt.h src/tcenv.h ../apps/popcorn/toplevel/gcdfec.h ../apps/popcorn/toplevel/lineno.h ../popcorn/lib/arg.h ../popcorn/lib/list.h ../popcorn/lib/core.h ../popcorn/lib/string.h src/absyn.h ../popcorn/lib/dict.h ../popcorn/lib/set.h src/tcexp.h src/evexp.h src/tcutil.h src/synpp.h src/pp.h
+src/tcstmt.to: src/tcstmt.pop src/tcpat.h src/tcenv.h ../apps/popcorn/toplevel/gcdfec.h ../apps/popcorn/toplevel/lineno.h ../popcorn/lib/arg.h ../popcorn/lib/list.h ../popcorn/lib/core.h ../popcorn/lib/string.h src/absyn.h ../popcorn/lib/dict.h ../popcorn/lib/set.h src/tcexp.h src/evexp.h src/tcutil.h src/synpp.h src/pp.h
+src/tc.to: src/tc.pop src/evexp.h ../apps/popcorn/toplevel/gcdfec.h ../apps/popcorn/toplevel/lineno.h ../popcorn/lib/arg.h ../popcorn/lib/list.h ../popcorn/lib/core.h ../popcorn/lib/string.h src/absyn.h src/tcstmt.h src/tcenv.h ../popcorn/lib/dict.h ../popcorn/lib/set.h src/tcexp.h src/tcutil.h src/synpp.h src/pp.h
+../popcorn/lib/core.to: ../popcorn/lib/core.pop 
+../popcorn/lib/id.to: ../popcorn/lib/id.pop ../popcorn/lib/list.h ../popcorn/lib/core.h ../popcorn/lib/string.h
+../popcorn/lib/set.to: ../popcorn/lib/set.pop ../popcorn/lib/list.h ../popcorn/lib/core.h
+../popcorn/lib/splay.to: ../popcorn/lib/splay.pop ../popcorn/lib/list.h ../popcorn/lib/core.h
+../popcorn/lib/dict.to: ../popcorn/lib/dict.pop ../popcorn/lib/splay.h ../popcorn/lib/list.h ../popcorn/lib/core.h
+../popcorn/lib/list.to: ../popcorn/lib/list.pop ../popcorn/lib/core.h
+../popcorn/lib/hashtable.to: ../popcorn/lib/hashtable.pop ../popcorn/lib/core.h ../popcorn/lib/list.h
+../popcorn/lib/lexing.to: ../popcorn/lib/lexing.pop ../popcorn/lib/core.h
+../popcorn/lib/arg.to: ../popcorn/lib/arg.pop ../popcorn/lib/list.h ../popcorn/lib/core.h
+../popcorn/lib/string.to: ../popcorn/lib/string.pop ../popcorn/lib/list.h ../popcorn/lib/core.h
+../popcorn/lib/sys.to: ../popcorn/lib/sys.pop 
+../popcorn/lib/filename.to: ../popcorn/lib/filename.pop ../popcorn/lib/list.h ../popcorn/lib/core.h ../popcorn/lib/string.h
+../popcorn/lib/xarray.to: ../popcorn/lib/xarray.pop ../popcorn/lib/core.h
+../popcorn/lib/bitvec.to: ../popcorn/lib/bitvec.pop ../popcorn/lib/set.h ../popcorn/lib/list.h ../popcorn/lib/core.h ../popcorn/lib/dict.h
+../popcorn/lib/fn.to: ../popcorn/lib/fn.pop ../popcorn/lib/list.h ../popcorn/lib/core.h
+../apps/popcorn/toplevel/gcdfec.to: ../apps/popcorn/toplevel/gcdfec.pop ../apps/popcorn/toplevel/lineno.h ../popcorn/lib/arg.h ../popcorn/lib/list.h ../popcorn/lib/core.h ../popcorn/lib/string.h
+../apps/popcorn/toplevel/lineno.to: ../apps/popcorn/toplevel/lineno.pop ../popcorn/lib/string.h ../popcorn/lib/list.h ../popcorn/lib/core.h ../popcorn/lib/lexing.h
+src/parse_tab.to: src/parse_tab.pop ../popcorn/lib/fn.h ../popcorn/lib/list.h ../popcorn/lib/core.h src/pp.h src/synpp.h src/absyn.h ../apps/popcorn/toplevel/gcdfec.h ../apps/popcorn/toplevel/lineno.h ../popcorn/lib/arg.h ../popcorn/lib/string.h ../popcorn/lib/set.h ../popcorn/lib/lexing.h
+src/lex.to: src/lex.pop ../popcorn/lib/dict.h ../popcorn/lib/list.h ../popcorn/lib/core.h ../apps/popcorn/toplevel/gcdfec.h ../apps/popcorn/toplevel/lineno.h ../popcorn/lib/arg.h ../popcorn/lib/string.h src/parse.h src/parse_tab.h src/absyn.h ../popcorn/lib/lexing.h ../popcorn/lib/hashtable.h ../popcorn/lib/set.h
+src/absyn.to: src/absyn.pop ../apps/popcorn/toplevel/gcdfec.h ../apps/popcorn/toplevel/lineno.h ../popcorn/lib/arg.h ../popcorn/lib/list.h ../popcorn/lib/core.h ../popcorn/lib/string.h
+src/cyclone.to: src/cyclone.pop src/tc.h src/absyn.h ../apps/popcorn/toplevel/gcdfec.h ../apps/popcorn/toplevel/lineno.h ../popcorn/lib/arg.h ../popcorn/lib/list.h ../popcorn/lib/core.h ../popcorn/lib/string.h src/tcutil.h src/tcenv.h ../popcorn/lib/dict.h ../popcorn/lib/set.h src/synpp.h src/pp.h src/parse.h src/parse_tab.h ../popcorn/lib/lexing.h ../popcorn/lib/id.h ../popcorn/lib/sys.h ../popcorn/lib/filename.h
+src/pp.to: src/pp.pop ../popcorn/lib/fn.h ../popcorn/lib/list.h ../popcorn/lib/core.h ../popcorn/lib/hashtable.h ../popcorn/lib/string.h
+src/synpp.to: src/synpp.pop ../popcorn/lib/string.h ../popcorn/lib/list.h ../popcorn/lib/core.h ../popcorn/lib/buffer.h src/absyn.h ../apps/popcorn/toplevel/gcdfec.h ../apps/popcorn/toplevel/lineno.h ../popcorn/lib/arg.h src/pp.h
+src/evexp.to: src/evexp.pop src/synpp.h src/absyn.h ../apps/popcorn/toplevel/gcdfec.h ../apps/popcorn/toplevel/lineno.h ../popcorn/lib/arg.h ../popcorn/lib/list.h ../popcorn/lib/core.h ../popcorn/lib/string.h src/pp.h
+src/tcutil.to: src/tcutil.pop src/evexp.h ../apps/popcorn/toplevel/gcdfec.h ../apps/popcorn/toplevel/lineno.h ../popcorn/lib/arg.h ../popcorn/lib/list.h ../popcorn/lib/core.h ../popcorn/lib/string.h src/absyn.h src/tcenv.h ../popcorn/lib/dict.h ../popcorn/lib/set.h src/synpp.h src/pp.h
+src/tcexp.to: src/tcexp.pop src/evexp.h ../apps/popcorn/toplevel/gcdfec.h ../apps/popcorn/toplevel/lineno.h ../popcorn/lib/arg.h ../popcorn/lib/list.h ../popcorn/lib/core.h ../popcorn/lib/string.h src/absyn.h src/tcutil.h src/tcenv.h ../popcorn/lib/dict.h ../popcorn/lib/set.h src/synpp.h src/pp.h
+src/tcenv.to: src/tcenv.pop src/absyn.h ../apps/popcorn/toplevel/gcdfec.h ../apps/popcorn/toplevel/lineno.h ../popcorn/lib/arg.h ../popcorn/lib/list.h ../popcorn/lib/core.h ../popcorn/lib/string.h ../popcorn/lib/dict.h ../popcorn/lib/set.h
+src/tcpat.to: src/tcpat.pop src/tcstmt.h src/tcenv.h ../apps/popcorn/toplevel/gcdfec.h ../apps/popcorn/toplevel/lineno.h ../popcorn/lib/arg.h ../popcorn/lib/list.h ../popcorn/lib/core.h ../popcorn/lib/string.h src/absyn.h ../popcorn/lib/dict.h ../popcorn/lib/set.h src/tcexp.h src/evexp.h src/tcutil.h src/synpp.h src/pp.h
+src/tcstmt.to: src/tcstmt.pop src/tcpat.h src/tcenv.h ../apps/popcorn/toplevel/gcdfec.h ../apps/popcorn/toplevel/lineno.h ../popcorn/lib/arg.h ../popcorn/lib/list.h ../popcorn/lib/core.h ../popcorn/lib/string.h src/absyn.h ../popcorn/lib/dict.h ../popcorn/lib/set.h src/tcexp.h src/evexp.h src/tcutil.h src/synpp.h src/pp.h
+src/tc.to: src/tc.pop src/evexp.h ../apps/popcorn/toplevel/gcdfec.h ../apps/popcorn/toplevel/lineno.h ../popcorn/lib/arg.h ../popcorn/lib/list.h ../popcorn/lib/core.h ../popcorn/lib/string.h src/absyn.h src/tcstmt.h src/tcenv.h ../popcorn/lib/dict.h ../popcorn/lib/set.h src/tcexp.h src/tcutil.h src/synpp.h src/pp.h
+../popcorn/lib/core.to: ../popcorn/lib/core.pop 
+../popcorn/lib/id.to: ../popcorn/lib/id.pop ../popcorn/lib/list.h ../popcorn/lib/core.h ../popcorn/lib/string.h
+../popcorn/lib/set.to: ../popcorn/lib/set.pop ../popcorn/lib/list.h ../popcorn/lib/core.h
+../popcorn/lib/splay.to: ../popcorn/lib/splay.pop ../popcorn/lib/list.h ../popcorn/lib/core.h
+../popcorn/lib/dict.to: ../popcorn/lib/dict.pop ../popcorn/lib/splay.h ../popcorn/lib/list.h ../popcorn/lib/core.h
+../popcorn/lib/list.to: ../popcorn/lib/list.pop ../popcorn/lib/core.h
+../popcorn/lib/hashtable.to: ../popcorn/lib/hashtable.pop ../popcorn/lib/core.h ../popcorn/lib/list.h
+../popcorn/lib/lexing.to: ../popcorn/lib/lexing.pop ../popcorn/lib/core.h
+../popcorn/lib/arg.to: ../popcorn/lib/arg.pop ../popcorn/lib/list.h ../popcorn/lib/core.h
+../popcorn/lib/string.to: ../popcorn/lib/string.pop ../popcorn/lib/list.h ../popcorn/lib/core.h
+../popcorn/lib/sys.to: ../popcorn/lib/sys.pop 
+../popcorn/lib/filename.to: ../popcorn/lib/filename.pop ../popcorn/lib/list.h ../popcorn/lib/core.h ../popcorn/lib/string.h
+../popcorn/lib/xarray.to: ../popcorn/lib/xarray.pop ../popcorn/lib/core.h
+../popcorn/lib/bitvec.to: ../popcorn/lib/bitvec.pop ../popcorn/lib/set.h ../popcorn/lib/list.h ../popcorn/lib/core.h ../popcorn/lib/dict.h
+../popcorn/lib/fn.to: ../popcorn/lib/fn.pop ../popcorn/lib/list.h ../popcorn/lib/core.h
+../apps/popcorn/toplevel/gcdfec.to: ../apps/popcorn/toplevel/gcdfec.pop ../apps/popcorn/toplevel/lineno.h ../popcorn/lib/arg.h ../popcorn/lib/list.h ../popcorn/lib/core.h ../popcorn/lib/string.h
+../apps/popcorn/toplevel/lineno.to: ../apps/popcorn/toplevel/lineno.pop ../popcorn/lib/string.h ../popcorn/lib/list.h ../popcorn/lib/core.h ../popcorn/lib/lexing.h
+src/parse_tab.to: src/parse_tab.pop ../popcorn/lib/fn.h ../popcorn/lib/list.h ../popcorn/lib/core.h src/pp.h src/synpp.h src/absyn.h ../apps/popcorn/toplevel/gcdfec.h ../apps/popcorn/toplevel/lineno.h ../popcorn/lib/arg.h ../popcorn/lib/string.h ../popcorn/lib/set.h ../popcorn/lib/lexing.h
+src/lex.to: src/lex.pop ../popcorn/lib/dict.h ../popcorn/lib/list.h ../popcorn/lib/core.h ../apps/popcorn/toplevel/gcdfec.h ../apps/popcorn/toplevel/lineno.h ../popcorn/lib/arg.h ../popcorn/lib/string.h src/parse.h src/parse_tab.h src/absyn.h ../popcorn/lib/lexing.h ../popcorn/lib/hashtable.h ../popcorn/lib/set.h
+src/absyn.to: src/absyn.pop ../apps/popcorn/toplevel/gcdfec.h ../apps/popcorn/toplevel/lineno.h ../popcorn/lib/arg.h ../popcorn/lib/list.h ../popcorn/lib/core.h ../popcorn/lib/string.h
+src/cyclone.to: src/cyclone.pop src/tc.h src/tcenv.h ../apps/popcorn/toplevel/gcdfec.h ../apps/popcorn/toplevel/lineno.h ../popcorn/lib/arg.h ../popcorn/lib/list.h ../popcorn/lib/core.h ../popcorn/lib/string.h src/absyn.h ../popcorn/lib/dict.h ../popcorn/lib/set.h src/tcutil.h src/synpp.h src/pp.h src/parse.h src/parse_tab.h ../popcorn/lib/lexing.h ../popcorn/lib/id.h ../popcorn/lib/sys.h ../popcorn/lib/filename.h
+src/pp.to: src/pp.pop ../popcorn/lib/fn.h ../popcorn/lib/list.h ../popcorn/lib/core.h ../popcorn/lib/hashtable.h ../popcorn/lib/string.h
+src/synpp.to: src/synpp.pop ../popcorn/lib/string.h ../popcorn/lib/list.h ../popcorn/lib/core.h ../popcorn/lib/buffer.h src/absyn.h ../apps/popcorn/toplevel/gcdfec.h ../apps/popcorn/toplevel/lineno.h ../popcorn/lib/arg.h src/pp.h
+src/evexp.to: src/evexp.pop src/synpp.h src/absyn.h ../apps/popcorn/toplevel/gcdfec.h ../apps/popcorn/toplevel/lineno.h ../popcorn/lib/arg.h ../popcorn/lib/list.h ../popcorn/lib/core.h ../popcorn/lib/string.h src/pp.h
+src/tcutil.to: src/tcutil.pop src/evexp.h ../apps/popcorn/toplevel/gcdfec.h ../apps/popcorn/toplevel/lineno.h ../popcorn/lib/arg.h ../popcorn/lib/list.h ../popcorn/lib/core.h ../popcorn/lib/string.h src/absyn.h src/tcenv.h ../popcorn/lib/dict.h ../popcorn/lib/set.h src/synpp.h src/pp.h
+src/tcexp.to: src/tcexp.pop src/tcstmt.h src/tcenv.h ../apps/popcorn/toplevel/gcdfec.h ../apps/popcorn/toplevel/lineno.h ../popcorn/lib/arg.h ../popcorn/lib/list.h ../popcorn/lib/core.h ../popcorn/lib/string.h src/absyn.h ../popcorn/lib/dict.h ../popcorn/lib/set.h src/evexp.h src/tcutil.h src/synpp.h src/pp.h
+src/tcenv.to: src/tcenv.pop src/absyn.h ../apps/popcorn/toplevel/gcdfec.h ../apps/popcorn/toplevel/lineno.h ../popcorn/lib/arg.h ../popcorn/lib/list.h ../popcorn/lib/core.h ../popcorn/lib/string.h ../popcorn/lib/dict.h ../popcorn/lib/set.h
+src/tcpat.to: src/tcpat.pop src/tcstmt.h src/tcenv.h ../apps/popcorn/toplevel/gcdfec.h ../apps/popcorn/toplevel/lineno.h ../popcorn/lib/arg.h ../popcorn/lib/list.h ../popcorn/lib/core.h ../popcorn/lib/string.h src/absyn.h ../popcorn/lib/dict.h ../popcorn/lib/set.h src/tcexp.h src/evexp.h src/tcutil.h src/synpp.h src/pp.h
+src/tcstmt.to: src/tcstmt.pop src/tcpat.h src/tcenv.h ../apps/popcorn/toplevel/gcdfec.h ../apps/popcorn/toplevel/lineno.h ../popcorn/lib/arg.h ../popcorn/lib/list.h ../popcorn/lib/core.h ../popcorn/lib/string.h src/absyn.h ../popcorn/lib/dict.h ../popcorn/lib/set.h src/tcexp.h src/evexp.h src/tcutil.h src/synpp.h src/pp.h
+src/tc.to: src/tc.pop src/evexp.h ../apps/popcorn/toplevel/gcdfec.h ../apps/popcorn/toplevel/lineno.h ../popcorn/lib/arg.h ../popcorn/lib/list.h ../popcorn/lib/core.h ../popcorn/lib/string.h src/absyn.h src/tcstmt.h src/tcenv.h ../popcorn/lib/dict.h ../popcorn/lib/set.h src/tcexp.h src/tcutil.h src/synpp.h src/pp.h
+src/toc.to: src/toc.pop src/tcutil.h src/tcenv.h ../apps/popcorn/toplevel/gcdfec.h ../apps/popcorn/toplevel/lineno.h ../popcorn/lib/arg.h ../popcorn/lib/list.h ../popcorn/lib/core.h ../popcorn/lib/string.h src/absyn.h ../popcorn/lib/dict.h ../popcorn/lib/set.h
+../popcorn/lib/core.to: ../popcorn/lib/core.pop 
+../popcorn/lib/id.to: ../popcorn/lib/id.pop ../popcorn/lib/list.h ../popcorn/lib/core.h ../popcorn/lib/string.h
+../popcorn/lib/set.to: ../popcorn/lib/set.pop ../popcorn/lib/list.h ../popcorn/lib/core.h
+../popcorn/lib/splay.to: ../popcorn/lib/splay.pop ../popcorn/lib/list.h ../popcorn/lib/core.h
+../popcorn/lib/dict.to: ../popcorn/lib/dict.pop ../popcorn/lib/splay.h ../popcorn/lib/list.h ../popcorn/lib/core.h
+../popcorn/lib/list.to: ../popcorn/lib/list.pop ../popcorn/lib/core.h
+../popcorn/lib/hashtable.to: ../popcorn/lib/hashtable.pop ../popcorn/lib/core.h ../popcorn/lib/list.h
+../popcorn/lib/lexing.to: ../popcorn/lib/lexing.pop ../popcorn/lib/core.h
+../popcorn/lib/arg.to: ../popcorn/lib/arg.pop ../popcorn/lib/list.h ../popcorn/lib/core.h
+../popcorn/lib/string.to: ../popcorn/lib/string.pop ../popcorn/lib/list.h ../popcorn/lib/core.h
+../popcorn/lib/sys.to: ../popcorn/lib/sys.pop 
+../popcorn/lib/filename.to: ../popcorn/lib/filename.pop ../popcorn/lib/list.h ../popcorn/lib/core.h ../popcorn/lib/string.h
+../popcorn/lib/xarray.to: ../popcorn/lib/xarray.pop ../popcorn/lib/core.h
+../popcorn/lib/bitvec.to: ../popcorn/lib/bitvec.pop ../popcorn/lib/set.h ../popcorn/lib/list.h ../popcorn/lib/core.h ../popcorn/lib/dict.h
+../popcorn/lib/fn.to: ../popcorn/lib/fn.pop ../popcorn/lib/list.h ../popcorn/lib/core.h
+../apps/popcorn/toplevel/gcdfec.to: ../apps/popcorn/toplevel/gcdfec.pop ../apps/popcorn/toplevel/lineno.h ../popcorn/lib/arg.h ../popcorn/lib/list.h ../popcorn/lib/core.h ../popcorn/lib/string.h
+../apps/popcorn/toplevel/lineno.to: ../apps/popcorn/toplevel/lineno.pop ../popcorn/lib/string.h ../popcorn/lib/list.h ../popcorn/lib/core.h ../popcorn/lib/lexing.h

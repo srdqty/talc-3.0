@@ -1,0 +1,75 @@
+/* This file has gotten pretty huge.  Not so "simple" anymore ... */
+
+#include "core.h"
+#include "dlpop.h"
+open Core;
+
+/* all exported (and used) by the loaded code */
+int b = 3;
+exn a = new FileCloseError();
+exception Foo;
+int func2(int i) {
+  raise (a);
+}
+
+static int func(int i, handle_t h) {
+  *(int) c = dlsym(h,"c",repterm@<*(int)>);
+  return i + c.1;
+}
+
+void pop_main () {
+  print_string("-----\nTest: simple_call\n-----\n");
+  try {
+    //print_table();
+
+    handle_t h = dlopen("simp");
+    //print_table();
+
+    print_string("func is ");
+    print_int(func(1,h));
+    print_string("\n");
+
+    void foo() = dlsym(h,"foo",repterm@<void ()>);
+    print_string("before foo(), b is ");
+    print_int(b);
+    print_string("\n");
+    foo();
+    print_string("after foo(), b is ");
+    print_int(b);
+    print_string("\n");
+
+    print_string("func is ");
+    print_int(func(1,h));
+    print_string("\n");
+
+    *(exn) loaded_exn = dlsym(h,"d",repterm@<*(exn)>);
+    
+    dlclose(h);
+    //print_table();
+
+    /* this should fail because the handle was closed */
+    print_int(func(1,h));
+    
+  } handle y {
+    switch y {
+    case WrongType(s): {
+      print_string ("Wrong type for symbol : ");
+      print_string (s);
+    }
+    case SymbolNotFound(s): {
+      print_string ("Can't find symbol : ");
+      print_string (s);
+    }
+    case FailsTypeCheck: {
+      print_string ("File doesn't type-check");
+    }
+    case Core::FileOpenError(s): {
+      print_string ("Can't open file : ");
+      print_string (s);
+    }
+    default:
+      print_string ("Exception Raised");
+    }
+    print_string ("\n");
+  }
+}

@@ -1,0 +1,15 @@
+// check_string.pop 
+// Verify that mutable strings are working.
+
+extern void Core::print_string(string);
+
+void pop_main()
+{
+  string x = "hello world.\n";
+  
+  Core::print_string(x);
+  x[5]='R';
+  Core::print_string(x);
+  x[4]=x[1];
+  Core::print_string(x);
+}

@@ -1,0 +1,16 @@
+(* attempt to install services (.cmo files). use the getBlobFromFile service
+   to get the blob from the .cmo file *)
+svc installServices : (string * blob) list -> unit
+svc BadService : exn
+
+fun install(name, file) =
+  try
+    (installServices([(name,file)]);
+     print("Install succeeded\n"))
+   handle BadService => print ("Install failed!\n")
+
+fun installs(stuff) =
+  try
+    (installServices(stuff);
+     print("Install succeeded\n"))
+   handle BadService => print ("Install failed!\n")

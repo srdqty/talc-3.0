@@ -1,0 +1,78 @@
+(* tests exception declaration, raising, and handling *)
+exception Dave
+val p = 7
+
+(* b : void -> 'a *)
+fun b() =
+  let val p = 5 in raise Dave end
+
+(* test1 : void -> int *)
+(* will return 6 *)
+fun test1() =
+  let val p = 6 in
+    try
+      b()
+    handle Dave => p
+  end
+
+(* test2: void -> 'a *)
+(* will raise an uncaught exception Dave *)
+fun test2() = b()
+
+(* test2: (int, int) -> int *)
+(* takes an int list, if a 0 is present, it will return -1, else the sum *)
+fun test3help(i,j) =
+  if i = 0 then raise Dave else i + j
+
+(* test3: int list -> int *)
+fun test3(l) =
+  let val i = 100
+      val ed =
+    try
+      foldr(test3help,l,0)
+    handle Dave => ~1
+  in
+    ed
+  end
+
+(* test4: string -> int *)
+(* returns 6 if the host is found; 5 otherwise *)
+fun test4(s) =
+  try
+    (getHostByName(s); 6)
+  handle UnknownHost => 5 
+
+(* test5: int -> int *)
+(* returns i if i > 10, 5 otherwise *)
+fun test5(i) =
+  let exception Head in
+    try
+      if i > 10 then i
+      else raise Head
+    handle Head => 5
+  end
+    
+(* test6: void -> int *)
+(* returns 5 *)
+fun test6() =
+  let val q = 5
+      exception Dave in
+    try
+      let val q = 6 in
+          17 + raise Dave (* comment *)
+      end (**)
+    handle Dave => q (**)
+  end
+     
+(* test7: void -> int *)
+(* returns 5 *)
+fun test7() =
+  let val q = 5
+      exception Dave in
+    try
+      let val q = 6
+          val r = raise Dave in
+        4
+      end
+    handle Dave => q
+  end

@@ -1,0 +1,447 @@
+// The naive interpreter.
+//
+// Code is structured to facilitate RTCG hence the split into two functions.
+// 
+// WATCH OUT: Macros used extensively.
+
+#include "top.h"
+#include "gmlsyntax.h"
+#include "math.h"
+#include "render.h"
+
+open Gmlsyntax;
+open Math;
+
+prefix Eval;
+open Eval;
+
+void machine_error(string s,<token>list prog,<value>list st,env ev,value top, token tk) {
+  printf("EVALUATION FAILED: %s\n",s);
+  printf("TOP = ");
+  print_value(top);
+  printf("\nTOKEN = ");
+  print_token(tk);
+  printf("\n--------------------------------------------------------------\n");
+  print_machine(ev,st,prog);
+  printf("\n");
+}
+
+#define ERR(s) { machine_error(s,prog,sp,ev,top,tk); raise(^GMLFailure("eval")); }
+
+#define PUSH(v) sp = ^list(v,sp)
+#define POP  { top = sp.hd; sp = sp.tl; }
+#define POP_FP(F) switch sp.hd { \
+   case Vfp(f__xxx): F=f__xxx; sp = sp.tl; \
+   default: ERR("Expected a float."); \
+  }
+ 
+#define POP_INT(I) switch sp.hd { \
+   case Vint(i__xxx): I=i__xxx; sp = sp.tl; \
+   default: ERR("Expected an integer."); \
+  } 
+
+#define POP_POINT(F) switch sp.hd { \
+   case Vpoint(p__xxx): F=p__xxx; sp = sp.tl; \
+   default: ERR("Expected a point."); \
+  } 
+
+#define POP_OBJ(F) switch sp.hd { \
+   case Vobj(o__xxx): F=o__xxx; sp = sp.tl; \
+   default: ERR("Expected an object."); \
+  } 
+
+#define PUSH_CONT return_sp = ^list(^(ev,prog),return_sp)
+#define PUSH_CLOS(G,C) return_sp = ^list(^(G,C),return_sp)
+
+// -----------------------------------------------------------------------------
+// GLOBALS
+<value>list sp;
+<*(env,<token>list)>list return_sp = null; // Stack of return continuations.
+
+<value>list eval(env ev, <token>list prog, <value>list stack) {
+  try {
+    return_sp = null;
+    PUSH_CLOS(ev,prog);
+    sp = stack;
+    
+    while(return_sp!=null) {
+      _ x = return_sp.hd;
+      return_sp = return_sp.tl; // Order matters here.
+      
+      eval_fun(x.1,x.2);
+    }
+
+    return sp;
+
+  } handle y {
+    printf("Failed.");
+    raise(y);
+  }
+}
+
+void eval_fun(env ev, <token>list prog) {
+
+  value top = ^value.Vint(0); // Filled by Pop.
+
+  while(prog!=null) {
+
+    _ tk = prog.hd;
+    prog = prog.tl;
+
+    switch tk {
+    case Tnewline: 
+      /* Do nothing. */;
+    case Tid(i): 
+      PUSH(lookup(ev,i));
+    case Tbinder: 
+      POP; 
+      if(top == ^value.Marker) ERR("Attempt to bind stack marker to variable.");
+      ev = extend(ev,top); 
+    case Tpush(v): 
+      PUSH(v);
+    case Tfun(ts): 
+      PUSH(^value.Vclos(^(ev,ts)));
+    case Tarray(ts): 
+      PUSH(^value.Marker);
+      prog = ^list(^token.ArrayDone,prog);
+      prog = List::append(ts,prog);
+    case Tprim(p):
+      switch p {
+      case Apply:
+	POP;
+	env g;
+	<token>list ts;
+	switch top {
+	case Vclos *(g1,ts1): g = g1; ts = ts1;
+	default: ERR("Apply expects closure on the stack.");
+	}
+
+	if(prog!=null) { // If this is not a tail call. 
+	  PUSH_CONT;
+	}
+	PUSH_CLOS(g,ts);
+	return;
+
+      case Get:
+	int i;
+	value arr[];
+
+	POP_INT(i);
+	POP;
+	switch top {
+	case Varray(vs): arr =vs;
+	default: ERR("Get expects an array.");
+	}
+
+	if(i<0 || i>=size(arr)) {
+	  printf("Array bounds error: 0 <= %d < %d\n",i,size(arr));
+	  ERR("Out of bounds.");
+	}
+
+	PUSH(arr[i]);
+      
+      case If:
+	_ false_clos;
+	_ true_clos;
+	_ cond;
+	POP;
+	false_clos = top;
+	POP;
+	true_clos = top;
+	POP;
+	switch top {
+	case Vbool(b): cond = b;
+	default: ERR("If test not a boolean.");
+	}
+
+	_ clos = cond ? true_clos : false_clos;
+	switch clos {
+	case Vclos *(g,ts):
+	  if(prog!=null) PUSH_CONT;
+	  PUSH_CLOS(g,ts);
+	  return;
+	default: ERR("Branch not a closure.");
+	}
+
+      case Length:
+	POP;
+	switch top {
+	case Varray(vs):
+	  PUSH(^value.Vint(size(vs)));
+	default: ERR("Length expects an array.");
+	}
+
+      case Light:
+	// Vpoint color :: Vpoint dir
+	_ col, dir;
+
+	POP_POINT(col);
+	POP_POINT(dir);
+	PUSH(^value.Vlight(^light.Ldir(^ldir(dir,col))));
+
+      case Negi:
+	_ i;
+	POP_INT(i);
+	PUSH(^value.Vint(-i));
+      case Negf:
+	_ f;
+	POP_FP(f);
+	PUSH(^value.Vfp(-f));
+      case Point: // z :: y :: x
+	_ x,y,z;
+	POP_FP(z);
+	POP_FP(y);
+	POP_FP(x);
+
+	PUSH(^value.Vpoint(^Point::point(x,y,z)));
+
+      case Pointlight: // color :: pos
+	_ col,pos;
+	POP_POINT(col);
+	POP_POINT(pos);
+	PUSH(^value.Vlight(^light.Lpoint(^lpoint(pos,col))));
+
+      case Print:
+	POP;
+	switch top {
+	case Vstring(s): printf("%s",s);
+	case Vfp(f): print_fp(f);
+	case Vint(i): printf("%d",i);
+	default: ERR("Print requires a string argument.");
+	}
+
+      case Real:
+	_ i;
+	POP_INT(i);;
+	PUSH(^value.Vfp((:FP) i));
+
+      case Render: // XXX
+	_ file;
+	_ ht,wid,depth;
+	_ fov;
+	_ scene;
+	_ vlights;
+	_ a;
+
+	POP;
+	switch top {
+	case Vstring(s): file = s;
+	default: ERR("Render expects a string.");
+	}
+
+	POP_INT(ht);
+	POP_INT(wid);
+	POP_FP(fov);
+	POP_INT(depth);
+	POP_OBJ(scene);
+	
+	POP;
+	switch top {
+	case Varray(vs): vlights = vs;
+	default: ERR("Render expects an array of lights.");
+	}
+
+	POP_POINT(a);
+
+	_ num_lights = size(vlights);
+	_ dummy_light = 
+	  ^light.Ldir(^ldir(^Point::point(0,0,0),^Point::point(0,0,0)));
+
+	_ lights = new_array(num_lights,dummy_light);
+	
+	for(_ i = 0; i < num_lights; i++) {
+	  switch vlights[i] {
+	  case Vlight(l): lights[i] = l;
+	  default: ERR("Render lights must only contain lights.");
+	  }
+	}
+	Render::render(file,wid,ht,deg_to_rad(fov),depth,scene,lights,a);
+
+      case Scale: // z :: y :: x :: obj
+	_ x,y,z;
+
+	POP_FP(z);
+	POP_FP(y);
+	POP_FP(x);
+
+	POP;
+	switch top {
+	case Vobj(o):
+	  _ a = Affine::scale(x,y,z);
+	  _ o2 = ^obj.Trans(^(a,o));
+	  PUSH(^value.Vobj(o2));
+	default: ERR("Expected an object");
+	}
+      case Spotlight: // exponent :: cutoff :: color :: at :: pos
+	_ exp,cutoff;
+	_ col,at,pos;
+	POP_FP(exp);
+	POP_FP(cutoff);
+	POP_POINT(col);
+	POP_POINT(at);
+	POP_POINT(pos);
+
+	// Convert the cutoff into radians.
+	cutoff = deg_to_rad(cutoff);
+
+	_ sl = ^light.Lspot(^lspot(pos,at,col,cutoff,exp));
+	PUSH(^value.Vlight(sl));
+
+      case Translate: // z :: y :: x :: obj
+	_ x,y,z;
+	POP_FP(z);
+	POP_FP(y);
+	POP_FP(x);
+	POP;
+	switch top {
+	case Vobj(o):
+	  _ a = Affine::translate(x,y,z);
+	  _ o2 = ^obj.Trans(^(a,o));
+	  PUSH(^value.Vobj(o2));
+	default: ERR("Translate requires an object.");
+	}
+      
+      case Fp1(p1):
+	_ f;
+	POP_FP(f);
+
+	switch p1 {
+	case Acos  : f = rad_to_deg(arc_cos(f));
+	case Asin  : f = rad_to_deg(arc_sin(f));
+	case Clampf: f = (f<0) ? 0.0 : (f>1 ? 1.0 : f);
+	case Cos   : f = cos(deg_to_rad(f));
+	case Floor : f = floor(f);
+	case Frac  : f = frac(f);
+	case Sin   : f = sin(deg_to_rad(f));
+	case Sqrt  : f = sqrt(f);
+	}
+	if(p1 == ^.Floor) { 
+	  PUSH(^value.Vint((:int)f)); 
+	}
+	else { 
+	  PUSH(^value.Vfp(f)); 
+	}
+
+      case Fp2(p2):
+	_ x,y;
+	POP_FP(y);
+	POP_FP(x);
+	switch p2 {
+	case  Addf: PUSH(^value.Vfp(x + y));
+	case  Divf: 
+	  if(y==0.0) ERR("Divide by zero.");
+	  PUSH(^value.Vfp(x/y));
+	case   Eqf: PUSH(^value.Vbool(x==y));
+	case Lessf: PUSH(^value.Vbool(x<y));
+	case  Mulf: PUSH(^value.Vfp(x * y));
+	case  Subf: PUSH(^value.Vfp(x-y));
+	}
+      case I2(i2):
+	_ x,y;
+	POP_INT(y);
+	POP_INT(x);
+
+	switch i2 {
+	case  Addi: PUSH(^value.Vint(x+y));
+	case  Divi: if(y==0) ERR("Divide by zero (int).");
+	  PUSH(^value.Vint(x/y));
+	case   Eqi: PUSH(^value.Vbool(x==y));
+	case Lessi: PUSH(^value.Vbool(x<y));
+	case  Modi: PUSH(^value.Vint(x % y));
+	case  Muli: PUSH(^value.Vint(x * y));
+	case  Subi: PUSH(^value.Vint(x - y));
+	}
+      case Obj(o):
+	_ g;
+	_ ts;
+	POP;
+	switch top {
+	case Vclos *(g_t,ts_t): g = g_t; ts = ts_t;
+	default: ERR("Object expects a closure.");
+	}
+	_ sol;
+	switch o {
+	case Cone    : sol = ^solid.Cone;
+	case Cube    : sol = ^solid.Cube;
+	case Cylinder: sol = ^solid.Cylinder;
+	case Plane   : sol = ^solid.Plane;
+	case Sphere  : sol = ^solid.Sphere;
+	}
+	
+	_ o2 = ^obj.Base(^base(g,ts,sol));
+	PUSH(^value.Vobj(o2));
+
+      case Obj1(op): // float :: obj
+	_ f;
+	_ o;
+	POP_FP(f);
+	POP_OBJ(o);
+	_ a;
+	switch op {
+	case Uscale : a = Affine::uscale(f);
+	case Rotatex: a = Affine::rotate_x(deg_to_rad(f));
+	case Rotatey: a = Affine::rotate_y(deg_to_rad(f));
+	case Rotatez: a = Affine::rotate_z(deg_to_rad(f));
+	}
+
+	_ o2 = ^obj.Trans(^(a,o));
+	PUSH(^value.Vobj(o2));
+
+      case Obj2(op):
+	_ o1,o2;
+	POP_OBJ(o2);
+	POP_OBJ(o1);
+	_ o;
+	switch op {
+	case Difference: o = ^obj.Diff(^(o1,o2));
+	case Intersect : o = ^obj.Inter(^(o1,o2));
+	case Union     : o = ^obj.Union(^(o1,o2));
+	}
+	PUSH(^value.Vobj(o));
+
+      case Prim_Point(pp):
+	_ p;
+	POP_POINT(p);
+
+	_ f;
+	switch pp {
+	case Getx: f = p.x;
+	case Gety: f = p.y;
+	case Getz: f = p.z;
+	}
+
+	PUSH(^value.Vfp(f));
+      }
+    case ArrayDone:
+      // STACK specific code.
+      int i = 0;
+      _ sp2 = sp;
+      for(; sp2!=null; i++, sp2=sp2.tl) {
+	switch sp2.hd {
+	case Marker: break; // out of the loop.
+	default: ;
+	}
+      }
+
+      if(sp2==null) ERR("Array done but no marker.");
+
+      _ arr = new_array(i,^value.Marker);
+
+      --i;
+      for(; i>=0; --i) {
+	POP;
+	arr[i] = top;
+      }
+
+      POP; // Pop the marker off
+
+      switch top {
+      case Marker: ;
+      default: ERR("Expected marker at the end of the array.");
+      }      
+      PUSH(^value.Varray(arr));
+    }
+  }
+
+  // END of this function. 
+}

@@ -1,0 +1,143 @@
+
+{ 
+  /* Does includes by trying all of them */
+
+  /* While in theory we should be able to get the C preprocessor to do
+     this for us, I wasted two hours trying to do so.  So let's roll our own
+     and be done with it.  --Dan
+
+     Note we will include anything that comes in a line that starts #include,
+     so we will include too much if the #include is actually guarded by some
+     sort of #if which we don't interpret!
+
+     Also, the #include must be at the beginning of the line.
+
+     */
+#include "core.h"
+#include "lexing.h"
+#include "list.h"
+#include "string.h"
+#include "filename.h"
+
+open Core;
+open Lexing;
+open List;
+
+prefix Popdep;
+open   Popdep;
+
+#define INCLUDE 1
+#define NEWLINE 2
+#define END     3
+
+}
+
+let newline = ('\010' | '\013' | "\013\010")
+
+rule token = parse
+ "#include" [^ '\010' '\013']* newline { return INCLUDE; }
+| [^ '\010' '\013']* newline           { return NEWLINE; }
+| [^ '\010' '\013']* eof               { return END;     }
+
+{
+
+string generate_depend(string source_file, string lhs, <string>list includes) {
+  <*(string,FILE)>Opt src_place = try_open(source_file, includes);
+  if (src_place == null) {
+    fprintf(tal_stderr,
+	    "Warning: dependency generator could not find: %s\n", source_file);
+    return (strconcat(Filename::gnuify(lhs),": "));
+  }
+  file_close(src_place.v.2);
+  string source_dir = Filename::dirname(src_place.v.1);
+  if (size(source_dir)>0)
+    lhs = Filename::concat(source_dir,lhs);
+
+  return strconcat(Filename::gnuify(lhs), 
+		   strconcat(": ", 
+		     strconcat(Filename::gnuify
+			       (Filename::concat(source_dir,source_file)),
+			       strconcat(" ",
+			       get_includes(source_file, includes)))));
+}
+
+static string get_includes(string source_file, <string>list includes) {
+   
+  <string>list visited = null;
+  <string>list todo    = ^list(source_file,null);
+
+  while(todo != null) {
+
+    string next = todo.hd;
+    todo        = todo.tl;
+
+    // open next file and check we haven't already done it
+    <*(string,FILE)>Opt sfo = try_open(next, includes);
+    if (sfo == null) {
+      fprintf(tal_stderr,
+	      "Warning: dependency generator could not find: %s\n", next);
+      continue;
+    }
+    if (mem(strcmp, visited, sfo.v.1)) {
+      file_close(sfo.v.2);
+      continue;
+    }
+    visited = ^list(sfo.v.1, visited);
+    
+    // parse a file, adding to the todo list
+    try {
+      < <FILE>function_lexbuf_state>lexbuf lbuf = from_file(sfo.v.2);
+      while(true) {
+	switch token(lbuf) {
+	case END:     break;
+	case NEWLINE: ;
+	case INCLUDE: 
+	  string this_line = lexeme(lbuf);
+	  int i = 0;
+	  while(i < size(this_line) &&
+		this_line[i] != '"' && this_line[i] != '<') ++i;
+          if (i == size(this_line)) {
+            fprintf(tal_stderr,
+		  "Warning: dependency generator could not parse a #include\n");
+            continue;
+	  }
+	  int j = i+1;
+	  while (j < size(this_line) && 
+		 this_line[j] != '"' && this_line[j] != '>') ++j;
+	  if (j == size(this_line)) {
+	    fprintf(tal_stderr,
+		  "Warning: dependency generator could not parse a #include\n");
+	    continue;
+	  } 
+	  todo = ^list(String::substring(this_line,i+1,j-i-1), todo);
+	default: raise Failure("Popdep: Impossible");
+	}
+      }
+    } handle y {
+      file_close(sfo.v.2); raise(y);
+    }
+    file_close(sfo.v.2);
+  }
+  return String::str_sepstr(rev(map(Filename::gnuify,visited)).tl, " ");
+}
+
+static <*(string, FILE)>Opt try_open (string filename, <string>list includes) {
+  FILE   ans_file;
+  
+  // check current directory
+  try 
+    return ^Opt(^(filename, file_open(filename, "r")));
+  handle y ;
+  
+  // check includes
+  while(includes != null) {
+    try {
+      string qualified_name = Filename::concat(includes.hd, filename);
+      return ^Opt(^(qualified_name, file_open(qualified_name, "r")));
+    } handle y
+	includes = includes.tl;
+  }
+  return null;
+}
+
+}

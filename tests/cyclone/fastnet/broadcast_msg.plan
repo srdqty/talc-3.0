@@ -1,0 +1,21 @@
+fun remotePrint(src : unit, dummy: unit) : unit=
+  let val s : unit = toString(thisHost()) ^ " says : Hello world!\n" in
+    OnNeighbor(|print|(s), src, 1, getSrcDev())
+  end
+
+(* broadcasts packets on an interface which prints 'hello' on all neighbors *)
+fun doit() : unit =
+  let val d : unit = getDevs() in
+    (print("getDevs():");
+     print(d);
+     print("\n");
+     foldr(remotePrint, d, ""))
+  end
+
+fun main() : unit = doit()
+
+val entry_fun  : unit = "doit"
+val entry_args : unit = []
+val entry_src  : unit = "blah"
+val entry_eval : unit = "cyclone:4002"
+val entry_rb   : unit = 20

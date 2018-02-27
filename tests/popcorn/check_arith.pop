@@ -1,0 +1,76 @@
+// check_arith.pop
+// Check that arithmetic and implicit conversions are working correctly.
+
+#include "core.h"
+open Core;
+
+void pop_main()
+{
+ unsigned int    ui;
+ signed   int     i;
+ unsigned short  us;
+ signed   short   s;
+ unsigned byte   ub;
+ byte             b;
+ char             c;
+
+ us = 0xFFFFFF;
+ print_int(us); // Should truncate us
+ print_newline();
+
+ s = 0xFFFFFF;
+ print_int(s); // should truncate s and sign-extend.
+ print_newline();
+
+ s = 900;
+ i = s * 900; // Should convert s to i
+ print_int(i);
+ print_newline();
+
+ b = 0xFFF;
+ print_int(b);
+ print_newline();
+
+ ub = 0xFF;
+ print_int(ub);
+ print_newline();
+
+ b=s;
+ print_int(b);
+ print_newline();
+ 
+ c = 10;
+ print_int(c);
+ print_newline();
+
+ b = 'A' - 'Z';
+ print_int(b);
+ print_newline();
+
+ us = 200;
+ us = us * -2;
+ print_int(us);
+ print_newline(); 
+ 
+ ub = 20;
+ ub *= 5;
+ ub /= 100;
+ print_int(ub);
+ print_newline();
+
+ us = -1;
+ s  = 200;
+ if(s<us) print_int(1);
+ else print_int(0);
+ print_newline();
+
+ i = -1;
+ ui = 200;
+ if(ui <= i) print_int(1);
+ else print_int(0);
+ print_newline();
+ 
+}
+
+
+

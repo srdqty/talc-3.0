@@ -1,0 +1,25 @@
+; TAL Language Stuff
+;
+; Copyright Greg Morrisett, Neal Glew
+;  January 1999, all rights reserved
+
+	INCLUDE	TAL.INC
+	_begin_TAL
+
+	TAL_IMPORT tal_util_i.tali
+	TAL_EXPORT tal_util_e.tali
+
+	CODE
+	
+l1:
+LABELTYPE <All[r:Ts].code{ESP:sptr B4::r}>
+	JMP	tapp(l1,<r>)
+
+_tal_exit:
+LABELTYPE <All[r:Ts].code{esp:sptr B4::r}>
+	CALL	tapp(_exit,<r>)
+	JMP	tapp(l1,<r>)
+
+	_end_TAL
+	END
+; EOF: tal_util.tal

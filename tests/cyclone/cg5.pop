@@ -1,0 +1,21 @@
+#include "core.h"
+open Core;
+
+int cg_test()
+{
+return(
+  codegen(int spec() {
+            int x[] = {1,2,3} ;
+
+            return x[2];
+          })());
+}
+
+void pop_main()
+{
+  print_string("The answer should be 3\n");
+  print_string("The answer is ");
+  print_int(cg_test());
+  print_string("\n");
+}
+

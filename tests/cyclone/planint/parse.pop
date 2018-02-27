@@ -1,0 +1,1429 @@
+/* Copyright (c) 1998, Greg Morrisett
+ * parse.pop:  parser for the PLAN language
+ *
+ */
+
+#include "core.h"
+#include "list.h"
+#include "string.h"
+
+#include "env.h"
+#include "eval.h"
+#include "lex.h"
+#include "misc.h"
+
+open Core;
+open List;
+open String;
+
+static keyword next_keyword(string_file str)
+{
+  switch (next_token(str)) {
+  case Keyword(k):
+    return(k);
+  default:
+    err("(parse.pop) expecting keyword");
+    return(new keyword.IF);
+  }
+}
+
+/******************************************************************************
+ * abstract syntax: data types (and printers)
+ *****************************************************************************/
+
+/* packets */
+
+struct pop_pkt {
+  <def> list program;
+  string fn_to_exec;
+  <value> List::list actuals;
+  string sourceAddr;
+  string evalAddr;
+  int rb;
+}
+  
+/* PLAN programs */
+
+string pop_pkt_to_str(pop_pkt pkt) {
+
+  return strconcat_l(^list(deflist_to_str(pkt.program),
+		     ^list(sprintf("val entry_fun  : unit = \"%s\"\n", pkt.fn_to_exec),
+		     ^list(sprintf("val entry_args : unit = [%s]\n", valuelist_to_str(pkt.actuals, ";")),
+		     ^list(sprintf("val entry_src  : unit = \"%s\"\n", pkt.sourceAddr),
+		     ^list(sprintf("val entry_eval : unit = \"%s\"\n", pkt.evalAddr),
+		     ^list(sprintf("val entry_rb   : unit = %s", pop_int_to_plan_int(pkt.rb)),
+		     ^list(sprintf("%c", EOF), null))))))));
+}
+
+/* need to convert - to ~ (for negative numbers) */
+string pop_int_to_plan_int(int i)
+{
+  if (i < 0)
+     return sprintf("~%d", -i);
+  else
+     return sprintf("%d", i);
+}
+
+string deflist_to_str(<def> list dl) {
+  string s = "";
+  while (dl != null) {
+    s = strconcat_l(^list(s, ^list(def_to_str(dl.hd), null)));
+    dl = dl.tl;
+  }
+  return s;
+}
+
+union def {
+  fundef Fundef;
+  string Exndef;
+  valdef Valdef;
+}
+
+string def_to_str(def d) {
+  string s = "";
+
+  switch (d) {
+  case Fundef(f):
+    s = fundef_to_str(f);
+  case Exndef(x):
+    s = strconcat_l(^list("exception ", ^list(x, null)));
+  case Valdef(v):
+    s = valdef_to_str(v);
+  }
+  return strconcat_l(^list(s, ^list("\n", null)));
+}
+
+struct fundef {
+  string    var;
+  <*(string, tipe)> List::list params;
+  tipe      result_type;
+  exp       body;
+}
+
+string fundef_to_str(fundef f) {
+  return strconcat_l(^list("fun ",
+		     ^list(f.var,
+		     ^list("(",
+		     ^list(paramlist_to_str(f.params),
+		     ^list("):",
+		     ^list(tipe_to_str(f.result_type),
+		     ^list(" = ",
+		     ^list(exp_to_str(f.body), null)))))))));
+}
+
+string paramlist_to_str(<*(string, tipe)> List::list pl) {
+  string s = "";
+
+  if (pl != null) {
+    s = strconcat_l(^list(pl.hd.1, ^list(":", ^list(tipe_to_str(pl.hd.2), null))));
+    pl = pl.tl;
+    while (pl != null) {
+      s = strconcat_l(^list(s, ^list(",", ^list(pl.hd.1, ^list(":", ^list(tipe_to_str(pl.hd.2), null))))));
+      pl = pl.tl;
+    }
+  }
+  return s;
+}
+
+struct valdef {
+  string var;
+  tipe   tipe;
+  exp    exp;
+}
+
+string valdef_to_str(valdef v) {
+  return strconcat_l(^list("val ",
+		     ^list(v.var,
+		     ^list(":",
+		     ^list(tipe_to_str(v.tipe),
+		     ^list(" = ",
+		     ^list(exp_to_str(v.exp), null)))))));
+}
+
+union tipe {
+  <tipe> list Tuple;
+  tipe     List;
+  void     Int;
+  void     Char;
+  void     String;
+  void     Bool;
+  void     Host;
+  void     Port;
+  void     Key;
+  void     Blob;
+  void     Exn;
+  void     Dev;
+  void     Chunk;
+  tyvar    Var;
+}
+
+extern struct tyvar {
+  int     id;
+  tipeopt topt;
+}
+
+?struct tipeopt {
+  tipe t;
+}
+
+static int type_var_counter = 0;
+
+tipe new_type_var() {
+  return(new tipe.Var(new tyvar(++type_var_counter,null)));
+}
+
+string tipe_to_str(tipe t) {
+  switch (t) {
+  case Tuple(tl): return tipelist_to_str(tl);
+  case List(t):   return strconcat_l(^list("(", ^list(tipe_to_str(t), ^list(") list", null))));
+  case Int:       return "int";
+  case Char:      return "char";
+  case String:    return "string";
+  case Bool:      return "bool";
+  case Host:      return "host";
+  case Port:      return "port";
+  case Key:       return "key";
+  case Blob:      return "blob";
+  case Exn:       return "exn";
+  case Dev:       return "dev";
+  case Chunk:     return "chunk";
+  case Var(tyvar):		/* not being used ??? */
+    if (tyvar.topt == null)
+      return strconcat_l(^list("'a", ^list(string_of_int(tyvar.id), null)));
+    else
+      return strconcat_l(^list("'a", ^list(string_of_int(tyvar.id), ^list("[",
+			 ^list(tipe_to_str(tyvar.topt.t), ^list("]", null))))));
+  }
+}
+
+string tipelist_to_str(<tipe> list tl) {
+  if (tl == null)
+    return("unit");
+  else {
+    string s;
+    
+    s = strconcat_l(^list("(", ^list(tipe_to_str(tl.hd), null)));
+
+    while (tl.tl != null) {
+      tl = tl.tl;
+      s = strconcat_l(^list(s, ^list("*", ^list(tipe_to_str(tl.hd), null))));
+    }
+    s = strconcat_l(^list(s, ^list(")", null)));
+    return s;
+  }
+}
+    
+union unop {
+  void NEG;
+  void NOT;
+  void HD;
+  void TL;
+  void FST;
+  void SND;
+  int NTH; /* was  int PROJ; */
+  void NOTI;
+  void EXPLODE;
+  void IMPLODE;
+  void ORD;
+  void CHR;
+}
+
+string unop_to_str(unop u) {
+  switch (u) {
+  case NEG: return "~";
+  case NOT: return "not";
+  case HD:  return "hd";
+  case TL:  return "tl";
+  case FST: return "fst";
+  case SND: return "snd";
+  case NTH(i): return
+		 strconcat_l(^list("#", ^list(string_of_int(i), null)));
+  case NOTI:    return "noti";
+  case EXPLODE: return "explode";
+  case IMPLODE: return "implode";
+  case ORD:     return "ord";
+  case CHR:     return "chr";
+  }
+}
+
+union binop {
+  void DIV;
+  void MOD;
+  void TIMES;
+  void PLUS;
+  void MINUS;
+  void AND;
+  void OR;
+  void LESS;
+  void LESSEQ;
+  void GREATER;
+  void GREATEREQ;
+  void EQ;
+  void NOTEQ;
+  void CONS;
+  void CONCAT;
+  void LSHIFT;
+  void RSHIFT;
+  void XORI;
+  void ANDI;
+  void ORI;
+}
+
+string binop_to_string(binop b) {
+  switch (b) {
+  case DIV:       return("/");
+  case MOD:       return("%");
+  case TIMES:     return("*");
+  case PLUS:      return("+");
+  case MINUS:     return("-");
+  case AND:       return("and");
+  case OR:        return("or");
+  case LESS:      return("<");
+  case LESSEQ:    return("<=");
+  case GREATER:   return(">");
+  case GREATEREQ: return(">=");
+  case EQ:        return("=");
+  case NOTEQ:     return("<>");
+  case CONS:      return("::");
+  case CONCAT:    return("^");
+  case LSHIFT:    return("<<");
+  case RSHIFT:    return(">>");
+  case XORI:      return("xori");
+  case ANDI:      return("andi");
+  case ORI:       return("ori");
+  }
+}    
+
+
+extern union value {
+  void                          Unit;
+  int                           Int;
+  char                          Char;
+  string                        String;
+  bool                          Bool;
+  <value> List::list            VTuple;
+  <value> List::list            VList;
+  *(string, <value> List::list, <def> list) VChunk;
+  /*
+    todo: Host, Blob, Port, Key, Exception, Dev
+  */
+}
+
+string value_to_str(value v) {
+  switch (v) {
+  case Unit: return "()";
+  case Int(i): return string_of_int(i);
+  case Char(c): return(strconcat_l(^list("'", ^list(string_of_char(c), ^list("'", null)))));
+  case String(s): return(strconcat_l(^list("\"", ^list(s, ^list("\"", null)))));
+  case Bool(b): if (b) return "true"; else return "false";
+  case VTuple(vl): return(strconcat_l(^list("(", ^list(valuelist_to_str(vl, ","), ^list(")", null)))));
+  case VList(vl): return(strconcat_l(^list("[", ^list(valuelist_to_str(vl, ";"), ^list("]", null)))));
+  case VChunk(c): 
+    return(strconcat_l(^list("|", ^list(c.1, ^list("|", ^list(valuelist_to_str(c.2, ","), null))))));
+  }
+}
+
+string valuelist_to_str(<value> List::list vl, string c) {
+  string s = "";
+
+  while (vl != null) {
+    s = strconcat_l(^list(s, ^list(value_to_str(vl.hd), null)));
+    vl = vl.tl;
+    if (vl != null) 
+      s = strconcat_l(^list(s, ^list(c, null)));
+  }
+  return s;
+}
+
+union exp {
+  value                      Val;
+  string                     Var;       
+  <exp> list                 ETuple;
+  <exp> list                 ESequence;
+  *(string, <exp> list)      App;
+  *(exp,exp,exp)             If;
+  string                     Raise;
+  *(exp,string,exp)          Try;
+  *(<def> list,exp)          Let;
+  *(unop,exp)                Unop;
+  *(string, <exp> list)      EChunk;
+  *(binop,exp,exp)           Binop;
+  *(exp,exp,exp,exp)         OnRemote;
+  *(exp,exp,exp,exp)         OnNeighbor;
+  *(exp,exp,exp,exp,exp,exp) RetransOnRemote;
+  *(string,exp,exp)          Foldr;
+  *(string,exp,exp)          Foldl;
+}
+
+string exp_to_str(exp e)
+{
+  switch (e) {
+  case Val(v): return value_to_str(v);
+  case Var(x): return x;
+  case ETuple(el):
+    return strconcat_l(^list("(", ^list(explist_to_str(el), ^list(")", null))));
+  case ESequence(el): 
+    return strconcat_l(^list("(", ^list(sequence_to_str(el), ^list(")", null))));
+  case App(p): 
+    return strconcat_l(^list(p.1, ^list("(", ^list(explist_to_str(p.2), ^list(")", null)))));
+  case If(t): return sprintf("(if %s then %s else %s)",
+			     exp_to_str(t.1),
+			     exp_to_str(t.2),
+			     exp_to_str(t.3));
+  /*
+  case If(t): return strconcat_l(^list("(if ",
+		                 ^list(exp_to_str(t.1),
+		                 ^list(" then ",
+		                 ^list(exp_to_str(t.2),
+		                 ^list(" else ",
+		                 ^list(exp_to_str(t.3),
+		                 ^list(")", null))))))));
+  */
+  case Raise(x): 
+    return strconcat_l(^list("(raise ", ^list(x, ^list(")", null))));
+  case Try(t): return strconcat_l(^list("(try ",
+		                  ^list(exp_to_str(t.1),
+		                  ^list(" handle ",
+		                  ^list(t.2,
+		                  ^list(" => ",
+		                  ^list(exp_to_str(t.3),
+		                  ^list(")", null))))))));
+  case Let(p):
+    return strconcat_l(^list("let ", 
+		       ^list(deflist_to_str(p.1),
+		       ^list("in ",
+		       ^list(exp_to_str(p.2),
+		       ^list(" end", null))))));
+  case Unop(p):
+    return strconcat_l(^list("(",
+		       ^list(unop_to_str(p.1),
+		       ^list(" ",
+		       ^list(exp_to_str(p.2),
+		       ^list(")", null))))));
+  case EChunk(p):
+    return strconcat_l(^list("|",
+		       ^list(p.1,
+		       ^list("| (",
+		       ^list(explist_to_str(p.2),
+		       ^list(")", null))))));
+  case Binop(t):
+    return strconcat_l(^list("(",
+		       ^list(exp_to_str(t.2),
+		       ^list(" ",
+		       ^list(binop_to_string(t.1),
+		       ^list(" ",
+		       ^list(exp_to_str(t.3),
+		       ^list(")", null))))))));
+  case OnRemote(q): 
+    return strconcat_l(^list("OnRemote",
+		       ^list(four_args_to_str(q), null)));
+  case OnNeighbor(t): 
+    return strconcat_l(^list("OnNeighbor",
+		       ^list(four_args_to_str(t), null)));
+
+  case RetransOnRemote(s):
+    return strconcat_l(^list("RetransOnRemote(",
+                       ^list(exp_to_str(s.1),
+                       ^list(",",
+                       ^list(exp_to_str(s.2),
+                       ^list(",",
+                       ^list(exp_to_str(s.3),
+                       ^list(",",
+                       ^list(exp_to_str(s.4),
+                       ^list(",",
+                       ^list(exp_to_str(s.5),
+                       ^list(",",
+                       ^list(exp_to_str(s.6),
+                       ^list(")", null))))))))))))));
+  case Foldr(t): 
+    return strconcat_l(^list("foldr",
+		       ^list(str_2exps_to_str(t), null)));
+  case Foldl(t): 
+    return strconcat_l(^list("foldl",
+		       ^list(str_2exps_to_str(t), null)));
+  }
+}
+
+string str_2exps_to_str(*(string, exp, exp) t) {
+  return strconcat_l(^list("(",
+		     ^list(t.1,
+		     ^list(",",
+		     ^list(exp_to_str(t.2),
+		     ^list(",",
+		     ^list(exp_to_str(t.3),
+		     ^list(")", null))))))));
+}
+
+string four_args_to_str(*(exp,exp,exp,exp) t) {
+  return strconcat_l(^list("(",
+		     ^list(exp_to_str(t.1),
+		     ^list(",",
+		     ^list(exp_to_str(t.2),
+		     ^list(",",
+		     ^list(exp_to_str(t.3),
+		     ^list(",",
+		     ^list(exp_to_str(t.4),
+		     ^list(")", null))))))))));
+}
+
+string explist_to_str(<exp> list el) {
+  string s = "";
+  while (el != null) {
+    s = strconcat_l(^list(s, ^list(exp_to_str(el.hd), null)));
+    el = el.tl;
+    if (el != null) 
+    s = strconcat_l(^list(s, ^list(",", null)));
+  }
+  return s;
+}
+
+string sequence_to_str(<exp> list el) {
+  string s = "";
+  while (el != null) {
+    s = strconcat_l(^list(s, ^list(exp_to_str(el.hd), null)));
+    el = el.tl;
+    if (el != null) 
+    s = strconcat_l(^list(s, ^list(";", null)));
+  }
+  return s;
+}
+
+/******************************************************************************
+ * parser
+ *****************************************************************************/
+
+static bool has_errors = false;
+
+void err(string s) {
+  printf("ERROR: %s\n", s);
+  has_errors = true;
+}
+
+static exp error_exp(string s) {
+  err(s);
+  return(new exp.Val(new value.Unit));
+}
+
+static <def> list get_deflist(string_file str) {
+  <def> list dl = null;
+  <def> list last_dl = null;
+  <def> list temp;
+  token t;
+
+  while (true) {
+    t = peek_token(str);
+    switch (t) {
+
+    case Keyword(k):
+      switch(k) {
+      case FUN:
+	next_token(str);
+	temp = ^List::list(new def.Fundef(get_fundef(str)), null);
+	if (last_dl == null) dl = temp; else last_dl.tl = temp;
+	last_dl = temp;
+	continue;
+      case EXCEPTION:
+	next_token(str);
+	temp = ^List::list(new def.Exndef(get_exndef(str)), null);
+	if (last_dl == null) dl = temp; else last_dl.tl = temp;
+	last_dl = temp;
+	continue;
+      case VAL:
+	next_token(str);
+	valdef vdef = get_valdef(str);
+	temp = ^List::list(^ def.Valdef(vdef), null);
+	if (last_dl == null) dl = temp; else last_dl.tl = temp;
+	last_dl = temp;
+	continue;
+      default:
+	break;
+      }
+    default:
+      break;
+    }
+  }
+  return(dl);
+}
+
+static string get_exndef(string_file str) {
+  switch (next_token(str)) {
+    case Id(x):
+      return(x);
+  default:
+    err("(parse.pop) expecting <id>");
+    return("<error>");
+  }
+}
+
+static valdef get_valdef(string_file str) {
+  switch (next_token(str)) {
+  case Id(x):
+      switch (next_token(str)) {
+      case COLON:
+	tipe t = get_tipe(str);
+	switch (next_token(str)) {
+	case EQ:
+	  return(new valdef(x,t,get_fexp(str)));
+	default:
+	  err("(parse.pop) missing = in val def");
+	}
+      default:
+	err("(parse.pop) missing : in val def");
+      }
+  default:
+    err("(parse.pop) missing <id> in val def");
+  }
+  return(new valdef("<error>",new tipe.Int,new exp.Val(new value.Unit)));
+}
+	
+static fundef get_fundef(string_file str) {
+  switch (next_token(str)) {
+  case Id(x):
+    switch (next_token(str)) {
+    case LPAREN:
+      <*(string, tipe)> List::list params = get_paramlist(str);
+      switch (next_token(str)) {
+      case COLON: 
+	tipe ret_tipe = get_tipe(str);
+	switch (next_token(str)) {
+	case EQ:
+	  exp body = get_fexp(str);
+	  return(new fundef(x,params,ret_tipe,body));
+	default:
+	  err("(parse.pop) missing = in fundef");
+	}
+      default:
+	err("(parse.pop) missing : in fundef");
+      }
+    default:
+      err("(parse.pop) missing ( in fundef");
+    }
+  default:
+    err("(parse.pop) missing <id> in fundef");
+  }
+  return(new fundef("<error>",null,new tipe.Int,new exp.Val(new value.Unit)));
+}
+
+static <*(string, tipe)> List::list get_paramlist(string_file str) {
+  <*(string, tipe)> List::list pl = null, temp, last_pl = null;
+  token t = next_token(str);
+
+  switch (t) {
+  case RPAREN:
+    return(pl);
+  default:
+    while (true) {
+      switch (t) {
+      case Id(x):
+	switch (next_token(str)) {
+	case COLON:
+	  tipe tp = get_tipe(str);
+	  temp = ^List::list(^(x,tp),null);
+	  if (last_pl == null) pl = temp; else last_pl.tl = temp;
+	  last_pl = temp;
+	  switch (next_token(str)) {
+	  case RPAREN:
+	    return(pl);
+	  case COMMA:
+	    t = next_token(str);
+	    continue;
+	  default:
+	    err("(parse.pop) expecting , or ) (1) ");
+	    break;
+	  }
+	default:
+	  err("(parse.pop) expecting : in paramlist");
+	  break;
+	}
+      default:
+	err("(parse.pop) expecting <id>");
+	break;
+      }
+    }
+    return(null);
+  }
+}
+
+static tipe get_tipe(string_file str) {
+  tipe t = get_btipe(str);
+
+  switch (peek_token(str)) {
+  case ASTERISK:
+    next_token(str);
+    <tipe> list ts = get_tipelist(str);
+    return(new tipe.Tuple(^List::list(t,ts)));
+  default:
+    return(t);
+  }
+}
+
+static <tipe> list get_tipelist(string_file str) {
+  <tipe> list ts = null;
+  tipe t = get_btipe(str);
+  
+  while (true) {
+    ts = ^List::list(t,ts);
+    switch(peek_token(str)) {
+    case ASTERISK:
+      next_token(str);
+      t = get_btipe(str);
+      continue;
+    default:
+      break;
+    }
+  }
+  return(ts);
+}
+
+static tipe get_btipe(string_file str) {
+  tipe t = get_atipe(str);
+
+  while (true) {
+    switch (peek_token(str)) {
+    case Keyword(k):
+      switch (k) {
+      case LIST:
+	next_token(str);
+	t = new tipe.List(t);
+	continue;
+      default:
+	break;
+      }
+    default:
+      break;
+    }
+  }
+  return(t);
+}
+
+static tipe get_atipe(string_file str) {
+  
+  switch (next_token(str)) {
+  case Keyword(k):
+    switch (k) {
+    case UNIT:
+      return(new tipe.Tuple(null));
+    case INT:
+      return(new tipe.Int);
+    case CHAR:
+      return(new tipe.Char);
+    case STRING:
+      return(new tipe.String);
+    case BOOL:
+      return(new tipe.Bool);
+    case HOST:
+      return(new tipe.Host);
+    case PORT:
+      return(new tipe.Port);
+    case KEY:
+      return(new tipe.Key);
+    case BLOB:
+      return(new tipe.Blob);
+    case EXN:
+      return(new tipe.Exn);
+    case DEV:
+      return(new tipe.Dev);
+    case CHUNK:
+      return(new tipe.Chunk);
+    default:
+      err("(parse.pop) bad atomic type");
+    }
+  case LPAREN:
+    tipe t = get_tipe(str);
+    switch (next_token(str)) {
+    case RPAREN:
+      return(t);
+    default:
+      err("(parse.pop) missing ) in type");
+   }
+  default:
+    err("(parse.pop) bad type");
+  }
+  return(new tipe.Int);
+}
+
+/*  f(e1, e2, ...)  123  'c'  "string"  ~123  #123  (e1, e2, ...)
+ *  [e1, e2...]  |f|(e1, e2, ...) 
+ *  keywords: TRUE, FALSE, NOT, HD, TL, FST, SND, NOTI, EXPLODE, IMPLODE,
+ *            ORD, CHR, ONREMOTE, ONNEIGHBOR, RETRANSONREMOTE, FOLDR, FOLDL
+ */
+static exp get_aexp(string_file str) {
+  token t = next_token(str);
+  switch (t) {
+  case Id(x):
+    switch (peek_token(str)) {
+    case LPAREN:
+      next_token(str);
+      <exp> list es = get_explist(str);
+      return(new exp.App(new(x,es)));
+    default:
+      return(new exp.Var(x));
+    }
+  case Number(n):
+    return(new exp.Val(new value.Int(n)));
+  case Char(c):
+    return(new exp.Val(new value.Char(c)));
+  case String(s):
+    return(new exp.Val(new value.String(s)));
+  case TILDE:
+    return(new exp.Unop(new(new unop.NEG,get_aexp(str))));
+  case HASH:
+    switch (next_token(str)) {
+      case Number(n):
+	return(new exp.Unop(new(new unop.NTH(n),get_aexp(str))));
+    default:
+      return(error_exp("(parse.pop) expecting <num>"));
+    }
+  case LPAREN:
+    return(get_tuple_or_seq(str));
+    /*
+    explist es = get_explist();
+    if (es == null)
+      return(new exp.ETuple(null));
+    if (es.next == null)
+      return(es.e);
+    return(new exp.ETuple(es));
+    */
+  case LBRACKET:
+    return(get_objlist(str));
+  case BAR:
+    switch (next_token(str)) {
+    case Id(x):
+      switch (next_token(str)) {
+      case BAR:
+	switch (next_token(str)) {
+	case LPAREN:
+	  <exp> List::list es = get_explist(str);
+	  return(new exp.EChunk(new (x,es)));
+	default: return(error_exp("(parse.pop) expecting ("));
+	}
+      default: return(error_exp("(parse.pop) expecting |"));
+      }
+    default: return(error_exp("(parse.pop) expecting <id>"));
+    }
+  case Keyword(k):
+    switch (k) {
+    case TRUE:
+      return(new exp.Val(new value.Bool(true)));
+    case FALSE:
+      return(new exp.Val(new value.Bool(false)));
+    case NOT:
+      return(new exp.Unop(new(new unop.NOT, get_aexp(str))));
+    case HD:
+      return(new exp.Unop(new(new unop.HD, get_aexp(str))));
+    case TL:
+      return(new exp.Unop(new(new unop.TL, get_aexp(str))));
+    case FST:
+      return(new exp.Unop(new(new unop.FST, get_aexp(str))));
+    case SND:
+      return(new exp.Unop(new(new unop.SND, get_aexp(str))));
+    case NOTI:
+      return(new exp.Unop(new(new unop.NOTI, get_aexp(str))));
+    case EXPLODE:
+      return(new exp.Unop(new(new unop.EXPLODE, get_aexp(str))));
+    case IMPLODE:
+      return(new exp.Unop(new(new unop.IMPLODE, get_aexp(str))));
+    case ORD:
+      return(new exp.Unop(new(new unop.ORD, get_aexp(str))));
+    case CHR:
+      return(new exp.Unop(new(new unop.CHR, get_aexp(str))));
+    case ONREMOTE:
+      /* gets (exp,exp,exp,exp) */
+      *(exp,exp,exp,exp) es = get_4args(str);
+      return(new exp.OnRemote(es));
+    case ONNEIGHBOR:
+      *(exp,exp,exp,exp) es = get_4args(str);
+      return(new exp.OnNeighbor(es));
+    case RETRANSONREMOTE:
+      *(exp,exp,exp,exp,exp,exp) es = get_6args(str);
+      return(new exp.RetransOnRemote(es));
+    case FOLDR:
+      *(string,exp,exp) es = get_1id2exps(str);
+      return(new exp.Foldr(es));
+    case FOLDL:
+      *(string,exp,exp) es = get_1id2exps(str);
+      return(new exp.Foldl(es));
+    default:
+      return(error_exp("(parse.pop) bad keyword in exp"));
+    }
+  default:
+    print_token(t);
+    return(error_exp("(parse.pop) bad token in exp"));
+  }
+}
+
+static <exp> list get_explist(string_file str) {
+  <exp> list el = null;
+  <exp> list last_el = null;
+  <exp> list temp;
+  token t = new token.ERROR("uninit");
+
+  switch (peek_token(str)) {
+  case RPAREN:
+    next_token(str);
+  default:
+    while (true) {
+      exp e = get_fexp(str);
+
+      temp = ^List::list(e, null);
+      if (last_el == null) {
+	el = temp;
+	last_el = temp;
+      } else {
+	last_el.tl = temp;
+	last_el = temp;
+      }
+      
+      t = next_token(str);
+
+      switch (t) {
+      case COMMA:
+	continue;
+      case RPAREN:
+	break;
+      default:
+	err("(parse.pop) expecting , or ) (2) ");
+	return(null);
+      }
+    }
+  }
+  return(el);
+}
+
+static exp get_tuple_or_seq(string_file str) {
+  token t = new token.ERROR("uninit");
+
+  switch (peek_token(str)) {
+  case RPAREN:
+    next_token(str);
+    return(new exp.ETuple(null));
+  default:
+    exp e = get_fexp(str);
+
+    t = next_token(str);
+
+    switch (t) {
+    case COMMA:
+      return(get_tuple(str, ^List::list(e, null)));
+    case SEMICOLON:
+      return(get_seq(str, ^List::list(e, null)));
+    case RPAREN:
+      return(e);
+    default:
+      raise(^InternalError("(parse.pop) expecting , ; or )"));
+    }
+  }
+}
+
+static exp get_tuple(string_file str, <exp> list el)
+{
+  <exp>list temp;
+  <exp> list last_el = el;
+  token t = new token.ERROR("uninit");
+  
+  while (true) {
+    exp e = get_fexp(str);
+    
+    temp = ^List::list(e, null);
+    last_el.tl = temp;
+    last_el = temp;
+    
+    t = next_token(str);
+    
+    switch (t) {
+    case COMMA:
+      continue;
+    case RPAREN:
+      break;
+    default:
+      raise(^InternalError("(parse.pop) expecting , or ) (3) "));
+    }
+  }
+  return(^exp.ETuple(el));
+}
+
+static exp get_seq(string_file str, <exp> list el)
+{
+  <exp> list temp;
+  <exp> list last_el = el;
+  token t = new token.ERROR("uninit");
+  
+  while (true) {
+    exp e = get_fexp(str);
+    
+    temp = ^List::list(e, null);
+    last_el.tl = temp;
+    last_el = temp;
+    
+    t = next_token(str);
+    
+    switch (t) {
+    case SEMICOLON:
+      continue;
+    case RPAREN:
+      break;
+    default:
+      raise(^InternalError("(parse.pop) expecting ; or ) "));
+    }
+  }
+  return(^exp.ESequence(el));
+}
+
+static exp get_objlist(string_file str) {
+
+  switch (peek_token(str)) {
+  case RBRACKET:
+    next_token(str);
+    return(new exp.Val(new value.VList(null)));
+  default:
+    return(get_objlist2(str));
+  }
+}
+
+static exp get_objlist2(string_file str) {
+  exp e = get_fexp(str);
+  token t = next_token(str);
+
+  switch (t) {
+  case SEMICOLON:
+    return(new exp.Binop(new(new binop.CONS,e,get_objlist2(str))));
+  case RBRACKET:
+    return(new exp.Binop(new(new binop.CONS,e,
+			     new exp.Val(new value.VList(null)))));
+  default:
+    return(error_exp("(parse.pop) expecting , or ]"));
+  }
+}
+
+static void get_comma(string_file str) {
+  switch (next_token(str)) {
+  case COMMA:
+    return;
+  default:
+    err("(parse.pop) expecting , ");
+  }
+}
+
+static void get_lparen(string_file str) {
+  switch (next_token(str)) {
+  case LPAREN:
+    return;
+  default:
+    err("(parse.pop) expecting ( ");
+  }
+}
+
+static void get_rparen(string_file str) {
+  switch (next_token(str)) {
+  case RPAREN:
+    return;
+  default:
+    err("(parse.pop) expecting ) ");
+  }
+}
+
+static *(exp,exp,exp,exp) get_4args(string_file str) {
+
+  get_lparen(str);
+  exp e1 = get_fexp(str);
+  get_comma(str);
+  exp e2 = get_fexp(str);
+  get_comma(str);
+  exp e3 = get_fexp(str);
+  get_comma(str);
+  exp e4 = get_fexp(str);
+  get_rparen(str);
+  return(new(e1,e2,e3,e4));
+}
+
+static *(exp,exp,exp,exp,exp,exp) get_6args(string_file str) {
+  get_lparen(str);
+  exp e1 = get_fexp(str);
+  get_comma(str);
+  exp e2 = get_fexp(str);
+  get_comma(str);
+  exp e3 = get_fexp(str);
+  get_comma(str);
+  exp e4 = get_fexp(str);
+  get_comma(str);
+  exp e5 = get_fexp(str);
+  get_comma(str);
+  exp e6 = get_fexp(str);
+  get_rparen(str);
+  return(new(e1,e2,e3,e4,e5,e6));
+}
+
+static string get_str (string_file str)
+{
+  switch (next_token(str)) {
+  case Id(x): return x;
+  default: raise(^InternalError("get_id: expecting id of string"));
+  }
+}
+
+static *(string,exp,exp) get_1id2exps(string_file str) {
+  get_lparen(str);
+  string s1 = get_str(str);
+  get_comma(str);
+  exp e2 = get_fexp(str);
+  get_comma(str);
+  exp e3 = get_fexp(str);
+  get_rparen(str);
+  return(new(s1,e2,e3));
+}
+  
+
+/* binops: * / %   */
+static exp get_bexp(string_file str) {
+  exp e = get_aexp(str);
+
+  switch (peek_token(str)) {
+  case ASTERISK:
+    next_token(str);
+    return(new exp.Binop(new(new binop.TIMES,e,get_bexp(str))));
+  case DIV:
+    next_token(str);
+    return(new exp.Binop(new(new binop.DIV,e,get_bexp(str))));
+  case PERCENT:
+    next_token(str);
+    return(new exp.Binop(new(new binop.MOD,e,get_bexp(str))));
+  default:
+    return(e);
+  }
+}
+
+/* binops: + -  */
+static exp get_cexp(string_file str) {
+  exp e = get_bexp(str);
+
+  switch (peek_token(str)) {
+  case PLUS:
+    next_token(str);
+    return(new exp.Binop(new(new binop.PLUS,e,get_cexp(str))));
+  case MINUS:
+    next_token(str);
+    return(new exp.Binop(new(new binop.MINUS,e,get_cexp(str))));
+  default:
+    return(e);
+  }
+}
+
+/*
+ * keywords: or, and, xori, andi, ori
+ * = < <= <> << > >= >> ::
+ */
+static exp get_dexp(string_file str) {
+  exp e = get_cexp(str);
+
+  switch (peek_token(str)) {
+  case Keyword(k):
+    switch (k) {
+    case OR:
+      next_token(str);
+      return(new exp.Binop(new(new binop.OR,e,get_dexp(str))));
+    case AND:
+      next_token(str);
+      return(new exp.Binop(new(new binop.AND,e,get_dexp(str))));
+    case XORI:
+      next_token(str);
+      return(new exp.Binop(new(new binop.XORI,e,get_dexp(str))));
+    case ANDI:
+      next_token(str);
+      return(new exp.Binop(new(new binop.ANDI,e,get_dexp(str))));
+    case ORI:
+      next_token(str);
+      return(new exp.Binop(new(new binop.ORI,e,get_dexp(str))));
+    default: return(e);
+    }
+  case EQ:
+    next_token(str);
+    return(new exp.Binop(new(new binop.EQ,e,get_dexp(str))));
+  case LESS:
+    next_token(str);
+    switch (peek_token(str)) {
+    case EQ:
+      next_token(str);
+      return(new exp.Binop(new(new binop.LESSEQ,e,get_dexp(str))));
+    case GREATER:
+      next_token(str);
+      return(new exp.Binop(new(new binop.NOTEQ,e,get_dexp(str))));
+    case LESS:
+      next_token(str);
+      return(new exp.Binop(new(new binop.LSHIFT,e,get_dexp(str))));
+    default:
+      return(new exp.Binop(new(new binop.LESS,e,get_dexp(str))));
+    }
+  case GREATER:
+    next_token(str);
+    switch (peek_token(str)) {
+    case EQ:
+      next_token(str);
+      return(new exp.Binop(new(new binop.GREATEREQ,e,get_dexp(str))));
+    case GREATER:
+      next_token(str);
+      return(new exp.Binop(new(new binop.RSHIFT,e,get_dexp(str))));
+    default:
+      return(new exp.Binop(new(new binop.GREATER,e,get_dexp(str))));
+    }
+  case COLON:
+    next_token(str);
+    switch (next_token(str)) {
+    case COLON:
+      return(new exp.Binop(new(new binop.CONS,e,get_dexp(str))));
+    default: return(error_exp("(parse.pop) expecting :"));
+    }
+  default: return(e);
+  }
+}
+
+/* binop: ^ */
+static exp get_eexp(string_file str) {
+  exp e = get_dexp(str);
+
+  switch (peek_token(str)) {
+  case CARAT:
+    next_token(str);
+    return(new exp.Binop(new(new binop.CONCAT,e,get_eexp(str))));
+  default:
+    return(e);
+  }
+}
+
+/* if/then/else, raise, try/handle, let/in/end, (e1, e2, ...)
+ */
+exp get_fexp(string_file str) {
+  switch (peek_token(str)) {
+  case Keyword(k):
+    switch (k) {
+    case IF:
+      next_token(str);
+      exp e1 = get_fexp(str);
+      switch (next_keyword(str)) {
+      case THEN:
+	exp e2 = get_fexp(str);
+	switch (next_keyword(str)) {
+	case ELSE:
+	  exp e3 = get_fexp(str);
+	  return(new exp.If(new(e1,e2,e3)));
+	default: return(error_exp("(parse.pop) expecting else"));
+	}	  
+      default: return(error_exp("(parse.pop) expecting then"));
+      }
+    case RAISE:
+      next_token(str);
+      switch (next_token(str)) {
+      case Id(x):
+	return(new exp.Raise(x));
+      default: return(error_exp("(parse.pop) expecting <id>"));
+      }
+    case TRY:
+      next_token(str);
+      exp e1 = get_fexp(str);
+      switch (next_keyword(str)) {
+      case HANDLE:
+	switch (next_token(str)) {
+	case Id(x):
+	  switch (next_token(str)) {
+	  case EQ:
+	    switch (next_token(str)) {
+	    case GREATER:
+	      return(new exp.Try(new(e1,x,get_fexp(str))));
+	    default: return(error_exp("(parse.pop) expecting =>"));
+	    }
+	  default: return(error_exp("(parse.pop) expecting =>"));
+	  }
+	default: return(error_exp("(parse.pop) expecting <id>"));
+	}
+      default: return(error_exp("(parse.pop) expecting handle"));
+      }
+    case LET:
+      next_token(str);
+      <def> list d = get_deflist(str);
+      switch (next_keyword(str)) {
+      case IN:
+	exp e = get_fexp(str);
+	switch (next_keyword(str)) {
+	case END: return(new exp.Let(new(d,e)));
+	default:  return(error_exp("(parse.pop) expecting end"));
+	}
+      default: return(error_exp("(parse.pop) expecting in"));
+      }
+      /* what about keywords, e.g. TRUE, later on?  - Luke */
+      /* default: return(error_exp("(parse.pop) bad top exp")); */
+    default: return(get_eexp(str));
+    }
+
+    /*
+  case LPAREN:
+    next_token(str);
+    <exp> list es = get_sequence();
+    if (es == null) 
+      return(new exp.ETuple(es));
+    else if (es.next == null)
+      return(es.e);
+    else 
+      return(new exp.ETuple(es));
+    */
+
+  default:
+    return(get_eexp(str));
+  }
+}
+
+/* convert an Expression into a value */
+value valExp2val(exp e)
+{
+  switch(e) {
+  /* value */
+  case Val(v):
+    return v;
+  /* value list */
+  case Binop(b2):
+    switch (b2.1) {
+    case CONS: 
+      return ^value.VList(valExpList2valList(e));
+    default: raise InternalError("valExpList2valList: expecting Cons (1) \n");
+    }
+  /* tuple */
+  case ETuple(es):
+    <value>list res = List::map(fun value _(exp e){return valExp2val(e);}, es);
+
+    return ^value.VTuple(res);
+  default: raise InternalError("valExpList2valList: expecting Val or Binop (1)\n");
+  }
+}
+
+/* convert a list of Expression value into a list of values */
+<value> List::list valExpList2valList(exp e)
+{
+  switch (e) {
+  /* empty list */
+  case Val(v):
+    switch(v) {
+    case VList(x): return null;
+    default: raise InternalError("valExpList2valList: expecting empty list\n");
+    }
+  /* non-empty list */
+  case Binop(b):
+    switch (b.1) {
+    case CONS:
+      return ^List::list(valExp2val(b.2), valExpList2valList(b.3));
+    default: raise InternalError("valExpList2valList: expecting Cons (2) \n");
+    }
+  default: raise InternalError("valExpList2valList: expecting Val or Binop (2)\n");
+  }
+}
+  
+/* return: program, fn_to_exec, bindings, evalAddr, srcAddr, rb */
+pop_pkt deflist_to_pop_pkt(<def> list dl)
+{
+  <def> list prog = null, tmp;
+  string fn_to_exec = "main";
+  <value> List::list actuals = null;
+  string evalAddr = "evalAddr not specified in packet";
+  string srcAddr = "srcAddr not specified in packet";
+  int rb = 0;
+  pop_pkt pkt;
+  
+  if (dl != null) {
+    prog = ^List::list(dl.hd, null);
+    tmp = prog;
+    dl = dl.tl;
+    
+    while (dl != null) {
+
+      switch (dl.hd) {
+      case Fundef(fd):
+	tmp.tl = ^List::list(dl.hd, null);
+	tmp = tmp.tl;
+      case Exndef(ed):
+	tmp.tl = ^List::list(dl.hd, null);
+	tmp = tmp.tl;
+      case Valdef(vd):
+	if (strcmp(vd.var, "entry_fun") == 0) {
+	  switch(vd.exp) {
+	  case Val(v):
+	    switch(v) {
+	    case String(s): fn_to_exec = s;
+	    default: raise(^InternalError("entry_fun must be a string"));
+	    }
+	  default: raise(^InternalError("entry_fun must be a value"));
+	  }
+	} else
+	if (strcmp(vd.var, "entry_args") == 0) {
+	  switch(vd.exp) {
+	  case Val(v):
+	    switch(v) {
+	    case VList(x): actuals = null;
+	    default: raise(^InternalError("entry_args must be a value list (1)"));
+	    }
+	  case Binop(b):  actuals = valExpList2valList(vd.exp);
+	  default: raise(^InternalError("entry_args must be a list (2)"));
+	  }
+	} else
+	if (strcmp(vd.var, "entry_src") == 0) {
+	  switch(vd.exp) {
+	  case Val(v):
+	    switch(v) {
+	    case String(s): srcAddr = s;
+	    default: raise(^InternalError("entry_src must be a string"));
+	    }
+	  default: raise(^InternalError("entry_src must be a value"));
+	  }
+	} else
+	if (strcmp(vd.var, "entry_eval") == 0) {
+	  switch(vd.exp) {
+	  case Val(v):
+	    switch(v) {
+	    case String(s): evalAddr = s;
+	    default: raise(^InternalError("entry_eval must be a string"));
+	    }
+	  default: raise(^InternalError("entry_eval must be a value"));
+	  }
+	} else
+	if (strcmp(vd.var, "entry_rb") == 0) {
+	  switch(vd.exp) {
+	  case Val(v):
+	    switch(v) {
+	    case Int(i): rb = i;
+	    default: 
+	      raise(^InternalError(strconcat_l(^list("entry_rb must be a int: [",
+				       ^list(exp_to_str(vd.exp),
+				       ^list("]",
+					     null))))));
+	    }
+	  default: 
+	    raise(^InternalError(strconcat_l(^list("entry_rb must be a value: [",
+					   ^list(exp_to_str(vd.exp),
+					   ^list("]", null))))));
+	  }
+	} else {
+	  tmp.tl = ^List::list(dl.hd, null);
+	  tmp = tmp.tl;
+	}
+      }
+      dl = dl.tl;
+    }
+    return ^pop_pkt(prog, fn_to_exec, actuals, srcAddr, evalAddr, rb);
+  } else
+    raise(^InternalError("Definition list is empty"));
+}
+
+
+pop_pkt str_to_pop_pkt(string_file str)
+{
+  <def> list dl = null; 
+  exp expr;
+  pop_pkt pkt;
+
+  reset_topt();
+  dl = get_deflist(str);
+  pkt = deflist_to_pop_pkt(dl);
+  
+  switch (next_token(str)) {
+  case PEOF:
+    return pkt;
+  default:
+    raise(^InternalError("(parse.pop) expecting EOF "));
+  }
+}

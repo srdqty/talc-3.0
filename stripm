@@ -1,0 +1,15 @@
+#!/bin/sh
+
+TEMPFILE=stripm-temp
+
+if [ $# != 1 ]; then
+  echo "usage: $0 <filename>"
+fi
+
+if [ -f "$TEMPFILE" ] 
+  then echo "temp file exists"
+  else if [ -f "$1" ]
+    then awk '{ sub("\r$", ""); print }' $1 > $TEMPFILE
+         mv $TEMPFILE $1
+    fi
+fi

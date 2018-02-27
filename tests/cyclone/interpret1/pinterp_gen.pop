@@ -1,0 +1,132 @@
+/* TEMPO Version 1.190, 11/26/97, Copyright (c) IRISA/INRIA-Universite de Rennes */
+
+#include "core.h"
+
+struct inst { int opcode;
+              int val; }
+extern int p_mem[];
+extern int p_stack[];
+extern int p_prg_size;
+/*
+extern int exit();
+*/
+
+void pop_interpret_init() { return; }
+
+void pop_interpret_gen(inst prg [])/*0*/()  {
+  int pc = 0;
+  int sp = 0;
+
+  return codegen(
+    void interpret_1_spec()
+    {
+      cut pc = 0;
+	  
+      cut sp = 0;
+	  
+      cut 
+	if (pc < p_prg_size)
+	  splice 
+	{
+	  cut 
+	    do
+	      splice 
+	    {
+	      cut 
+		if ((prg[pc]).opcode == 0)
+		  splice 
+		{
+		  cut sp = sp + 1;
+		  {
+		    cut p_stack[sp] = (prg[pc]).val;
+		    
+		    p_stack[fill(sp)] = fill((prg[pc]).val);
+		  }
+		}
+		else
+		  splice 
+		{
+		  cut 
+		    if ((prg[pc]).opcode == 1)
+		      {
+			sp = sp - 1;
+		      }
+		    else
+		      splice 
+		    {
+		      cut 
+			if ((prg[pc]).opcode == 2)
+			  splice 
+			{
+			  p_stack[fill(sp - 1)] = p_stack[fill(sp)] + p_stack[fill(sp - 1)];
+			  cut sp = sp - 1;
+			}
+			else
+			  splice 
+			{
+			  cut 
+			    if ((prg[pc]).opcode == 3)
+			      splice 
+			    {
+			      p_stack[fill(sp - 1)] = p_stack[fill(sp - 1)] - p_stack[fill(sp)];
+			      cut sp = sp - 1;
+			    }
+			  
+			    else
+			      splice 
+			    {
+			      cut 
+				if ((prg[pc]).opcode == 4)
+				  splice 
+				{
+				  p_stack[fill(sp - 1)] = p_stack[fill(sp)] * p_stack[fill(sp - 1)];
+				  cut sp = sp - 1;
+				  
+				}
+			      
+				else
+				  splice 
+				{
+				  cut 
+				    if ((prg[pc]).opcode == 5)
+				      splice 
+				    {
+				      p_stack[fill(sp)] = p_mem[p_stack[fill(sp)]];
+				    }
+				  
+				    else
+				      splice 
+				    {
+				      cut 
+					if ((prg[pc]).opcode == 6)
+					  splice 
+					{
+					  p_mem[p_stack[fill(sp)]] = p_stack[fill(sp - 1)];
+					  cut sp = sp - 2;
+					}
+					else
+					  splice 
+					{
+			printf("\n Unrecognized instr: opcode->%d  pc->%d",
+						      fill(prg[pc].opcode),
+						      fill(pc));
+
+					  /*
+					    exit();
+					  */
+					}
+				    }
+				}
+			    }
+			}
+		    }
+		}
+	      cut pc = pc + 1;
+	    }
+	    while (pc < p_prg_size);
+	}
+      return;
+    }
+    );
+}
+

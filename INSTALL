@@ -1,0 +1,151 @@
+                                      TALC
+                                      ====
+
+Release 3.0
+Copyright
+    Greg Morrisett, Neal Glew, Dave Walker, Steve Zdancewic, Stephanie Weirich,
+    Frederick Smith, Dan Grossman, Trevor Jim, Luke Hornoff, and Michael Hicks.
+    September 2000 all rights reserved.
+
+This software should be considered pre-alpha.
+
+Building TALC and Popcorn
+=========================
+
+For Win32 you need:
+
+1) our big tarball
+2) Ocaml 3.0
+3) MASM 6.11  (not sure you need this anymore)
+4) Visual C++ (we use the command line C compiler and linker)
+5) GNU development tools, we use Cygnus cygwin32 beta 19 both
+   user tools and developer tools
+
+Note: Makefiles require GNU make.
+
+For Linux you need:
+
+1) our big tarball
+2) Ocaml 3.0
+3) GNU development tools
+
+Steps:
+
+1) Get ocamlc, ocamllex, ocamlyacc, ml (MASM's assembler), cl (C
+   compiler), link, and make into PATH.
+2) From a command prompt, type:
+     make 
+   This builds build/talc.exe, build/popcorn.exe, the popcorn
+   libraries, and the runtime using the Ocaml bytecode interpreter.
+   For a slightly longer build, but producing faster code, type
+   instead:
+     make NATIVE=X
+
+
+Sit back, drink a quick cup of coffee and three executables will
+magically appear in the build directory.
+
+Running
+=======
+
+1) Put the directory talc-2.0/build/ into PATH.  Also put ml and link
+   into PATH if you want object files and executables.
+2) Set the environment variable TALCLIB to talc-2.0/runtime.
+3) The executables are named talc.exe (for tal file checking),
+   and popcorn.exe.
+4) Run <tool> -help to get a listing of command line arguments.
+
+The popcorn.exe tools is fairly straightforward and acts a lot
+like a C compiler.  For example:
+
+  popcorn -c foo.pop
+
+compiles the file foo.pop producing five files:  foo.tal,
+foo_i.tali, foo_e.tali, foo.obj (or foo.o on Linux) and
+foo.to.  
+
+The foo.tal file contains the Typed Assembly Language for foo.  The
+foo_i.tali file contains an import interface for foo.tal, and
+foo_e.tali contains an export interface.  The interfaces are used when
+doing link-checking to make sure things are consistent.
+
+If you'll notice, popcorn invokes talc to compile foo.tal
+down to foo.obj (or foo.o).  This is a native COFF (resp. ELF)
+object file.  It also produces foo.to which is a binary
+representation of all of the typing annotations that were
+in the original foo.tal file.  
+
+You can run:
+
+  talc foo.to
+
+and this will type-check foo.obj (foo.o) by sucking it in,
+disassembling it, sucking in foo.to, adding all of the
+type annotations back in (thereby effectively reconstructing
+the foo.tal file), and then type-checking it.
+
+If you have a complete program, then you can call popcorn
+(or talc) to link the program.  You will need to supply
+libraries for the linking to succeed.  See the Makefile
+in the tests/popcorn directory for examples.
+
+Building the Tests:
+===================
+Go to the directory talc-2.0/tests/popcorn and type make.  This
+will produce a bunch of executables and check that they do the
+right thing.  You can also do this with the other tests.  This
+is a good place to look for how to build stand-alone Popcorn
+applications.  
+
+Building the Optimizing Popcorn Compiler:
+=========================================
+Go to the directory talc-2.0/apps/popcorn and type make.  
+(You need to have built the talc and old popcorn compiler first.)
+This will compile the optimizing Popcorn compiler 3 times.  
+The files are placed in talc-2.0/apps/popcorn/build and
+consist of popcorn_slow.exe, popcorn_fast.exe, and popcorn_strap.exe.
+The first time, the code of the compiler is slow (it was generated
+from the old compiler) but produces fast code.  The second
+time, the optimizing compiler is used in the build, so you
+get a faster compiler that produces fast code.  The third
+time should generate the same compiler as the second time --
+we do a diff to make sure we've reached a fixedpoint.  
+
+Notice that the libraries are re-built for each version
+of the compiler too.  This is because the optimizing 
+version of the compiler uses a slightly different
+calling convention than the old compiler.
+
+You can short-circuit all of this by typing "make oldall"
+which only builds the first version of the compiler.  
+
+You can use the optimizing compiler to go back and build
+the tests now.  In particular, set the "POP_IN_POP" flag
+(e.g., "make POP_IN_POP=X") to use the new compiler.
+
+Building the Cyclone Compiler:
+==============================
+Go to the directory talc-2.0/cyclone and type make.  You 
+need to have built talc, the old popcorn compiler, and the
+new popcorn compiler to do this.  
+
+The compiler is deposited in talc-2.0/cyclone/bin/cyclone.exe.
+
+You can go to the lib directory here and type make to build
+a test that compiles and tests all of the cyclone libraries.
+
+Windows 95 Hints
+================
+
+My autoexec.bat (for Win95) looks like this:
+
+SET MSVCDir=C:\Progra~1\DEVSTU~1\VC
+SET MSDevDir=C:\Progra~1\DEVSTU~1\SHARED~1
+SET PATH=d:\talc\build;d:\MASM611\bin;d:\gnu\H-I386~1\bin;%PATH%
+SET PATH=%MSDevDir%\BIN;%MSVCDir%\BIN;%MSVCDir%\BIN\WIN95;%PATH%
+SET INCLUDE=%MSVCDir%\INCLUDE;%MSVCDir%\MFS\INCLUDE;%MSVCDir%\ATL\INCLUDE
+SET LIB=%MSVCDir%\LIB;%MSVCDir%\MFS\LIB
+set MAKE_MODE=unix
+SET CYGFS=d:/gnu
+SET GCC_EXEC_PREFIX=d:\GNU\H-I386~1\lib\gcc-lib\
+SET TALCLIB=D:\talc\runtime

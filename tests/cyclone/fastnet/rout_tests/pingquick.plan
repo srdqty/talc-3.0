@@ -1,0 +1,8 @@
+(* for quick pings with minimal evaluation. You would send this with the
+   evalDest set to the host you want to ping. Note the absence of a 'reply'
+   function, as we create a return chunk to invoke the print service 
+   directly. Thus the return packet will have an empty code portion due to
+   pruning. *)
+fun ping (source) =
+  OnRemote (|print|("Success"), source, getRB (), defaultRoute)
+

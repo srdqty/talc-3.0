@@ -1,0 +1,149 @@
+
+////////////////////////////////////////////////////////////////////////////
+// scheme-- to TAL compiler written in popcorn, file smain.pop            //
+// Copyright Greg Morrisett, Dan Grossman                                 //
+// January 1999, all rights reserved                                      //
+// Ported from caml code Copyright June 1998, Morrisett, Glew, Weirich    //
+////////////////////////////////////////////////////////////////////////////
+
+// currently we only support compiling one file at a time
+
+// we include the world because we try to catch the world's exceptions
+// notice the ridiculous size of the resulting TAL file as a result
+// until we throw away unused externs
+#include "core.h"
+#include "list.h"
+#include "dict.h"
+#include "string.h"
+#include "arg.h"
+#include "lexing.h"
+
+#include "tal.h"
+#include "talpp.h"
+
+#include "slex.h"
+#include "sil.h"
+#include "sast.h"
+#include "scomp.h"
+
+open Core;
+open List;
+open Arg;
+open String;
+
+//SPARSE -- not created by bison
+extern <*(string, Sast::exp)>list Sparse::parse_program(FILE);
+extern exception Sparse::ParseError;
+
+// these are for passing to the args module
+static <string>list compile_these = null;
+static string   exe_file  = "";
+
+static void add_srcfile (string s) { compile_these = ^list(s,compile_these); }
+static void set_exe_file(string s) { exe_file = s; }
+
+// The Scheme compiler entry point
+void main() {
+  bool_ref assemble  = ^bool_ref(true);
+  bool_ref link      = ^bool_ref(true);
+  bool_ref use_masm  = ^bool_ref(false);
+
+  <*(string,spec,string)>list speclist =
+  ^list(^("-T",     ^spec.Clear(assemble),"generate TAL, do not assemble"),
+  ^list(^("-c",     ^spec.Clear(link),    "assemble, do not build executable"),
+  ^list(^("-o",     ^spec.String(set_exe_file), "output name"),
+  ^list(^("--MS",   ^spec.Set(use_masm),   "use microsoft assembler"),
+  ^list(^("--TALC", ^spec.Clear(use_masm), "use TALC assembler"),
+        null)))));
+
+  try 
+    parse(speclist, add_srcfile, 
+	  "Scheme (written in Popcorn): usage: <options> filename");
+  handle y switch y {
+  case Error: return;
+  default:    raise (y);
+  }
+  if (List::length(compile_these)!=1) {
+    fprint_string(tal_stderr, 
+		  "Currently, only one file may be compiled at a time.\n");
+    return;
+  }
+  string input_name  = compile_these.hd;
+  string output_name;
+  try {
+    output_name = replace_suffix(input_name, ".ss", ".tal");
+    if (size(exe_file)==0)
+      exe_file = replace_suffix(input_name, ".ss", ".exe");
+  } handle y switch y {
+    case InvalidArg(s): 
+      if (strcmp(s,"chop_suffix")==0) {
+	fprint_string(tal_stderr, "Filename must have extension .ss\n");
+	return;
+      }
+      raise(y);
+    default: raise (y);
+  }
+
+  try {
+    FILE fin = file_open(input_name,"r");
+    Slex::slex_init();
+    <*(string, Sast::exp)>list ast = Sparse::parse_program(fin);
+    file_close(fin);
+
+    Tal::tal_imp output = Scomp::code_gen(Sil::xprog(ast));
+    Talpp::pp_tal_imp(output_name, output);
+
+    string talc_str = 
+      strconcat("talc --std-lib sclib --std-lib stdlib cyclonelib.obj -o ", 
+      strconcat(exe_file, 
+      strconcat(assemble.v ? ""       : " --elaborate-only ",
+      strconcat(link.v     ? ""       : " -c ",
+      strconcat(use_masm.v ? " --MS " : " --TALC ",
+               output_name)))));
+    print_string(talc_str);
+    print_newline();
+    system(string_to_Cstring(talc_str));
+  }
+  handle y switch y {
+    case FileOpenError(s):
+      print_string("\n File open error:\t");
+      print_string(s);
+      print_newline();
+    case FileCloseError:
+      print_string("\n File close error\n");
+    case Sparse::ParseError:
+      print_newline();
+      print_string("Parse Error");
+      print_newline();
+    case Dict::Absent:
+      print_string("Dict.Absent\n");
+    case Sast::num_args(x):
+      Sast::print_arg_msg(x);
+    case Sil::compilerBug(s):
+      print_newline();
+      print_string(s);
+      print_newline();
+    case Scomp::undefined_var(v):
+      print_string("\n undefined var, line: ");
+      print_int(v.l);
+      print_newline();
+    case Talpp::Unimplemented(s):
+      print_string("\n unimplemented:\t");
+      print_string(s);
+    case InvalidArg(s):
+      print_string("\n invalid arg:\t");
+      print_string(s);
+    case List_empty:
+      print_string("\n List empty (compiler bug)\n");
+    case List_mismatch:
+      print_string("\n List mismatch (compiler bug)\n");
+    case Lexing::Error(s):
+      print_string(s);
+    case Slex::SlexError(s):
+      print_string(s);
+    default:
+      raise (y);
+  }
+}
+
+

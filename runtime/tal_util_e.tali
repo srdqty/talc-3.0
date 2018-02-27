@@ -1,0 +1,6 @@
+; TAL Language Stuff
+;
+; Copyright Greg Morrisett, Neal Glew
+;  January 1999, all rights reserved
+
+	VAL	_tal_exit,<All[r:Ts].code{esp:sptr B4::r}>

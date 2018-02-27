@@ -1,0 +1,418 @@
+#include "top.h"
+#include "affine.h"
+
+#include "core.h"
+#include "list.h"
+#include "dict.h"
+
+#include "point.h"
+
+#define id string
+#define list List::list
+#define env <value>list
+
+#define print_id print_string
+
+open Core;
+
+prefix Gmlsyntax;
+open Gmlsyntax;
+
+/* Primitives taking one float argument. */
+union prim_fp1 {
+  void Acos;
+  void Asin;
+  void Clampf;
+  void Cos;
+  void Floor;
+  void Frac;
+  void Sin;
+  void Sqrt;
+}
+
+union prim_fp2 {
+  void Addf;
+  void Divf;
+  void Eqf;
+  void Lessf;
+  void Mulf;
+  void Subf;
+}
+
+union prim_i2 {
+  void Addi;
+  void Divi;
+  void Eqi;
+  void Lessi;
+  void Modi;
+  void Muli;
+  void Subi;
+}
+
+union prim_obj {
+  void Cone;
+  void Cube;
+  void Cylinder;
+  void Plane;
+  void Sphere;
+}
+
+union prim_obj1 { /* Perhaps we should have a type X or Y or Z and one prim. */
+  void Rotatex;
+  void Rotatey;
+  void Rotatez;
+  void Uscale;
+}
+
+union prim_obj2 {
+  void Difference;
+  void Intersect;
+  void Union;
+}
+
+union prim_point {
+  void Getx;
+  void Gety;
+  void Getz;
+}
+
+union prim {
+  void Apply;
+  void Get;
+  void If;
+  void Length;
+  void Light;
+  void Negi;
+  void Negf;
+  void Point;
+  void Pointlight;
+  void Print;
+  void Real;
+  void Render;
+  void Scale;
+  void Spotlight;
+  void Translate;
+  prim_fp1   Fp1;
+  prim_fp2   Fp2;
+  prim_i2    I2;
+  prim_obj   Obj;
+  prim_obj1  Obj1;
+  prim_obj2  Obj2;
+  prim_point Prim_Point;
+}
+
+union syn {
+  id Sid;
+  id Sbind;
+  value Spush;
+  <syn>list Sfun;
+  <syn>list Sarray;
+  prim Sprim;
+}
+
+union token {
+  int Tid;
+  void Tbinder;
+  value Tpush;
+  <token>list Tfun;
+  <token>list Tarray;
+  prim Tprim;
+  void ArrayDone;
+}
+
+union value {
+  void Marker;
+  bool Vbool;
+  int  Vint;
+  FP   Vfp;
+  string Vstring;
+  *(env,<token>list) Vclos;
+  *(env,void f(env)) Vclos_rtcg;
+  value Varray[];
+  Point::point Vpoint;
+  light Vlight;
+  obj Vobj;
+}
+
+
+union solid {
+  void Sphere;
+  void Cube;
+  void Cylinder;
+  void Cone;
+  void Plane;
+}
+
+struct surf {
+  color s_color;
+  FP s_kdiff;
+  FP s_kspec;
+  FP s_phong;
+}
+
+struct base {
+  value o_clos;
+  solid o_solid;
+}
+
+union obj {
+  base Base;
+  *(obj,obj) Union;
+  *(obj,obj) Inter;
+  *(obj,obj) Diff;
+  *(Affine::t,obj) Trans;
+}
+
+struct ldir {
+  Point::point ld_dir;
+  color  ld_color;
+}
+
+struct lpoint {
+  Point::point lp_pos;
+  color lp_color;
+}
+
+struct lspot {
+  Point::point ls_pos;
+  Point::point ls_at;
+  color  ls_color;
+  degree ls_cutoff;
+  FP     ls_exp;
+}
+
+union light {
+  ldir Ldir;
+  lpoint Lpoint;
+  lspot Lspot;
+}
+
+// Environment functions ......................................................
+env empty_env() {
+  return null;
+}
+
+env extend(env e, value v) {
+  return ^list(v,e);
+}
+
+value lookup(env e, int i) {
+ for(;e != null && i>0;) {
+   e=e.tl;
+   i--;
+   }
+
+ if(e==null) raise GMLFailure("Unbound variable.");
+
+ return e.hd;
+}
+
+// Pretty printing .............................................................
+
+string prim_to_string(prim p) {
+  switch p {
+  case Apply: return "apply";
+  case Get: return "get";
+  case If: return "if";
+  case Length: return "length";
+  case Light: return "light";
+  case Negi: return "negi";
+  case Negf: return "negf";
+  case Point: return "point";
+  case Pointlight: return "pointlight";
+  case Print: return "print";
+  case Real: return "real";
+  case Render: return "render";
+  case Scale: return "scale";
+  case Spotlight: return "spotlight";
+  case Translate: return "translate";
+  case Fp1(x):
+    switch x {
+    case Acos: return "acos";
+    case Asin: return "asin";
+    case Clampf: return "clampf";
+    case Cos: return "cos";
+    case Floor: return "floor";
+    case Frac: return "frac";
+    case Sin: return "sin";
+    case Sqrt: return "sqrt";
+    }
+  case Fp2(x):
+    switch x {
+    case Addf: return "addf";
+    case Divf: return "divf";
+    case Eqf: return "eqf";
+    case Lessf: return "lessf";
+    case Mulf: return "mulf";
+    case Subf: return "subf";
+    }
+  case I2(x):
+    switch x {
+    case Addi: return "addi";
+    case Divi: return "divi";
+    case Eqi: return "eqi";
+    case Lessi: return "lessi";
+    case Modi: return "modi";
+    case Muli: return "muli";
+    case Subi: return "subi";
+    }
+  case Obj(x):
+    switch x {
+    case Cone: return "cone";
+    case Cube: return "cube";
+    case Cylinder: return "cylinder";
+    case Plane: return "plane";
+    case Sphere: return "sphere";
+    }
+  case Obj1(x):
+    switch x {
+    case Rotatex: return "rotatex";
+    case Rotatey: return "rotatey";
+    case Rotatez: return "rotatez";
+    case Uscale : return "uscale";
+    }
+  case Obj2(x):
+    switch x {
+    case Difference: return "difference";
+    case Intersect: return "intersect";
+    case Union: return "union";  
+    }
+  case Prim_Point(x):
+    switch x {
+    case Getx: return "getx";
+    case Gety: return "gety";
+    case Getz: return "getz";
+    }
+  }
+}
+
+void pr_list<a>(bool parens, string sep, void pr_a(a), <a>list elts) {
+  if(parens) printf("(");
+
+  if(elts!=null) {
+    for(; elts.tl!=null;elts=elts.tl) {
+      pr_a(elts.hd);
+      print_string(sep);
+    }
+    pr_a(elts.hd);
+  }
+
+  if(parens) printf(")");
+}
+
+
+void print_syn(syn s) {
+  switch s {
+  case Sid(s): print_id(s);
+  case Sbind(s): print_string("/"); print_id(s);
+  case Spush(v): print_value(v);
+  case Sfun(ss): 
+    print_string("{");
+    pr_list(false," ",print_syn,ss);
+    print_string("}");
+  case Sarray(ss): 
+    print_string("{");
+    pr_list(false," ",print_syn,ss);
+    print_string("}");
+  case Sprim(p): print_string(prim_to_string(p)); print_string("*");
+  }
+}
+
+void print_token(token t) {
+  switch t {
+  case Tid(i): printf("<%d>",i);;
+  case Tbinder: print_string("/");
+  case Tpush(v): print_value(v);
+  case Tfun(ts): 
+    print_string("{");
+    pr_list(false," ",print_token,ts);
+    print_string("}");
+  case Tarray(ts): 
+    print_string("{");
+    pr_list(false," ",print_token,ts);
+    print_string("}");
+  case Tprim(p): print_string(prim_to_string(p)); print_string("*");
+  case ArrayDone: printf("array");
+  }
+}
+
+void print_value(value v) {
+  switch v {
+  case Marker: printf("|");
+  case Vbool(b): if(b) print_string("true"); else printf("false");
+  case Vint(i): printf("%di",i);
+  case Vfp(f): print_fp(f); printf("f");
+  case Vstring(s): printf("\"%s\"",s);
+  case Vclos *(e,ts): printf("{ closure }");
+  case Vclos_rtcg (_): printf("{ RTCG closure }");
+  case Varray(vs):
+    printf("[");
+    for(int i=0; i < size(vs); ++i) {
+      print_value(vs[i]);
+      printf(" ");
+    }
+    printf("]");
+  case Vpoint(p): Point::print(p);
+  case Vlight(l): printf("light");
+  case Vobj(o): printf("object");
+  }
+}
+
+void print_env(bool nl, env e) {
+  int i=0;
+  for(;e!=null;e=e.tl, i++) {
+    printf("\%d = ",i);
+    print_value(e.hd);
+    if(nl) printf("\n");
+    else printf(" ");
+  }
+}
+
+void print_machine(env e,<value>list vs,<token>list ts) {
+  printf("\nENV = ");
+  print_env(true,e);
+  printf("\nSTACK = ");
+  pr_list(false," :: ", print_value, vs);
+  printf("\nINSTRUCTIONS = ");
+  pr_list(false," ", print_token,ts);
+  printf("\n");
+  fflush(tal_stdout);
+}
+
+
+<token>list syn_to_token(<syn>list s,<id>list ids) {
+  <token>list t = null;
+  token t_hd;
+
+  for(;s!=null; s=s.tl) {
+    switch s.hd {
+    case Sid(s): 
+      // lookup s in ids;
+      _ x = ids;
+      int i = 0;
+      for(; x!=null; x=x.tl, i++) {
+	if(strcmp(x.hd,s)==0) {
+	  break;
+	}
+      }
+
+      if(x==null) {
+	printf("Unbound variable %s.",s);
+	raise(^GMLFailure("Unbound variable."));
+      }
+
+      t_hd = ^token.Tid(i);
+    case Sbind(s):
+      ids = ^list(s,ids);
+      t_hd = ^token.Tbinder;
+    case Spush(v): t_hd = ^token.Tpush(v);
+    case Sfun(ss): t_hd = ^token.Tfun(syn_to_token(ss,ids));
+    case Sarray(ss): t_hd = ^token.Tarray(syn_to_token(ss,ids));
+    case Sprim(p): t_hd = ^token.Tprim(p);
+    }
+
+    t = ^list(t_hd,t);
+  }
+  return List::imp_rev(t);
+}
+

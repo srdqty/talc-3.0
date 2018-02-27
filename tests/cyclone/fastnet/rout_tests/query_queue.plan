@@ -1,0 +1,13 @@
+(* see what the router queue looks like *)
+fun reply(l,s,dp) =
+  (print("Length = "); print(l);
+   print("\nMax length = "); print(s);
+   print("\nDropped packets = "); print(dp); print("\n"))
+
+svc getQueueLength : void -> int
+svc getQueueSize : void -> int
+svc getDroppedPackets : void -> int
+
+fun qstat() =
+  OnRemote(|reply|(getQueueLength(),getQueueSize(),getDroppedPackets()),
+           getSource(),getRB(),defaultRoute)

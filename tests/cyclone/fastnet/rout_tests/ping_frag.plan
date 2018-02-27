@@ -1,0 +1,16 @@
+(* ping with a payload and fragmentation support *)
+fun ret (source,b) =
+  OnRemote (|print|("Success"), source, getRB (), defaultRoute)
+
+fun sendem (c,x:int*host) =
+  (OnRemote(c,snd x,fst x,defaultRoute);x)
+
+svc fragment : ('a chunk,int) -> unit chunk list
+svc fragment_overhead : int
+  
+fun ping(source, dest, b) =
+  let val c = |ret|(source,b)
+      val cs = fragment(c,100+fragment_overhead)
+      val l = length(cs) in
+   (foldr(sendem,cs,(getRB()/l,dest)); ())
+  end

@@ -1,0 +1,13 @@
+(* ping with fragmentation support, where the fragments are sent reliably *)
+svc generateKey : void -> key
+svc sendAck : ('a chunk,key,int) -> unit chunk
+svc fragment : ('a chunk,int) -> unit chunk list
+svc fragment_overhead : int
+
+fun rel_deliver(dest, c) =
+  let val seq = generateKey() 
+      val d = sendAck(c,seq,10)
+      val ds = fragment(d,fragment_overhead) in
+    RetransOnRemote(ds,seq,3,dest,20,defaultRoute)
+  end
+

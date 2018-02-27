@@ -1,0 +1,7 @@
+
+fun f(i : int, j: int) : unit = (i, j)
+
+fun go(x : unit, y : unit) : unit = f(1, y)
+
+val entry_fun  : unit = "go"
+val entry_args : unit = [3; 4]

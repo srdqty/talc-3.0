@@ -1,0 +1,105 @@
+#include "unixsupport.h"
+
+extern string unix_error_string(int errno);
+extern int unix_open(string filename, void *flags, void *mflags); 
+extern void unix_close(int fd);
+extern void unix_set_nonblock(int fd);
+extern void unix_clear_nonblock(int fd);
+extern int unix_read(int fd, string buf, int ofs, int len);
+extern int unix_write(int fd, string buf, int ofs, int len);
+
+extern int unix_writev(int fd, void *buffers[], int numBufs);
+
+extern void unix_unlink(string path);
+extern string unix_getcwd(void);
+extern string unix_readlink(string path);
+extern string unix_mmap(int fd, int file_ofs, int length);
+extern void unix_munmap(string mapped_str);
+
+extern void unix_stat(string filename, void *sb_ret);
+
+extern void unix_chdir(string path);
+
+extern void *unix_getpwnam(string name);
+extern void *unix_getpwuid(int uid);
+
+extern int unix_getuid(void);
+extern int unix_geteuid(void);
+extern void unix_setuid(int uid);
+extern void unix_setgid(int gid);
+
+extern void unix_gettimeofday(void *td);
+
+extern int unix_time(void);
+
+extern void *unix_gmtime(int clockval);
+extern void *unix_localtime(int clockval);
+extern int unix_strftime(string, int, string, void *tm);
+
+extern void *unix_empty_set(void);
+extern void unix_fd_clr(int fd, void *set);
+extern int unix_fd_isset(int fd, void *set);
+extern void unix_fd_set(int fd, void *set);
+extern void unix_fd_zero(void *set);
+extern void unix_copy_fd_set(void *dst, void *src);
+
+extern int unix_select(int max_fd, void *read_fds, void *write_fds, 
+		       void *except_fds, void *timeout);
+
+extern void unix_chroot(string path);
+extern int unix_fork(void);
+extern void exit(int code);
+
+extern void *unix_waitpid(int flags[], int pid);
+
+extern void unix_signal(void *what, int which);
+extern string unix_signal_string(int which);
+
+extern void *unix_accept(int fd);
+extern void unix_bind(int fd, void *saddr);
+extern void unix_connect(int fd, void *saddr);
+extern void unix_listen(int fd, int backlog);
+
+extern int unix_recv(int fd, string buf, int ofs, int len, 
+		     int flags[]);
+extern void *unix_recvfrom(int fd, string buf, int ofs,
+			   int len, int flags[]);
+extern int unix_send(int fd, string buf, int ofs, int len, 
+		     int flags[]);
+extern int unix_sendto(int fd, string buf, int ofs, int len,
+		       int flags[], void *dest);
+
+extern int unix_socket(int dom, int typ, int proto);
+
+extern int unix_getsockopt(int fd, int flag);
+extern void unix_setsockopt(int fd, int flag, int value);
+
+extern void *unix_gethostbyname(string hostname);
+extern void *unix_gethostbyaddr(int addr);
+
+extern string unix_inet_ntoa(int addr);
+
+extern int random(void); 
+extern int srandom(int seed);
+
+extern int getpagesize(void);
+
+extern void unix_getrlimit(int res, void* ret_curmax);
+extern void unix_setrlimit(int res, void* ret_curmax);
+
+extern int unix_socketpair(int dom, int typ, int proto, void *sv);
+extern void unix_execv(string path, void *args);
+
+extern int unix_dup(int fd);
+extern void unix_dup2(int fd, int new_fd);
+extern int unix_fd_setsize;
+
+extern void* unix_opendir(string name);
+extern void unix_closedir(void* dirp);
+extern int unix_readdir(void* dirp,void* de);
+extern void unix_rewinddir(void* dirp);
+extern void unix_seekdir(void* dirp, int pos);
+extern int unix_telldir(void* dirp);
+extern int unix_dirfd(void* dirp);
+
+/*************************************************************************/

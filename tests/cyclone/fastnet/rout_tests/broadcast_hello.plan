@@ -1,0 +1,22 @@
+(* broadcasts packets on an interface which print 'hello' on all neighbors *)
+fun doit() : unit=
+  let val d : unit= hd (getDevs()) in
+	(print(d); print("\n"))
+  end
+(*
+  OnNeighbor(|remotePrint|(hd thisHost()),broadcast_addr,2,d)
+*)
+
+ 
+(*
+svc toString : 'a -> string
+svc print : 'a -> unit
+svc getSrcDev : void -> dev
+*)
+
+fun remotePrint(src) : unit=
+  let val s : unit= toString(thisHost()) ^ " says : Hello world!\n" in
+    OnNeighbor(|print|(s),src,1,getSrcDev())
+  end
+
+fun main() : unit = doit()

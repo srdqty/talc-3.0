@@ -1,0 +1,741 @@
+/* copyright (c) 1998, Greg Morrisett
+ * eval.pop:  evaluator for the calculator example Popcorn program
+ *   includes the state of the calculator
+ *
+ * imports:
+ *   eqstring               -- from calclib.c
+ *   print_string,print_int -- from stdlib.c
+ *   types operator, exp, fundef    -- from parse.pop
+ *   type token -- from lex.c
+ *   peek_token, next_token, print_token -- from lex.c
+ *   
+ * exports:
+ *   int eval(exp)
+ */
+
+#include <list.h>
+#include <string.h>
+#include <tal_sockets.h>
+
+open Core;
+open List;
+open Env;
+open String;
+
+#include "planbase.h"
+#include "absyn.h"
+#include "parse.h"
+#include "env.h"
+#include "svc.h"
+#include "network.h"
+
+/******************************************************************************
+ * eval
+ *****************************************************************************/
+
+value eval_value(value v) {
+  switch(v) {
+  case Unit: return v;
+  case Int(i): return v;
+  case Char(c): return v;
+  case String(s): return v;
+  case Bool(b): return v;
+  case VTuple(vl): return(new value.VTuple(eval_valuelist(vl)));
+  case VList(vl): return(new value.VList(eval_valuelist(vl)));
+  case VChunk(c): return v;
+  }
+}
+
+<value> list eval_valuelist(<value> list vl) {
+  if (vl != null)
+    {
+      <value> list new_vl = ^list(eval_value(vl.hd),
+					      eval_valuelist(vl.tl));
+      return new_vl;
+    }
+  else
+    return null;
+}
+
+value eval_unop(unop op, value v)
+{
+  switch(op) {
+  case NEG:
+    switch (v) {
+    case Int(i):
+      return(^value.Int(-i));
+    default: 
+      raise(^InternalError("(eval_unop): NEG argument must be an Int"));
+    }
+  case NOT:
+    switch (v) {
+    case Bool(b):
+      return(new value.Bool(!b));
+    default:
+      raise(^InternalError("(eval_unop): NOT argument must be a Bool"));  
+    }
+
+  case HD:
+    switch (v) {
+    case VList(vl):
+      return(vl.hd);
+    default:
+      raise(^InternalError("(eval_unop): HD argument must be a List"));  
+    }
+
+  case TL:
+    switch (v) {
+    case VList(vl):
+      return(new value.VList(vl.tl));
+    default:
+      raise(^InternalError("(eval_unop): TL argument must be a List"));  
+    }
+
+  case FST:
+    switch (v) {
+    case VTuple(vl):
+      return(vl.hd);
+    default:
+      raise(^InternalError("(eval_unop): FST argument must be a Tuple"));  
+    }
+
+  case SND:
+    switch (v) {
+    case VTuple(vl):
+      return(new value.VTuple(vl.tl));
+    default:
+      raise(^InternalError("(eval_unop): SND argument must be a Tuple"));  
+    }
+
+  case NTH(n):
+    switch (v) {
+    case VTuple(vl):
+      
+      while (n-- > 0)
+	if (vl != null)
+	  vl = vl.tl;
+      
+      if (vl == null)
+	return(^value.VTuple(null));
+      else
+	return(vl.hd);
+
+    default:
+      raise(^InternalError("(eval_unop): NTH(n) argument must be a Tuple"));  
+    }
+
+  case NOTI:
+    switch (v) {
+    case Int(i):
+      if (i == 0)
+	return(^value.Int(1));
+      else
+	return(^value.Int(0));
+    default:
+      raise(^InternalError("(eval_unop): NOTI argument must be an Int"));  
+    }
+
+  case EXPLODE:
+    switch (v) {
+    case String(s): {
+      int i;
+      <value> list vl = null;
+
+      for(i = size(s) - 1; i >= 0; i--) {
+	<value> list tmp = ^list(^value.Char(s[i]), vl);
+	vl = tmp;
+      }
+      return(new value.VList(vl));
+    }
+    default:
+      raise(^InternalError("(eval_unop): EXPLODE argument must be String"));
+    }
+
+  case IMPLODE:
+    switch (v) {
+    case VList(vl):
+      {
+	string str = new_string(MAX_LST_LEN);
+	int len = 0;
+	
+	while (vl != null) {
+	  switch (vl.hd) {
+	  case Char(c):
+	    str[len++] = c;
+	    vl = vl.tl;
+	  default:
+	    raise(^InternalError("(eval_unop): IMPLODE argument must be a Char List"));
+	  }
+	}
+	return(new value.String(String::substring(str,0,len)));
+      }
+    default:
+      raise(^InternalError("(eval_unop): IMPLODE argument must be a List"));
+    }
+
+  case ORD:
+    switch (v) {
+    case Char(c):
+      return(new value.Int(ord(c)));
+    default:
+      raise(^InternalError("(eval_unop): ORD argument must be Char"));  
+    }
+
+  case CHR:
+    switch (v) {
+    case Int(i):
+      return(new value.Char(chr(i)));
+    default:
+      raise(^InternalError("(eval_unop): CHR argument must be Int"));  
+    }
+  }
+}
+
+value eval_binop(binop op, value v1, value v2)
+{
+  switch(op) {
+  case PLUS:
+    switch (v1) {
+    case Int(i1): 
+      switch (v2) {
+      case Int(i2):
+	return(new value.Int(i1 + i2));
+      default:
+	raise(^InternalError("(eval_binop): PLUS: 1st operand not integer"));
+      }
+    default:
+      raise(^InternalError("(eval_binop): PLUS: 2nd operand not integer"));
+    }
+  case MINUS:
+    switch (v1) {
+    case Int(i1): 
+      switch (v2) {
+      case Int(i2):
+	return(new value.Int(i1 - i2));
+      default:
+	raise(^InternalError("(eval_binop): MINUS: 1st operand not integer"));
+      }
+    default:
+      raise(^InternalError("eval_binop: MINUS: 2nd operand not integer"));
+    }
+  case TIMES:
+    switch (v1) {
+    case Int(i1): 
+      switch (v2) {
+      case Int(i2):
+	return(new value.Int(i1 * i2));
+      default:
+	raise(^InternalError("(eval_binop): TIMES: 1st operand must be an Int"));
+      }
+    default:
+      raise(^InternalError("(eval_binop): TIMES: 2nd operand must be an Int"));
+    }
+  case DIV: 
+    switch (v1) {
+    case Int(i1): 
+      switch (v2) {
+      case Int(i2):
+	return(new value.Int(i1 / i2));
+      default:
+	raise(^InternalError("(eval_binop): DIV: 1st operand must be an Int"));
+      }
+    default:
+      raise(^InternalError("(eval_binop): DIV: 2nd operand must be an Int"));
+    }
+  case MOD:
+    switch (v1) {
+    case Int(i1): 
+      switch (v2) {
+      case Int(i2):
+	return(new value.Int(i1 % i2));
+      default:
+	raise(^InternalError("(eval_binop): MOD: 1st operand must be an Int"));
+      }
+    default:
+      raise(^InternalError("(eval_binop): MOD: 2nd operand must be an Int"));
+    }
+
+  case AND:
+    switch (v1) {
+    case Bool(b1): 
+      switch (v2) {
+      case Bool(b2):
+	return(new value.Bool(b1 && b2));
+      default:
+	raise(^InternalError("(eval_binop): AND: 1st operand must be a Bool"));
+      }
+    default:
+      raise(^InternalError("(eval_binop): AND: 2nd operand must be a Bool"));
+    }
+  case OR:
+    switch (v1) {
+    case Bool(b1): 
+      switch (v2) {
+      case Bool(b2):
+	return(new value.Bool(b1 || b2));
+      default:
+	raise(^InternalError("(eval_binop): OR: 1st operand must be a Bool"));
+      }
+    default:
+      raise(^InternalError("(eval_binop): OR: 2nd operand must be a Bool"));
+    }
+  case LESS:
+    switch (v1) {
+    case Int(i1): 
+      switch (v2) {
+      case Int(i2):
+	return(new value.Bool(i1 < i2));
+      default:
+	raise(^InternalError("(eval_binop): LESS: 1st operand must be an Int"));
+      }
+    default:
+      raise(^InternalError("(eval_binop): LESS: 2nd operand must be an Int"));
+    }
+  case LESSEQ:
+    switch (v1) {
+    case Int(i1): 
+      switch (v2) {
+      case Int(i2):
+	return(new value.Bool(i1 <= i2));
+      default:
+	raise(^InternalError("(eval_binop): LESSEQ: 1st operand must be an Int"));
+      }
+    default:
+      raise(^InternalError("(eval_binop): LESSEQ: 2nd operand must be an Int"));
+    }
+  case GREATER:
+    switch (v1) {
+    case Int(i1): 
+      switch (v2) {
+      case Int(i2):
+	return(new value.Bool(i1 > i2));
+      default:
+	raise(^InternalError("(eval_binop): GREATER:1st operand must be an Int"));
+      }
+    default:
+      raise(^InternalError("(eval_binop): GREATER: 2nd operand must be an Int"));
+    }
+  case GREATEREQ:
+    switch (v1) {
+    case Int(i1): 
+      switch (v2) {
+      case Int(i2):
+	return(new value.Bool(i1 >= i2));
+      default:
+	raise(^InternalError("(eval_binop): GREATEREQ:1st operand must be an Int"));
+      }
+    default:
+      raise(^InternalError("(eval_binop): GREATEREQ: 2nd operand must be an Int"));
+    }
+  case EQ:
+    switch (v1) {
+    case Int(i1): 
+      switch (v2) {
+      case Int(i2):
+	return(new value.Bool(i1 == i2));
+      default:
+	raise(^InternalError("(eval_binop): EQ: 1st operand must be an Int"));
+      }
+    default:
+      raise(^InternalError("(eval_binop): EQ: 2nd operand must be an Int"));
+    }
+  case NOTEQ:
+    switch (v1) {
+    case Int(i1): 
+      switch (v2) {
+      case Int(i2):
+	return(new value.Bool(i1 != i2));
+      default:
+	raise(^InternalError("(eval_binop): NOTEQ: 1st operand must be an Int"));
+      }
+    default:
+      raise(^InternalError("(eval_binop): NOTEQ: 2nd operand must be an Int"));
+    }
+
+  case LSHIFT:
+    switch (v1) {
+    case Int(i1): 
+      switch (v2) {
+      case Int(i2):
+	return(new value.Int(i1 << i2));
+      default:
+	raise(^InternalError("(eval_binop): LSHIFTI: 1st operand must be an Int"));
+      }
+    default:
+      raise(^InternalError("(eval_binop): LSHIFTI: 2nd operand must be an Int"));
+    }
+
+  case RSHIFT:
+    switch (v1) {
+    case Int(i1): 
+      switch (v2) {
+      case Int(i2):
+	return(new value.Int(i1 >> i2));
+      default:
+	raise(^InternalError("(eval_binop): RSHIFTI: 1st operand must be an Int"));
+      }
+    default:
+      raise(^InternalError("(eval_binop): RSHIFTI: 2nd operand must be an Int"));
+    }
+
+  case XORI:
+    switch (v1) {
+    case Int(i1): 
+      switch (v2) {
+      case Int(i2):
+	return(new value.Int(i1 ^ i2));
+      default:
+	raise(^InternalError("(eval_binop): XORI: 1st operand must be an Int"));
+      }
+    default:
+      raise(^InternalError("(eval_binop): XORI: 2nd operand must be an Int"));
+    }
+
+  case ANDI:
+    switch (v1) {
+    case Int(i1): 
+      switch (v2) {
+      case Int(i2):
+	return(new value.Int(i1 & i2));
+      default:
+	raise(^InternalError("(eval_binop): ANDI: 1st operand must be an Int"));
+      }
+    default:
+      raise(^InternalError("(eval_binop): ANDI: 2nd operand must be an Int"));
+    }
+
+  case ORI:
+    switch (v1) {
+    case Int(i1): 
+      switch (v2) {
+      case Int(i2):
+	return(new value.Int(i1 | i2));
+      default:
+	raise(^InternalError("(eval_binop): ORI: 1st operand must be an Int"));
+      }
+    default:
+      raise(^InternalError("(eval_binop): ORI: 2nd operand must be an Int"));
+    }
+
+  case CONS:   
+    switch (v2) {
+    case VList(vl2): 
+      if (vl2 == null)
+	return(new value.VList(^list(v1, null)));
+      else
+	/* TODO: add typechecking here! */
+	return(new value.VList(^list(v1, vl2)));
+    default:
+      raise(^InternalError("(eval_binop): CONS: 2nd operand must be an List"));
+    }
+  case CONCAT:
+    switch (v1) {
+    case String(s1): 
+      switch (v2) {
+      case String(s2):
+	return(new value.String(Core::strconcat(s1, s2)));
+      default:
+	raise(^InternalError("(eval_binop): CONCAT: 1st operand must be a string"));
+      }
+    default:
+      raise(^InternalError("(eval_binop): CONCAT: 2nd operand must be a string"));
+    }
+  }
+}
+
+
+/* evaluate the expression returning an value */
+/* value eval_exp(exp expr, environ env, pop_pkt ppkt) { */
+value eval_exp(exp expr, <environ> list env, pop_pkt ppkt) {
+
+  switch(expr) {
+  /* constants */
+  case Val(v):
+    return v;
+  case Var(id):
+    switch (Env::lookup(id, env, Svc::svc_env)) {
+    case Varbind(v):
+      return v;
+    default:
+      raise(^InternalError(Core::strconcat("(eval_exp): var not bound to value: ", id)));
+    }
+  case ETuple(el):
+    return(new value.VTuple(eval_explist(el, env, ppkt)));
+  case ESequence(el):
+    {
+      value last = ^value.Unit;
+      
+      while(el != null) {
+	last = eval_exp(el.hd, env, ppkt);
+	el = el.tl;
+      }
+      return(last);
+    }
+  case App(a):
+    <value> list actuals = eval_explist(a.2, env, ppkt);
+    switch (Env::lookup(a.1, env, Svc::svc_env)) {
+    case Varbind(v):
+      raise(^InternalError(sprintf("(eval_exp): app fun cannot be a value: %s", a.1)));
+    case Funbind(fd):
+      /* environ new_env = Env::add_actuals(fd.1, actuals, fd.4); */
+      <environ> list new_env = Env::add_actuals(fd.1, actuals, fd.4);
+      return(eval_exp(fd.3, new_env, ppkt));
+    case Exnbind(str): 
+      raise(^InternalError("(eval_exp): app fun cannot be an exception: "));
+    case Svcbind(str):
+      return(Svc::eval_svc(str, actuals, ppkt));
+    }
+  case EChunk(c):
+    <value> list actuals = eval_explist(c.2, env, ppkt);
+
+    return(new value.VChunk(^(c.1, actuals, ppkt.program)));
+  case Unop(u):
+    return(eval_unop(u.1, eval_exp(u.2, env, ppkt)));
+  case Binop(b):
+    return(eval_binop(b.1, eval_exp(b.2, env, ppkt), eval_exp(b.3, env, ppkt)));
+  case If(i):
+    switch(eval_exp(i.1, env, ppkt)) {
+    case Bool(b):
+      if (b)
+	return(eval_exp(i.2, env, ppkt));
+      else
+	return(eval_exp(i.3, env, ppkt));
+    default:
+      raise(^InternalError("(eval_exp): If test not boolean"));
+      return(new value.Int(0));      
+    }
+  case Let(l):
+    /* environ env1 = deflist_to_environ(l.1, env, ppkt); */
+    <environ> list env1 = deflist_to_environ(l.1, env, ppkt);
+    return(eval_exp(l.2, env1, ppkt));
+
+  /* not yet implemented */
+  case Raise(r):
+     raise(^PlanExcept(r));
+
+  case Try(t):
+    try {
+      return(eval_exp(t.1, env, ppkt));
+    } handle e
+	switch e {
+	case PlanExcept(s): return(eval_exp(t.3, env, ppkt));
+	default: raise(e);
+    }
+
+  case OnRemote(args):
+    value chnk, dst, rb, v;
+    string hop_str;
+    
+    chnk = eval_exp(args.1, env, ppkt);
+    dst = eval_exp(args.2, env, ppkt);
+    rb = eval_exp(args.3, env, ppkt);
+    /* route = eval_exp(args.4, env, ppkt); */
+    
+    switch (chnk) {
+    case VChunk(vc):
+      switch (dst) {
+      case String(dst_str):
+	switch (rb) {
+	case Int(rb_val):
+	  
+	  if (eval_dest(parse_hostname(dst_str))) {
+	    /* evaluate packet on this node */
+	    printf("Evaluating chunk (fn:%s  srcAddr:%s  evAddr:%s  rb:%d)\n",
+		   vc.1, ppkt.sourceAddr, ppkt.evalAddr, rb_val);
+	    
+	    printf("OnRemote\n");
+	    v = eval_pop_pkt(null, ^pop_pkt(vc.3, vc.1, vc.2, ppkt.sourceAddr,
+					    dst_str, rb_val));
+	    printf("\n");
+	    return ^value.Unit;
+	  } else {
+	    hop_str = rout_table_lookup(dst_str, pland_rtable);
+	    printf("Sending pkt (routed): dest = %s, next_hop = %s\n",
+		   dst_str, hop_str);
+	    return send(vc.1, vc.2, vc.3, dst_str, hop_str, rb_val, ppkt);
+	  }
+	default: raise(^InternalError("(eval_exp): dst must be a string"));
+	}
+      default: raise(^InternalError("(eval_exp): exp must be a chunk"));
+      }
+    default: raise(^InternalError("(eval_exp): rb must be an int"));
+    }
+
+  case OnNeighbor(args):
+    value chnk, dst, rb;
+    
+    chnk = eval_exp(args.1, env, ppkt);
+    dst = eval_exp(args.2, env, ppkt);
+    rb = eval_exp(args.3, env, ppkt);
+    
+    switch (chnk) {
+    case VChunk(vc):
+      switch (dst) {
+      case String(dst_str):
+	switch (rb) {
+	case Int(rb_val):
+	  
+	  if (!mem(strcmp, pland_neighbors, dst_str))
+	    raise(^InternalError("(eval_exp): Not a neighbor!"));
+
+	  printf("Sending pkt (neighbor): next_hop = %s\n", dst_str);
+	  return send(vc.1, vc.2, vc.3, dst_str, dst_str, rb_val, ppkt);
+	  
+	default: raise(^InternalError("(eval_exp): dst must be a string"));
+	}
+      default: raise(^InternalError("(eval_exp): exp must be a chunk"));
+      }
+    default: raise(^InternalError("(eval_exp): rb must be an int"));
+    }
+
+  case RetransOnRemote(x): 
+    raise(^InternalError("(eval_exp): RetransOnRemote not implemented"));
+  case Foldr(args):
+    switch(eval_exp(args.2, env, ppkt)) {
+    case VList(vs):
+      if(vs == null)
+	return(eval_exp(args.3, env, ppkt));
+      else {
+	exp new_fold = ^exp.Foldr(^(args.1,
+				    ^exp.Val(^value.VList(vs.tl)),
+				    args.3));
+	exp new_call = ^exp.App(^(args.1,
+				  ^list(^exp.Val(vs.hd),
+				  ^list(new_fold, null))));
+
+	return(eval_exp(new_call, env, ppkt));
+      }
+    default:
+      raise(^InternalError("(eval_exp): Foldr 2nd arg must be a list"));
+    }
+    return(new value.Int(0));      
+  case Foldl(x):      raise(^InternalError("(eval_exp): Foldl not implemented"));
+  }
+}
+
+/* <value> list eval_explist(<exp> list el, environ env, pop_pkt ppkt) { */
+<value> list eval_explist(<exp> list el, <environ> list env, pop_pkt ppkt) {
+  if (el != null)
+    {
+      <value> list new_vl = ^list(eval_exp(el.hd, env, ppkt),
+					      eval_explist(el.tl, env, ppkt));
+      return new_vl;
+    }
+  else
+    return null;
+}
+
+
+/* chunk: fun_to_exec * actuals * prog
+ * packet: prog, fun_to_exec, actuals, srcAddr, evalAddr, rb
+ */
+value send(string fn, <value> list actuals, <def> list prog,
+           string dst_str, string hop_str, int rb_val, pop_pkt ppkt)
+{
+  *(string, int) hop;
+  
+  ppkt.rb = ppkt.rb - rb_val;
+  
+  if (ppkt.rb < 0) {
+    raise(^ResourceBound(sprintf
+			 ("(eval_exp): (rb == %d) < 0\n", ppkt.rb)));
+  } else if (rb_val < 1) {
+    raise(^ResourceBound(sprintf
+			 ("(eval_exp): (rb_val == %d) < 1\n", rb_val)));
+  } else {
+    /* send packet toward destination */
+    *(string, int) hop = parse_hostname(hop_str);
+
+    string this_host = sprintf("%s:%d", pland_interface_info.hd.3,
+			       pland_interface_info.hd.4);
+    
+    /* open socket, connect w/ server send packet */
+    tal_sendto(tal_socket(^socket_domain.PF_INET,
+    ^socket_type.SOCK_DGRAM, 0),
+	       pop_pkt_to_str(^pop_pkt(prog, fn, actuals, this_host,
+				       dst_str, rb_val-1)),
+	       ^sockaddr.ADDR_INET(^(tal_gethostbyname(hop.1), hop.2)));
+    return ^value.Unit;
+  }
+}
+
+/* environ def_to_environ(def d, environ env, pop_pkt ppkt) */
+<environ> list def_to_environ(def d, <environ> list env, pop_pkt ppkt)
+{
+  switch (d) {
+  case Fundef(fd):
+    /* return(^environ(^(fd.var,  */
+    return(^list(^environ(fd.var, 
+			  ^binding.Funbind(^(fd.params,
+					     fd.result_type,
+					     fd.body,
+					     env))),
+		  null));
+  case Exndef(ed):
+    /* return(^environ(ed, ^binding.Exnbind(ed), null)); */
+    return(^list(^environ(ed, ^binding.Exnbind(ed)), null));
+  case Valdef(vd):
+    /* return(^environ(vd.var, */
+    return(^list(^environ(vd.var,
+		    ^binding.Varbind(eval_exp(vd.exp, env, ppkt))), null));
+  }
+}
+
+/*
+ * dl: functions in the  PLAN program
+ * toplevel: initial environment (includes services, global PLAN values, etc.)
+ */
+/* environ deflist_to_environ(<def> list dl, environ env, pop_pkt ppkt)*/
+<environ> list deflist_to_environ(<def> list dl, <environ> list env, pop_pkt ppkt)
+{
+  /*
+    environs .. .
+ <*(string, binding)> list tmp;
+  <*(string, binding)> list e = env;
+  */
+  <environ> list tmp;
+  <environ> list e = env;
+  while (dl != null) {
+    tmp = def_to_environ(dl.hd, e, ppkt);
+    /* environ . . . tmp.next = e; */
+    tmp.tl = e;
+    e = tmp;
+    dl = dl.tl;
+  }
+  return e;
+}
+
+/*
+ * globals: functions in PLAN program
+ *   - popcorn_packet
+ *   - string_packet
+ *
+ * toplevel: initial environment (includes services, global PLAN values, etc.)
+ */
+/* value eval_pop_pkt(environ toplevel, pop_pkt ppkt) */
+value eval_pop_pkt(<environ> list toplevel, pop_pkt ppkt)
+{
+  /* environ env = deflist_to_environ(ppkt.program, null, ppkt); */
+  <environ> list env = deflist_to_environ(ppkt.program, null, ppkt);
+
+  switch (Env::lookup(ppkt.fn_to_exec, env, Svc::svc_env)) {
+  case Varbind(v):
+    raise(^InternalError("(eval_exp): fn_to_exec cannot be a value: "));
+  case Funbind(fd):
+
+    /*
+    map(fun int _(*(string, tipe) s) {
+      printf("[%s] ", s.1); return 0;
+    }, fd.1);
+    printf("\n");
+    */
+    
+    /* environ new_env = Env::add_actuals(fd.1, ppkt.actuals, fd.4); */
+    <environ> list new_env = Env::add_actuals(fd.1, ppkt.actuals, fd.4);
+    return(eval_exp(fd.3, new_env, ppkt));
+  case Exnbind(str):
+    raise(^InternalError("(eval_exp): fn_to_exec cannot be an exception: "));
+  case Svcbind(str): 
+    return(Svc::eval_svc(str, ppkt.actuals, ppkt));
+  }
+}

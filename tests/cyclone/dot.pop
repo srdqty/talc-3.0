@@ -1,0 +1,29 @@
+#include "core.h"
+open Core;
+
+void pop_main()
+{
+  int i = 0;
+  int len = 3;
+  int u[] = {1,2,3};
+
+  int f(int []) =
+      codegen(int spec(int v[])
+	    {
+	      int res = 0;
+	      
+	      cut 
+                while(i < len) {
+		  splice( res = res + fill(u[i]) * v[fill(i)] ) ;
+		  i++;
+	        }
+	      
+	      return res;
+	    });
+
+  int v[] = {4,5,6};
+  print_int(f(v));
+  print_newline();
+  return;
+}
+

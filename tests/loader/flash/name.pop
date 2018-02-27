@@ -1,0 +1,30 @@
+/* Version of hotname.h but without stuff for caching.  This is
+   the first rev of the server, so we ditched this stuff, to be added
+   as updates later. */
+
+union NameTypes {
+  void HNT_FILE;
+  void HNT_REDIRECT;
+  void HNT_LS;
+  void NUM_HNT;
+}
+
+?struct NameEntry {
+  string hne_encoded;		/* the original URL */
+  string hne_stripped;		/* decoded, void of query or pathinfo */
+  string hne_expanded;		/* symlinks expanded */
+  NameTypes hne_type;
+  int hne_modTime;		/* currently used only by "ls" */
+}
+
+NameEntry GetEmptyNE()
+{
+  /* XXX will eventually keep a cached list of these */
+  return ^NameEntry {
+    hne_encoded = "",
+    hne_stripped = "",
+    hne_expanded = "",
+    hne_type = ^NameTypes.HNT_FILE,
+    hne_modTime = 0 
+  };
+}

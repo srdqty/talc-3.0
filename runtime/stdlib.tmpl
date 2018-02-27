@@ -1,0 +1,435 @@
+/* Standard Library for TAL Code
+ *
+ * Copyright Greg Morrisett, Neal Glew, Dan Grossman
+ *   January 1999, all rights reserved
+ *
+ */
+
+#include <ctype.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include <sys/stat.h>
+#include <math.h>	/* for float operations */
+#ifdef __linux__
+#include <errno.h> 	/* for errno */
+#endif
+
+extern void *GC_malloc(int size);
+extern void *GC_malloc_atomic(int size);
+extern void GC_gcollect(void);
+extern unsigned int GC_gc_no;
+extern int GC_quiet;
+extern int GC_expand_hp(int size);
+extern int GC_get_heap_size (void);
+/* #define DO_MALLOC_DEBUG */
+#ifdef DO_MALLOC_DEBUG
+extern void GC_generate_random_backtrace(void);
+#endif
+
+typedef struct str_internal {int size; char *chars;} *string;
+typedef char *Cstring;
+typedef struct arr_internal {int size; void *elts;} *array;
+typedef void *(*gen_fun)(void *,int);
+typedef struct rep_internal {int size; char chars[1];} *rep;
+
+/***************************** I/O *******************************/
+
+
+extern FILE *tal_stderr;
+extern FILE *tal_stdin;
+extern FILE *tal_stdout;
+
+static void check_fd(FILE *fd) {
+  if(!fd) {
+    fprintf(stderr,"Attempt to access null file descriptor.\n");
+    exit(255);
+  }
+}
+
+void fprint_int    (FILE *fd, int x)    { 
+  check_fd(fd);
+  if(fprintf(fd, "%d", x) < 0)
+    fprintf(stderr,"File write failed (non-fatal)\n");
+}
+void fprint_uint    (FILE *fd, int x)    { 
+  check_fd(fd);
+  if(fprintf(fd, "%u", x) < 0)
+    fprintf(stderr,"File write failed (non-fatal)\n");
+}
+void fprint_char   (FILE *fd, char c)   { 
+  check_fd(fd);
+  if (putc(c, fd) == EOF)
+    fprintf(stderr,"File write failed (non-fatal)\n");
+}
+void fprint_string (FILE *fd, string s) { 
+  check_fd(fd);
+  if (fwrite(s->chars, 1, s->size, fd) < s->size) 
+    fprintf(stderr,"File write failed (non-fatal)\n");
+}
+void fprint_float  (FILE *fd, float f) {
+  check_fd(fd);
+  if (fprintf(fd, "%G", (double)f) < 0)
+	fprintf(stderr,"File write failed (non-fatal)\n");
+}
+void fprint_double (FILE *fd, double d) {
+  check_fd(fd);
+  if (fprintf(fd, "%G", d) < 0)
+	fprintf(stderr,"File write failed (non-fatal)\n");
+}
+void fprint_newline(FILE *fd)           { 
+  check_fd(fd);
+  if (putc('\n', fd) == EOF)
+    fprintf(stderr,"File write failed (non-fatal)\n");
+}
+int f_close(FILE *fd) {
+  if(!fd) {
+    fprintf(stderr,"Attempt to close null file descriptor.\n");
+    exit(255);
+  }
+  return fclose(fd);
+}
+int f_string_read(FILE *fd, string dest, int dest_offset, int max_count) {
+  check_fd(fd);
+  if(dest_offset + max_count > dest->size) {
+    fprintf(stderr,"Attempt to read off end of string.\n");
+    exit(255);
+  }
+  return fread((dest->chars)+dest_offset, 1, max_count, fd);
+}
+int f_length(const char *filename) {
+  struct stat statbuf;
+  if (stat(filename,&statbuf)) {
+    fprintf(stderr, "Cannot stat %s", filename);
+    return 0;
+  }
+  else {
+    return statbuf.st_size;
+  }
+}
+
+/***************************** Timing *******************************/
+
+/* This is ad hoc and doesn't work under Unix, but for now...
+ */
+
+#ifdef __linux__
+#  define _ftime ftime
+#  define _timeb timeb
+#  include <sys/timeb.h>
+#else
+
+typedef long time_t;
+struct _timeb {
+        time_t time;
+        unsigned short millitm;
+        short timezone;
+        short dstflag;
+        };
+
+#endif
+
+int int_time()
+{
+  struct _timeb tstr;
+  long result;
+
+  /* places secs in "time field", msecs in "millitm" field */
+  _ftime( &tstr );
+  
+  /* get secs */
+  result = tstr.time;
+
+  /* free up top ten 10 bits (to avoid overflow of following multiplication) */
+  result = result & 0x003fffff;
+
+  /* convert from secs to msecs (now uses all 32 bits) */
+  result = result * 1000;
+  
+  /* add in msecs */
+  result = result + tstr.millitm;
+
+  return result;
+}
+
+/********************** Runtime subversion *********************/
+/* tal_start is a pain so we don't use it.  Just duplicate code here. */
+
+
+Cstring string_to_Cstring(string s) {
+  char *str=GC_malloc(s->size+1);
+  char *chars = s->chars;
+
+  int i;
+  for(i=0; i<s->size; i++) str[i]=chars[i];
+  str[s->size]='\0';
+  return str;
+}
+
+string  Cstring_to_string(Cstring s) {
+  string str;
+  char *data;
+  int size=(s?strlen(s):0);
+  str=GC_malloc(sizeof(struct str_internal));
+  data = GC_malloc_atomic(size);
+  str->size=size;
+  str->chars = data;
+  while(--size>=0) data[size]=s[size];
+
+  return str;
+  /* We must make a copy in case C code frees the string or mangles it. 
+     Otherwise we could get away with str->chars = s;
+  */
+}
+
+array new_array(int,void *);
+extern int tal_argc;
+extern char **tal_argv;
+extern char **tal_envp;
+
+array std_args() {
+  array result = new_array(tal_argc,(void *)0);
+  void **data = result->elts;
+  int arg = tal_argc;
+  while(arg--) 
+    data[arg]=Cstring_to_string(tal_argv[arg]);
+  return result;
+}
+
+array std_env() {
+  int len = 0;
+  char **envp_i = tal_envp;
+  void **data;
+  array result;
+  for(len=0; *envp_i != NULL; envp_i++,len++)
+	;
+
+  result = new_array(len,NULL);
+  data = result->elts;
+  while(len--) {
+    data[len]=Cstring_to_string(tal_envp[len]);
+  }
+
+  return result;
+}
+
+/************************Arrays***********************/
+array   new_array(int size, void *init) { 
+  void **a=GC_malloc(size*4);
+  array na = GC_malloc(sizeof(struct arr_internal));
+  na->size=size;
+  na->elts=a;
+  if (init) {
+    void **a_end = a+size;
+    for(;a<a_end;a++)
+      *a=init;
+  }
+  return na;
+}
+
+array   new_array_f(int size, gen_fun f, void *env) {
+  int i;
+  void ** a = GC_malloc(size*4);
+  array na = GC_malloc(sizeof(struct arr_internal));
+  na->size=size;
+  na->elts = a;
+
+  for(i=0; i<size; i++)
+    a[size]=(*f)(env,i);
+
+  return na;
+}
+
+array   new_array1(int size) {
+  array na=GC_malloc(sizeof(struct arr_internal));
+  void *a=GC_malloc_atomic(size);
+  na->size = size;
+  na->elts = a;
+  return na;
+}
+
+array   new_array2(int size) {
+  array na=GC_malloc(sizeof(struct arr_internal));
+  void *a=GC_malloc_atomic(2*size);
+  na->size = size;
+  na->elts = a;
+  return na;
+} 
+
+array   new_array4(int size) {
+  array na=GC_malloc(sizeof(struct arr_internal));
+  void *a=GC_malloc_atomic(4*size);
+  na->size = size;
+  na->elts = a;
+  return na;
+} 
+
+array   new_array4u(int size) {
+  array na=GC_malloc(sizeof(struct arr_internal));
+  void *a=GC_malloc_atomic(4*size);
+  na->size = size;
+  na->elts = a;
+  return na;
+} 
+
+array   new_array8(int size) {
+  array na=GC_malloc(sizeof(struct arr_internal));
+  void *a=GC_malloc_atomic(8*size);
+  na->size = size;
+  na->elts = a;
+  return na;
+} 
+
+array new_array_float(int size) { return new_array4(size); }
+array new_array_double(int size) { return new_array8(size); }
+
+/**** pointer comparison and hashing ****/
+
+int ptr_compare(void *ptr1, void *ptr2) {
+  if (ptr1 == ptr2)
+    return 0;
+  else if ((unsigned int)ptr1 < (unsigned int)ptr2) 
+    return -1;
+  else
+    return 1;
+}
+
+int hash(void *ptr) {
+  return (int)ptr;
+}
+
+/**** Loader initialization ****/
+
+#ifdef __linux__
+#define SYMNAME(s) s
+#else
+#define SYMNAME(s) "_" ## s
+#endif
+
+void
+stdlib_init_loader_syms(void (*register_sym)(long,long))
+{
+  /* nothing for now */
+}
+
+extern void pop_exn_info(FILE *fd, void *exn);
+
+/***************************** Floats **********************************/
+
+int tal_errno;
+
+double str_to_d(string s) {
+  char *start, *stopped;
+  double d;
+
+  start = string_to_Cstring(s);
+  d=strtod(start,&stopped);
+
+  tal_errno = errno;
+  if(stopped - start != s->size) tal_errno = 1;
+  
+  return d;
+}
+
+float str_to_f(string s) {
+  char *start, *stopped;
+  double d;
+
+  start = string_to_Cstring(s);
+  d=strtod(start,&stopped);
+
+  tal_errno = errno;
+  if(stopped - start != s->size) tal_errno = 1;
+  
+  return d;
+}
+
+/* This is very Microsoft specific. Improve! */
+#ifdef __linux__
+typedef long long int64;
+#else
+typedef __int64 int64;
+#endif
+
+string d_to_hexstr(double d) {
+  int64 b =  *((int64 *)&d);
+  char result[17]={0};
+  int i = 0;
+
+  for(i=0; i < 16; i++) {
+    char bit = ((b >> ((15-i)*4)) & 0xF);
+    result[i] = (bit < 10) ? '0' + bit : 'A' + (bit - 10);
+  }
+  
+  return Cstring_to_string(result);
+}
+
+string f_to_hexstr(double d) {
+  int64 b = *((int64 *)&d);
+  char result[9]={0};
+  int i = 0;
+
+  for(i=0; i < 8; i++) {
+    char bit = ((b >> ((7-i)*4)) & 0xF);
+    result[i] = (bit < 10) ? '0' + bit : 'A' + (bit - 10);
+  }
+  
+  return Cstring_to_string(result);
+}
+
+string d_to_str(double d) {
+ /* There doesn't seem to be any good way to do this. */
+ char result[255] = {0}; /* This may not be overkill! */
+
+ sprintf(result,"%.6g",d);
+
+ return Cstring_to_string(result); /* Counting on a copy here!! */
+}
+
+string f_to_str(float f) {
+ /* There doesn't seem to be any good way to do this. */
+ char result[255] = {0}; /* This may not be overkill! */
+
+ sprintf(result,"%.6g",(double)f);
+
+ return Cstring_to_string(result); /* Counting on a copy here!! */
+}
+
+double arc_cos(double d) {
+  return acos(d);
+}
+
+double arc_sin(double d) {
+  return asin(d);
+}
+
+double power(double p, double n) {
+  return pow(p,n);
+}
+
+/***************************** Temporary *******************************/
+
+/* This stuff should really go into a standard library or utility file
+ * somewhere else.  But its here for now.
+ */
+
+void print_time(int start_time, int end_time, int iterations)
+{
+  printf("Time: %d msec\n", (end_time - start_time) / iterations);
+}
+/*
+void get_input(string out)
+{
+  char c;
+
+  fprint_string(tal_stdout, out);
+  printf("(Hit <RETURN> to continue, 'q' + <RETURN> to quit)");
+  fflush(stdout);
+  c = getchar();
+  if (c == 'q')
+    exit(0);
+}
+*/
+/* EOF: stdlib.c */
+

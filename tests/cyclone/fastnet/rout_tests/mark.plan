@@ -1,0 +1,30 @@
+(* Puts a mark on the injected node, then sends another packet 
+   back to the node to check the mark *)
+
+svc get : (string,key) -> 'a
+svc NotFound : exn
+
+(* isMarked: key -> bool *)
+fun isMarked(session) =
+  try
+    (get("mark",session); true)
+  handle NotFound => false
+
+(* back: key -> unit *)
+fun back(session) =
+  print(isMarked(session))
+ 
+svc put : (string,key,'a,int) -> unit
+
+(* mark: key -> unit *)
+fun mark(session) = put("mark",session,true,20)
+
+svc generateKey : void -> key
+
+(* quick: void -> unit *)
+fun quick() =
+  let val session = generateKey()
+  in
+    (mark(session);
+     OnRemote(|back|(session),thisHostOf(getSrcDev()),getRB(),defaultRoute))
+  end

@@ -1,0 +1,129 @@
+
+// a simple chaining, polymorphic hash table with restore
+// of course this is not functional
+
+// MWH 12/13/99 -- added support for resizing the table.  Based it
+//   on the OCaml 2.02 Hashtbl implementation
+
+#include "list.h"
+#include "core.h"
+open List;
+
+prefix Hashtable;
+open   Hashtable;
+
+#define HASH2INDEX(hash,tab,k) (((:unsigned int)hash(k)) % size(tab))
+
+abstract struct <a,b>table {
+  int          cmp(a,a);
+  int          hash(a);
+  int	       max_len; // maximum length of bucket list before resize
+  <*(a,b)>list tab[];
+}
+
+<a,b>table create<a,b>(int sz, int cmp(a,a), int hash(a)) {
+  <*(a,b)>list mt = null;
+  return ^table(cmp, hash, 3, new_array(sz,mt));
+}
+
+void insert<a,b>(<a,b>table t, a key, b val) {
+  <*(a,b)>list tab[] = t.tab;
+  int bucket = HASH2INDEX(t.hash,tab,key);
+  tab[bucket] = ^list(^(key,val),tab[bucket]);
+  if (length (tab[bucket]) > t.max_len) resize(t);
+}
+
+b lookup<a,b>(<a,b>table t, a key) {
+  // raises Not_found
+  <*(a,b)>list tab[]    = t.tab;
+  <*(a,b)>list l     = tab[ HASH2INDEX(t.hash,tab,key) ];
+  return assoc_cmp(t.cmp, l, key);
+}
+
+void remove<a,b>(<a,b>table t, a key) {
+  // remove only most recent binding.  Silently return if none.
+  // does a destructive list update since this data structure is not functional
+  <*(a,b)>list tab[]    = t.tab;
+  int          cmp(a,a) = t.cmp;
+  int          bucket   = HASH2INDEX(t.hash,tab,key);
+  <*(a,b)>list l        = tab[bucket];
+  if(l == null)
+    return;
+  if(cmp(key,l.hd.1)==0) {
+    tab[bucket] = l.tl;
+    return;
+  }
+  <*(a,b)>list prev = l;
+  l = l.tl;
+  for(; l!=null; prev = l, l=l.tl)
+    if(cmp(key,l.hd.1)==0) {
+      prev.tl = l.tl;
+      return;
+    }
+}
+
+int hash_string(string s) {
+  // could be made faster by explicit loop unrolling
+  int ans   = 0;
+  int sz    = size(s);
+  int shift = 0;
+  for(int i=0; i < sz; ++i) {
+    ans = ans ^ (s[i] << shift);
+    shift += 8;
+    if(shift == 32)
+      shift = 0;
+  }
+  return ans;
+}
+
+/* For resizing */
+void insert_bucket<a,b>(<*(a,b)>list tab[], int hash(a), <*(a,b)>list elems) {
+  if (elems == null) return;
+  insert_bucket(tab,hash,elems.tl); // preserve the original order
+  a key = elems.hd.1;
+  b val = elems.hd.2;
+  int nidx = HASH2INDEX(hash,tab,key);
+  tab[nidx] = ^list(^(key,val),tab[nidx]);
+}
+
+void resize<a,b>(<a,b>table t) {
+  <*(a,b)>list odata[] = t.tab;
+  int osize = size(odata);
+  int nsize = 2 * osize + 1;
+  <*(a,b)>list mt = null;
+  <*(a,b)>list ndata[] = new_array(nsize,mt);
+  for (int i = 0; i<osize; i++) {
+    insert_bucket(ndata,t.hash,odata[i]);
+  }
+  t.tab = ndata;
+  t.max_len = 2 * t.max_len;
+}
+
+/* Iterating over a hashtable */
+void iter<a,b>(void f(a,b), <a,b>table t) {
+  <*(a,b)>list odata[] = t.tab;
+  int osize = size(odata);
+  for (int i = 0; i<osize; i++) {
+    for(<*(a,b)>list iter = odata[i]; iter != null; iter = iter.tl) {
+      f(iter.hd.1,iter.hd.2);
+    }
+  }  
+}
+
+/* debugging */
+void print_table_map<a,b>(<a,b>table t, void prn_key(a), void prn_val(b)) {
+  <*(a,b)>list odata[] = t.tab;
+  int osize = size(odata);
+  for (int i = 0; i<osize; i++) {
+    Core::print_int(i);
+    Core::print_string(": ");
+    for(<*(a,b)>list iter = odata[i]; iter != null; iter = iter.tl) {
+      Core::print_char('(');
+      prn_key(iter.hd.1);
+      Core::print_char(',');
+      prn_val(iter.hd.2);
+      Core::print_string(") ");
+    }
+    Core::print_newline();
+  }
+}  

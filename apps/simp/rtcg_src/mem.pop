@@ -1,0 +1,390 @@
+// Memory used by the simulator.  For now these are all functions,
+// later we will likely have to macroize for performance.
+#include "core.h"
+#include "simp.h"
+#include "spec.h"
+#include "cstat.h"
+#include "cmisc.h"
+
+open Core;
+prefix Mem;
+open Mem;
+
+//#define DEBUG
+//#define CHECK_READS
+
+#define BAD_ADDRESS(A,S) { fprintf(tal_stderr,"Bad address %x: %s\n",(A),(S)); \
+                           FAIL("Bad address"); }
+
+// Our blocks our word-sized to optimize for the common case
+// of reading a word rather than a byte.
+#define MEM_BLOCK_SIZE 0x4000
+#define MEM_TABLE_SIZE 0x8000
+
+#define MEM_BLOCK(A)  (((:ptr)(A) >> 16) & 0x7fff)
+#define MEM_OFFSET(A)  (((A) & 0xffff) >> 2)
+
+#define PAGE_TO_ADDR(P) ((((:unsigned int)(P)) * MEM_BLOCK_SIZE) << 2)
+
+// Words not bytes!!!
+word mem_table[|MEM_TABLE_SIZE|]?[|MEM_BLOCK_SIZE|];
+word mem_break_point; // Initialized by loader.
+
+ptr text_start;
+ptr text_end;
+
+// Makes sure address a is allocated
+void tickle(ptr a) {
+  _ b = MEM_BLOCK(a);
+
+  if(mem_table[|b|] == null)
+    BAD_ADDRESS(a,"Not allocated.");
+}
+
+bool is_allocated(ptr a) {
+  _ b = MEM_BLOCK(a);
+
+  return (mem_table[|b|] != null);
+}
+
+// Read and write operations
+byte  r_byte(ptr a) {
+  _ b = MEM_BLOCK(a);
+  _ o = MEM_OFFSET(a);
+  _ o2 = (a & 0x3) << 3; 
+
+  _ blk = mem_table[|b|];
+
+  if(blk == null) {
+#ifdef CHECK_READS
+    BAD_ADDRESS(a, "read byte");
+#else
+    blk = new_block();
+    mem_table[|b|] = blk;
+#endif
+  }
+
+  _ r = blk[|o|];
+
+  return (:byte)((r >> o2) & 0xff);
+}
+
+short r_short(ptr a) {
+  _ b = MEM_BLOCK(a);
+  _ o = MEM_OFFSET(a);
+  _ o2 = (a & 0x3) << 3;
+
+  _ blk = mem_table[|b|];
+
+  if(blk == null) {
+#ifdef CHECK_READS
+    BAD_ADDRESS(a, "read short");
+#else
+    blk = new_block();
+    mem_table[|b|] = blk;
+#endif
+  }
+
+  _ r = blk[|o|];
+
+  return (:short)(r >> o2);
+}
+
+word  r_word(ptr a) {
+  _ b = MEM_BLOCK(a);
+  _ o = MEM_OFFSET(a);
+
+  _ blk = mem_table[|b|];
+
+  if(blk == null) {
+#ifdef CHECK_READS
+    BAD_ADDRESS(a, "read word");
+#else
+    blk = new_block();
+    mem_table[|b|] = blk;
+#endif
+  }
+
+  return blk[|o|];
+}
+
+// Apparently, the semantics are allocate on write, although that strikes me
+// as crazy.
+void  w_byte(ptr a, byte b) {
+
+  if(a < text_end) {
+    printf("Write into the text segment.\n");
+    FAIL("Invalid write.");
+  }
+
+  _ b_num = MEM_BLOCK(a);
+  _ blk = mem_table[|b_num|];
+
+  if(blk==null) { // If this page unallocated.
+    blk = new_block();
+    mem_table[|b_num|] = blk;
+  }
+
+  _ o = MEM_OFFSET(a);
+  _ o2 = (a & 0x3) << 3;
+
+  word w = ((:word)b & 0xff) << o2;
+  _ mask = ~(0xff << o2);
+  blk[|o|] = (blk[|o|] & mask) | w;
+}
+
+void  w_short(ptr a, short s) {
+
+  if(a < text_end) {
+    printf("Write into the text segment.\n");
+    FAIL("Invalid write.");
+  }
+
+  _ b = MEM_BLOCK(a);
+  _ blk = mem_table[|b|];
+
+  if(blk==null) { // If this page unallocated.
+    blk = new_block();
+    mem_table[|b|] = blk;
+  }
+  
+  _ o = MEM_OFFSET(a);
+  _ o2 = (a & 0x3) << 3;
+
+  _ w = (s & 0xffff) << o2;
+  _ mask = ~(0xffff << o2);
+  blk[|o|] = (blk[|o|] & mask) | w;
+}
+
+void  w_word(ptr a, word w) {
+
+  if(a < text_end) {
+    printf("Write into the text segment.\n");
+    FAIL("Invalid write.");
+  }
+
+  _ b = MEM_BLOCK(a);
+  _ o = MEM_OFFSET(a);
+
+#ifdef DEBUG
+  if(b<0 || b >= MEM_TABLE_SIZE) {
+    printf("Address %x has block %x and offset %x\n",
+	   a,b,o);
+    FAIL("Invalid address");
+  } 
+  else if (o < 0 || (b != null && o >= MEM_BLOCK_SIZE) || (b==null && o!=0)) {
+    printf("Address %x has block %x and offset %x\n",a,b,o);
+    FAIL("Invalid address");
+  }
+#endif
+
+  _ blk = mem_table[|b|];
+  if(blk==null) { // If this page unallocated.
+    blk = new_block();
+    mem_table[|b|] = blk;
+  }
+
+  blk[|o|] = w;
+}
+
+void r_valid(ptr a,int nbytes) {
+
+  tickle(a);
+
+  switch nbytes {
+  case 1: ;
+  case 2: if((a & 0x1) != 0) BAD_ADDRESS(a,"Unaligned short.");
+  case 3: ;
+  default: if((a & 0x3) != 0) BAD_ADDRESS(a,"Unaligned word or longer.");
+  }
+
+}
+void w_valid(ptr a,int nbytes) {
+  // I don't see why there would be a difference here.
+  r_valid(a,nbytes);
+}
+
+word new_block()[|MEM_BLOCK_SIZE|] {  
+  return cnew_block();
+}
+
+void allocate_block(ptr a) {
+  _ b = MEM_BLOCK(a);
+  mem_table[|b|] = new_block();
+}
+
+void allocate_range(ptr lo, ptr hi) {
+  _ b_lo = MEM_BLOCK(lo);
+  _ b_hi = MEM_BLOCK(hi);
+
+  if(b_lo > b_hi) {
+    _ temp = b_lo;
+    b_lo = b_hi;
+    b_hi = temp;
+  }
+
+  for(_ b = b_lo; b <= b_hi; b++) {
+    if(mem_table[|b|] == null)
+      mem_table[|b|] = new_block();
+  }
+}
+
+// Copying values into and out of the simulator.
+// Space must be allocated in simulator prior to copy.
+// String copied in is null terminated!
+void strcpy_in(ptr a, string s) {
+  // Naive implementation to begin with.
+  for(_ i = 0 ; i < size(s); i++,a++) {
+    w_byte(a,s[i]);
+  }
+  w_byte(a,0);
+}
+
+int strcpy_out(ptr a, string str) {
+  
+  // Naive implementation: XXX change this.
+  _ c = '1';
+  _ i = 0;
+  for(; i < size(str) && c != 0; i++,a++) {
+    c = r_byte(a);
+    str[i] = c;
+  }
+  return i;
+}
+
+// Word copy is much faster for obvious reasons!
+void bcopy_in(ptr a, string x, int nbytes) {
+  // Naive implementation to begin with.
+  
+  if(size(x) < nbytes) FAIL("nbytes >= size(x)");
+
+  for(_ i = 0 ; i < nbytes; i++,a++) {
+    w_byte(a,x[i]);
+  }
+}
+
+void wcopy_in(ptr a, word x[], int nwords) {
+  if(size(x) < nwords) FAIL("nwords >= size(x)");
+  
+  for(_ i = 0; i < nwords; i++, a+=4) {
+    w_word(a,x[i]);
+  }
+}
+
+void wcopy_out(ptr a, word x[], int nwords) {
+
+  if(size(x) < nwords) nwords = size(x);
+  for(_ i = 0; i < nwords; i++,a+=4) {
+    x[i] = r_word(a);
+  }
+}
+
+void bcopy_out(ptr a, string x, int nbytes) {
+  if(size(x) < nbytes) nbytes = size(x);
+  for(_ i = 0; i < nbytes; i++,a++) {
+    x[i] = r_byte(a);
+  }
+}
+
+// Initialize the memory subsystem.
+void init() {
+  _ m = mem_table;
+  for(_ i = 0; i < MEM_TABLE_SIZE; i++) {
+    m[|i|] = null;
+  }
+}
+
+static char hex_digit(int n) {
+    _ c;
+    n = n & 0xf;
+    switch n {
+    case 10: c = 'a';
+    case 11: c = 'b';
+    case 12: c = 'c';
+    case 13: c = 'd';
+    case 14: c = 'e';
+    case 15: c = 'f';
+    default: c = '0' + n;
+    }
+    return c;
+}
+
+static void fprint_my_hex(FILE f, word w, bool space) {
+  for(_ i = 0; i < 32; i+=8) {
+    if(space) fprintf(f, " ");
+    _ n = (w >> i) & 0xff;
+    fprintf(f,"%c%c",hex_digit(n>>4),hex_digit(n));
+  }
+}
+
+static void fprint_my_hex2(FILE f, word w) {
+  for(_ i = 0; i < 32; i+=4) {
+    fprintf(f,"%c",hex_digit(w >> (28 - i)));
+  }
+}
+
+// Dump len words of memory starting at address a.
+void dump(FILE f, ptr a, int len) {
+
+  a = a & (~0x3);
+
+  // We roll our own print routine here.
+  for(_ i = 0; i < len; i++,a+=4) {
+    if(i % 4 == 0) {
+      if(i>0) {
+	_ a2 = a-16;
+	fprintf(f,"  ");
+	for(_ a2 = a-16; a2 < a; a2++) {
+	  if(is_allocated(a2)) {
+	    _ b = r_byte(a2);
+	    if(b >= chr(0x20) && b <= chr(0x7e)) fprint_char(f,b);
+	    else fprint_char(f,'.');
+	  }
+	  else fprint_char(f,' ');
+	}
+      }
+      fprintf(f,"\n");
+      fprint_my_hex2(f,a);
+      fprintf(f,": ");
+    }
+    
+    if(is_allocated(a)) {
+      _ w = r_word(a);     
+      fprint_my_hex(f,w,true);
+    }
+    else {
+      fprintf(f," ?? ?? ?? ??");
+    }
+  }
+  fprintf(f,"\n");
+}
+
+
+// Print a high-level summary of the state of the memory subsystem.
+void stats(FILE f) {
+  _ pages_allocd = 0;
+  _ mt = mem_table;
+
+  _ first_allocd = 0;
+  fprintf(f,"Allocated memory ranges:\n");
+  int i;
+  for(i = 0; i<MEM_TABLE_SIZE; i++) {
+    if(mt[|i|] != null) {
+      pages_allocd++;
+      if(first_allocd<=0) first_allocd = i;
+    }
+    else {
+      if(first_allocd>0) {
+	fprintf(f,"\t%x-%x\n",PAGE_TO_ADDR(first_allocd),PAGE_TO_ADDR(i));
+	first_allocd = 0;
+      }
+    }    
+  }
+  if(first_allocd > 0) {
+    fprintf(f,"\t%x-%x\n",PAGE_TO_ADDR(first_allocd),PAGE_TO_ADDR(i));
+    first_allocd = 0;
+  }
+  fprintf(f,"Total pages allocated = %d\n",pages_allocd);
+}
+
+

@@ -1,0 +1,164 @@
+#include "string.h"
+#include "list.h"
+open List;
+
+exception Internal(string);
+
+/*
+ * data types
+ */
+union binop {
+  void PLUS;
+  void MINUS;
+  void TIMES;
+  void DIV;
+}
+
+union exp {
+  int                        Val;
+  string                     Var;
+  *(string, <exp> list)      App;
+  *(binop,exp,exp)           Bin;
+}
+
+struct fundef {
+  string        var;
+  <string> list params;
+  exp           body;
+}
+
+/*
+ * environments
+ */
+*(<string> list, <int> list) add_actuals(<string> list formals,
+                                         <int> list actuals,
+                                         <string> list env_vars,
+                                         <int>    list env_vals)
+{
+  <string> list ret_vars = env_vars;
+  <int>    list ret_vals = env_vals;
+  
+  while(formals != null) {
+    ret_vars = ^list(formals.hd, ret_vars);
+    if (actuals != null)
+      ret_vals = ^list(actuals.hd, ret_vals);
+    else
+      raise Internal(sprintf("add_actuals: too many formals: %s\n",
+			     formals.hd));
+    
+    formals = formals.tl;
+    actuals = actuals.tl;
+  }
+  if (actuals != null)
+      raise Internal(sprintf("add_actuals: too many actuals: %d\n",
+			     actuals.hd));
+  else
+    return ^(ret_vars, ret_vals);
+}
+
+int var_lookup(string v, <string> list env_vars, <int> list env_vals)
+{
+  while(env_vars != null) {
+    if (Core::strcmp(env_vars.hd, v) == 0)
+      return env_vals.hd;
+    env_vars = env_vars.tl;
+    env_vals = env_vals.tl;
+  }
+  raise Internal("env_lookup: not found\n");
+}
+
+*(<string> list, exp) fun_lookup(string start_fun, <fundef> list prog)
+{
+  while(prog != null) {
+    if (Core::strcmp(prog.hd.var, start_fun) == 0)
+      return ^(prog.hd.params, prog.hd.body);
+    prog = prog.tl;
+  }
+  raise Internal("fun_lookup: not found\n");
+}
+
+/*
+ * evaluate
+ */
+int eval_bin(binop b, int v1, int v2)
+{
+  switch (b) {
+  case PLUS:  return v1 + v2;
+  case MINUS: return v1 - v2;
+  case TIMES: return v1 * v2;
+  case DIV:   return v1 / v2;
+  }
+}
+
+int eval_exp(exp e, <string> list env_vars, <int> list env_vals,
+	     <fundef> list prog)
+{
+  switch(e) {
+  case Val(i): return i;
+  case Var(s): return (var_lookup(s, env_vars, env_vals));
+  case App(a): 
+    *(<string> list, exp) f_data = fun_lookup(a.1, prog);
+    <int> list actuals = eval_exp_lst(a.2, env_vars, env_vals, prog);
+    *(<string> list, <int> list) env =
+      add_actuals(f_data.1, actuals, env_vars, env_vals);
+
+    return(eval_exp(f_data.2, env.1, env.2, prog));
+  case Bin(b): return(eval_bin(b.1,
+			       eval_exp(b.2, env_vars, env_vals, prog),
+			       eval_exp(b.3, env_vars, env_vals, prog)));
+  }
+}
+
+<int> list eval_exp_lst(<exp> list es,
+                        <string> list env_vars,
+                        <int> list env_vals,
+                        <fundef> list prog)
+{
+  if (es == null) 
+    return null;
+  else
+    return(^list(eval_exp(es.hd, env_vars, env_vals, prog),
+		 eval_exp_lst(es.tl, env_vars, env_vals, prog)));
+}
+
+int eval_prog(<fundef> list prog, string start_fun, <int> list actuals)
+{
+  *(<string> list, exp) f_data = fun_lookup(start_fun, prog);
+  *(<string> list, <int> list) env =add_actuals(f_data.1, actuals, null, null);
+
+  return(eval_exp(f_data.2, env.1, env.2, prog));
+}
+
+/*
+ * top level functions
+ */
+void go()
+{
+  /* fun f1(x, y) = x - y */
+  fundef f1 = ^fundef("f1", ^list("x", ^list("y", null)),
+		      ^exp.Bin(^(^binop.MINUS, ^exp.Var("x"),^exp.Var("y"))));
+  /* fun f2(a, b) = f1(a, b * b) */
+  fundef f2 = ^fundef("f2", ^list("a", ^list("b", null)),
+		      ^exp.App(^("f1", 
+		 ^list(^exp.Var("a"),
+		 ^list(^exp.Bin(^(^binop.TIMES,^exp.Var("b"),^exp.Var("b"))),
+		 null)))));
+  /* program */
+  <fundef> list prog = ^list(f1, ^list(f2, null));
+
+  /* -99 */
+  printf("Ans: %d\n", eval_prog(prog, "f2", ^list(1, ^list(10, null))));
+  /* 9 */
+  printf("Ans: %d\n", eval_prog(prog, "f2", ^list(10, ^list(1, null))));
+  return;
+}
+
+void pop_main()
+{
+  try
+    go();
+  handle e
+    switch e {
+    case Internal(s): printf("%s\n", s);
+    }
+}

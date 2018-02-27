@@ -1,0 +1,23 @@
+#include "core.h"
+open Core;
+
+/**********************************************************************/
+/* Test using global function variables and their initialization. */
+
+int foo(int i) {
+  return i;
+}
+
+int bar(int i) {
+  return foo(i) + 1;
+}
+
+static int f(int) = foo;
+// int g(int) = f; // illegal
+
+int pop_main() {
+  printf("f(1) = %d\n",f(1));
+  f = bar;
+  printf("(changed) f(1) = %d\n",f(1));
+  return 1;
+}

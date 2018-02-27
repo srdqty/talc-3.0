@@ -1,0 +1,427 @@
+This directory contains sources for a compiler from a small, safe subset
+of C (called popcorn) to x86 typed asssembly.  Popcorn is more like Java
+in that all structured values (i.e., arrays, structs, unions, and tuples)
+are heap-allocated and the language is strongly typed.  Popcorn is like
+C in that functions can only be defined at the top-level, and programmers
+have fairly good control over data layout.  Furthermore, compilation units,
+scoping, and linking happen just as in C.  Finally, popcorn makes it very
+easy to link against C code or libraries.
+
+The command line program popcorn.exe is a compiler in the spirit of
+cc.  So, for example, cd'ing to the test directory and typing:
+
+	popcorn -o test_list.exe list.pop test_list.pop
+
+will compile the two files list.pop and test_list.pop, producing
+TAL and object files for these two modules, and then link the two
+together (with the runtime routines) to generate an executable.
+
+Use popcorn -help to find out about more options.  Currently, the
+compiler is very simple-minded but we hope to remedy this soon.
+
+The runtime is minimal but it's easy to add new functions to it.
+(See ..\runtime\pop_runtime.tali and pop_runtime.c).  The runtime
+includes the Boehm-Demers-Weiser conservative collector.  
+
+LANGUAGE FEATURES:
+  - base types:  void, int, char, boolean, string
+	- most operations are as in Java
+	- strings are treated much like arrays,
+		so if x is a string, x[i] returns the i^th character of x.
+	- strings only support ascii for now.
+  - expressions:
+        We support all C expressions that are applicable to the
+	Popcorn types except cast.
+  - control constructs:
+	- if:  optional else -- as in C/Java
+	- switch:  on either ints, chars, (unions or exceptions -- see below)
+		- note that cases on a switch do not fall through so there is
+		  no need to use break to get to the end of the switch.
+	- while,do:  as in C/Java
+	- break/continue:  as in C for loops
+	- for: as in C (comma expressions) and Java (variable declarations) 
+	- function call: as in C (extended with polymorphism)
+  - arrays:  
+	- the syntax for arrays is close to C.  For example:
+		int x[];   /* array of integers */
+		int y[][]; /* array of array of integers */
+	- functions that return arrays put the "[]" at the end:
+		int sort(int x[])[]  /* takes and returns an integer array */
+	- subscript and update syntax are as in Java (0-based):
+		z = x[i];  /* extract i^th element of x */
+		x[i+j] = 3;  /* set i^th element of x to 3 */
+		z = size(x) /* returns the # of elements in x */
+	- subscript and update indices are checked to make sure they're in
+	  bounds.
+	- array literals are created by:
+		{1,2,3,4,5}   /* creates an array whose elements are 
+			       * 1,2,3,4, and 5 */
+		{:int}	      /* creates an empty integer array */
+  - structs:
+	- structs must be declared (no anonymous structs) and behave much
+	  like (method-less and subtyping-less) Java objects or ML-style
+	  records.
+	- structs can only be declared at top-level.
+	- structs can have constant (i.e., immutable) fields.  By default,
+		fields are mutable.
+	- structs can be optionally null (by using the "?" qualifier).  
+		(see below).
+	- by default, struct declarations have public scope.  The static
+		qualifier restricts their scope to the current module.
+		The extern qualifier imports the definition from another
+		module.  (At most one module can define the struct publically.)
+	- structs are created by using "new <sid>(e1,...,en)"
+		where <sid> is the name of the struct and e1,...,en are
+		the values of the fields. (^ may be used instead of new)
+	- struct fields are accessed using "." notation (e.g., s.f)
+	- if you attempt to access a field of a "?" struct, then the
+		compiler automatically inserts a null check to ensure
+		that the struct is not null.
+	- struct definitions can be recursive
+	- example definitions:
+
+		struct int_pair {     // pair of integers with integer fields 
+		  int first;	      // first and second 
+		  int second;
+		}
+
+		struct int_pair {     // equivalent to above
+		  int first, second;
+		}
+		
+		static struct int_pair {
+		  int first, second;     // only accessible in this file
+		}
+		
+		extern struct int_pair {
+		  int first, second;     // declared elsewhere
+		}
+	
+		struct int_pair {
+		  const int first;       // first field immutable
+		  int second;		 // second field mutable
+		}
+
+		?struct int_list {      // a value of type int_list can be
+		  int i;		// either "null int_list" or a struct
+		  next int_list;	// containing an int and a pointer to
+	        }			// an int_list.  
+
+		?struct my_struct {
+		  int i[];		// field is an integer array
+		  your_struct y;	// pointer to a your_struct value
+		}			// (never null)
+
+		struct your_struct {
+		  string z;		// field is a string
+		  my_struct m;		// points to a my_struct value
+		}			// (possibly null)
+
+	- example uses:
+
+		/* declares and initializes x to be an int_pair */
+		int_pair x = new int_pair(3,4); /* or equiv. ^int_pair(3,4); */
+
+		x.first++;   // increments value in first field of x
+		x.first += 1; // ditto
+		x.first = x.first + 1;  // ditto
+
+		/* prints the sum of the components of x */
+		print_int(x.first + x.second)	
+
+		/* non-destructive append */
+		int_list append(int_list x,int_list y) 
+		{
+		  if (x == null) 
+		     return(y);
+		  else
+		     return(^int_list(x.i,append(x.next,y)));
+		}
+  - tuples:
+	- like anonymous structs with immutable fields.  
+		*(int,int) x = new(3,4);  // x is a pointer to a pair of ints
+		
+		print_int(x.1 + x.2);  // fields have names 1,2,3,etc.
+  - unions:
+	- more like ML datatypes (i.e., tagged unions or tagged variant 
+	  records) than C unions.
+	- unions can be recursive.
+	- types are declared the same way as structs (except no ? option).
+	- "members" or fields cannot be directly accessed -- must do a
+		switch to determine which case.
+	- same scope qualifiers (static, extern) as structs.
+	- fields with void type don't carry values:
+	- example type definitions:
+
+		// like an enumeration -- represented as integers
+		union weekday {
+		  void MON; void TUE; void WED; void THU; 
+		  void FRI; void SAT; void SUN;
+		}
+
+		// like:  datatype exp = Var of string | App of exp*exp |
+		//		 Lambda of string * exp
+		union exp {
+		  string        var;
+		  *(exp,exp)    app;
+		  *(string,exp) lambda;
+		}
+
+	- there's no need for the "?" qualifier since you can declare
+	  a null field having void type:
+
+		union nexp {
+		  void           null_exp;
+		  string         var;
+		  *(nexp,nexp)   app;
+		  *(string,nexp) lambda;
+		}
+		  
+	- To create a union value, you must give the union name, the field 
+	  name, and any arguments (none only if the type of the field is void):
+
+		weekday today = new weekday.SUN;
+
+		exp e1 = new exp.var("x");
+		exp e2 = new exp.app(e1,e1);
+		exp e3 = new exp.lambda("x",e2);
+
+	- To deconstruct a union value, you must use a switch.  The cases
+	  of the switch define a variable which will be bound to the contents
+	  of the field (if any).  For instance, the following function will
+	  print out an exp value:
+
+		void print_exp(exp e) 
+		{
+		   switch e {
+		     case var(x): 
+			print_string("x");   // x has type string in this block
+		     case app(x): 
+			print_string("(");   // x has type *(exp,exp)
+			print_exp(x.1);      // in this block
+			print_string(" ");
+			print_exp(x.2);
+			print_string(")");
+		     case lambda(l):           // could call the variable
+			print_string("(fn ");  // something else -- say l
+			print_string(l.1);
+			print_string(" => ");
+			print_exp(l.2);
+			print_string(")");
+		     }
+		}
+
+	- A default: case can be used in the switch.  The switch must cover
+	  all of the cases (unless there's a default) and no case can be 
+	  duplicated.  
+	- Note that unlike C switches, no break is needed to transfer control
+	  to the end of the switch.  (That is, cases do not fall through to
+	  the next case.)
+	- A case should not declare a variable if the field has no type.
+	  For instance, the same code for nexp:
+
+		void print_nexp(nexp e) 
+		{
+		   switch e {
+		     case null_exp:   // notice no variable declared here
+			print_string("ERROR -- null expression")
+		     case var(x): 
+			print_string("x");   
+		     case app(x): 
+			print_string("(");   
+			print_nexp(x.1);      
+			print_string(" ");
+			print_nexp(x.2);
+			print_string(")");
+		     case lambda(l):         
+			print_string("(fn ");
+			print_string(l.1);
+			print_string(" => ");
+			print_nexp(l.2);
+			print_string(")");
+		     }
+		}
+
+	- it's more space efficient to use ?structs when possible, but
+	  more time efficient (i.e., fewer null checks) to use unions
+	  and explicit switches.  Both inefficiencies will be remedied
+	  at some point.
+
+  - functions:
+	For the most part, functions are declared and used the same way
+	as in C.  The syntax for function types is quite different as
+	we wanted to support first-class functions in a bit more clean
+	manner.  See the grammar or the example tests\map.pop for an
+	example.
+
+	Like structs and unions, function declarations can be modified
+	by "extern" or "static".  Extern declarations should have no
+	body.
+
+	The order of function declarations does not matter.
+
+	The compiler is pretty anal about making sure you return something.
+	So, for instance, it will reject the following code:
+
+		int foo(int x) {
+
+		  while (true) {
+		    x++;
+		  }
+		}
+
+	There is a distinction between function labels and function variables.
+	The former are what you declare (as in foo above) and the latter
+	are what you assign or have as parameters to functions, structs,
+	etc.  (This is not currently enforced by the type checker at the
+	popcorn level but is as the TAL level.)
+
+  - abstract types:
+
+	You can declare an external, abstract type:
+
+		extern hidden_type;
+
+	As long as you link against something that provides a definition
+	for this type, things are cool.  As the type is abstract, you
+	cannot directly manipulate values of this type.  
+
+	Declare a type to be abstract as follows:
+		abstract struct foo { ... }
+
+  - polymorphism:
+	Structures, unions, and functions may be polymorphic.  Type
+	variables begin with a ` (top left of your keyboard, not ').
+	If we can get it to parse we will change this.
+
+	?struct <`a>list { `a hd; <`a>list tl; } /* polymorphic lists. */
+
+	int length<`a>(<`a>list x) { .... } /* length over <`a>lists. */
+
+	The type arguments on function calls, and when declaring new
+	structures and unions are inferred and need not be explicitly
+	given.  
+
+	Function types may be explicitly instantiated via the notation
+	   length@<int>
+	This expression has type int (<int>list).
+		
+	Type variables may not be instantiated with void, although the
+	type checker does not enforce this restriction. (It will soon.)
+
+  - top-level variables:
+	Top-level variables of any type, except function type, are supported
+	at this point.  The syntax is a temporary hack that will most likely
+	be fixed shortly.  Top-level variables must be initialized with a
+	constant expression (cexp).
+
+		public int x = 5;
+		public foo f = new foo(2,4);
+		private int y = 4;
+
+	As you might expect private variables are not available to other files.
+	Public variables are truly global.
+
+	cexp's include any constant, new struct(cexp1,...,cexpn),
+	new union.case(cexp1), new(cexp1,...,cexpn) and null type
+
+  - exceptions:
+	Exceptions look like ML/Java exceptions.
+
+	exception void_exn;        /* declares an exception */ 
+	exception bool_exn(bool);  /* declares an exception carrying a
+	                            * boolean.
+				    */
+        Exceptions can be created and passed around like other
+	values.  A packaged exception has type exn.
+	
+	exn x = new void_exn(); /* x is an exception that can be
+                                 * raised. 
+				 */
+
+        To raise (throw) an exception, use the expression:
+	
+	raise(x);                /* where x is as defined above */
+	raise(^bool_exn(true));	 /* or just fold the new directly into
+	                          * the raise. 
+				  */
+	  				
+	To handle (catch) an exception use a try-handle statement:
+	
+	try {
+	   /* exception raising code here. */
+	} handle y { /* y has type exn in this block. */
+	  switch y {
+	  case void_exn: /* process void exception. */
+	  case bool_exn(b): /* b has type boolean */
+	  }
+	  }     		
+	  	
+	The handle ... switch syntax is cumbersome and we will provide
+	some syntactic sugar (probably try - catch) in the near
+	future.
+
+  - pre-processor
+	All C pre-processor directives are supported.
+  - name spaces
+	There are two top level declarations that help manage name
+	spaces: Open and Prefix. Prefix appends the specified prefix
+	to all declarations in its scope.  Open strips the specified
+	prefix off any variables currently in scope.
+
+	Prefixes are very similar to C++ name spaces.
+	
+	Example:
+	
+	prefix foo
+	{
+	 int f(int x) { return x; }          // f has prefix foo
+	 int g(int x) { returng foo::f(x); } // foo:: is required.
+	}
+	
+	prefix bar
+	{
+	 struct intList { int hd; bar::intList tl; } // bar:: is required.
+	}		
+
+	// Open can be used to make this friendlier as follows. 
+	prefix bar
+	{
+	 open bar;
+	 struct intList { int hd; intList tl; } /* bar:: is not
+	required since bar is "opened" now. */
+	}
+
+	The alternative notation open p; opens the prefix p in the
+	scope of open.  Similar notation (prefix p;) can be used to
+	append a prefix to all declarations in a module.
+
+	Prefix, and open can be nested.  Note that separate prefix
+	declarations may collide:
+		     prefix bar { public int f; } // In file 1
+		     prefix bar { public int f; } // In file 2
+ 	Both of these declarations define the same value and will lead
+	to a link error.  This feature makes prefix both powerful and
+	dangerous.
+
+PLANNED LANGUAGE FEATURES:
+	- Trevor Jim and Luke Hornoff at UPenn are working on runtime
+	  code generation extensions to both TAL and popcorn.  Some
+	  of those features have already started to creep in.
+	- polymorphism:
+		- first-class Forall and Exist types
+	- subtyping:
+		- width on structs, covariant immutable fields, invariant
+			on mutable fields
+		- usual contra/co on functions, etc.
+		- perhaps some form of F-bounded quantifiers
+	- floats
+	- threads
+	- perhaps some form of objects
+
+PLANNED IMPLEMENTATION FEATURES (all in the works):
+	- real register allocator
+	- some optimization (e.g., constant propagation, loop invariant removal
+		especially of null checks.)
+	- array bound check elimination
+

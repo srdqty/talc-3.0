@@ -1,0 +1,81 @@
+// Used to generate the interface for cmisc.c
+
+*(unsigned int) malloc_atomic_indirect(int len)[] {
+  return {:*(unsigned int)};
+}
+
+#define BLOCK_SIZE 0x4000
+#define NUM_REGS 32
+
+unsigned int x_block[|BLOCK_SIZE|];
+unsigned int x_reg[|NUM_REGS|];
+*(unsigned int) x_reg_indirect[|NUM_REGS|];
+
+unsigned int cnew_block()[|BLOCK_SIZE|] {
+  return x_block;
+}
+
+unsigned int cnew_register_file()[|NUM_REGS|] {
+  return x_reg;
+}
+
+*(unsigned int) cnew_register_file_indirect()[|NUM_REGS|] {
+  return x_reg_indirect;
+}
+
+// Expensive identity functions.
+float bits2float(unsigned int x) { return 1.0; }
+unsigned int float2bits(float f) { return 1; }
+
+double bits2double(unsigned int hi, unsigned int lo) { return 1.0; }
+void double2bits(unsigned int x[], int offset, double d) { ; }
+void double2bits_indirect(*(unsigned int) x[|NUM_REGS|], int offset, double d) { ; }
+void double2bits_direct(unsigned int x[|NUM_REGS|], int offset, double d) { ; }
+
+int pop_fstat(int fd, *(<unsigned int>array) buf) { return 0; }
+int pop_stat(string fname, *(<unsigned int>array) buf) { return 0; }
+int pop_lstat(string fname, *(<unsigned int>array) buf) { return 0; }
+
+int pop_ioctl(unsigned int ss_ioctl, int b, <unsigned int>array buf) { return 0; }
+
+int pop_read(int fd,  string buf, unsigned int nbytes) { return 0; }
+int pop_write(int fd, string buf, unsigned int nbytes) { return 0; }
+
+int pop_open(string name, int ss_flags, int mode) { return 0; }
+int pop_close(int fd) { return 0; }
+int pop_creat(string fname, int mode) { return 0; }
+int pop_unlink(string fname) { return 0; }
+
+int pop_chdir(string fname) { return 0; }
+int pop_chmod(string fname,int mode) { return 0; }
+int pop_chown(string fname, int owner, int grp) { return 0; }
+
+int pop_lseek(int fd, int off, int dir) { return 0; }
+
+int pop_getpid()  { return 0; }
+int pop_getuid()  { return 0; }
+int pop_geteuid() { return 0; }
+int pop_getgid()  { return 0; }
+int pop_getegid() { return 0; }
+
+int pop_access(string fname, int mode) { return 0; }
+
+int pop_dup(int fd) { return 0; }
+
+int pop_pipe(unsigned int fd[]) { return 0; }
+
+int pop_dup2(int fd1, int fd2) { return 0; }
+
+int pop_fcntl(int fd, int cmd, int arg) { return 0; }
+
+int pop_gettimeofday(unsigned int tv[], unsigned int tz[]) { return 0; }
+
+int pop_getrusage(unsigned int who, unsigned int usage[]) { return 0; }
+
+int pop_utimes(string fname, unsigned int tvals[]) { return 0; }
+
+int pop_getrlimit(int resource, unsigned int buf[]) { return 0; }
+
+int pop_setrlimit(int resource, unsigned int buf[]) { return 0; }
+
+int errno;

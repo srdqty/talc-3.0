@@ -1,0 +1,21 @@
+extern deflist;
+extern *(bool,deflist) get_program();
+extern void print_deflist(deflist);
+extern void print_string(string);
+extern bool typecheck_program(deflist);
+
+void main() {
+  *(bool,deflist) p = get_program();
+
+  if (!p.1) {
+    print_string("\nBAD INPUT\n");
+    return;
+  }
+  print_deflist(p.2);
+  print_string("\ntypechecking...");
+  if (!typecheck_program(p.2)) {
+    print_string("failed!\n");
+    return;
+  }
+  print_string("done.\n");
+}

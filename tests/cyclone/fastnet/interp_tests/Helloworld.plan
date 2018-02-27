@@ -1,0 +1,6 @@
+(* just prints a hello, world message *)
+fun doit () : unit =
+    (print (thisHost ()); print(" says : Hello world!\n"))
+
+val entry_fun  : unit = "doit"
+val entry_args : unit = []

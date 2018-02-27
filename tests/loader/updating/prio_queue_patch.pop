@@ -1,0 +1,28 @@
+extern struct <a>Queue::queue {
+  <a>List::list head;
+  <a>List::list tail;
+  int cur_sz;
+  int max_sz;
+}
+prefix Stub {
+  <a>Queue::queue Queue::create<a> (int v0) {
+    raise
+      (^Core::InvalidArg("Stub?Queue?create (<a>New::Queue::queue <a>(int))"));
+  }
+  a Queue::dequeue<a> (<a>Queue::queue v0) {
+    raise
+      (^Core::InvalidArg("Stub?Queue?dequeue (a <a>(<a>New::Queue::queue))"));
+  }
+  void Queue::enqueue<a> (<a>Queue::queue v2, a v1, int v0) {
+    raise
+      (^Core::InvalidArg("Stub?Queue?enqueue (void <a>(<a>New::Queue::queue,a))"));
+  }
+  int Queue::length<a> (<a>Queue::queue v0) {
+    raise
+      (^Core::InvalidArg("Stub?Queue?length (int <a>(<a>New::Queue::queue))"));
+  }
+  int Queue::max_size<a> (<a>Queue::queue v0) {
+    raise
+      (^Core::InvalidArg("Stub?Queue?max_size (int <a>(<a>New::Queue::queue))"));
+  }
+}

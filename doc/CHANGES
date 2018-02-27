@@ -1,0 +1,233 @@
+                                TALC Changes Log
+                                ================
+
+This file contains the list of changes made to the TALC project over
+time.  The information up to release 1.4 is sketchy, and the
+information for release 1.5 may not be complete.  The most recent
+changes appear first, and changes are grouped by release.
+
+Please follow the conventions in the file for numbering changes etc.
+I suggest that cvs log messages now just say something like: R1.5/28,30,31.
+
+Release 1.7
+===========
+66) Modified scheme compiler to use arg module (taking several standard
+    command-line flags)
+65) Added arg.pop (though it doesn't use prefix yet as it should) and arg.h
+64) list.pop had an overly restrictive type on list_app2.
+63) Added more .h files for various abstractions like list, set, queue.
+        Added queue to the library.  Fleshed out the interface of dict.h.
+62) Popcompile was violating an undocumented optimizer invariant about
+    pushing eax.  Fixed this for a struct member left-hand-side.  Did not yet
+    fix other cases, such as array subscript left-hand-side.
+61) Poptype now alls int<-->char cast (a bug was preventing it)
+60) Adding a hacked version of ocamllex which spits out Popcorn.
+Adding the engine that resulting scanners must link against.
+Adding files that modify the scheme compiler to use this new tool.
+59) talout now uses current directory if TALCLIB not set in environment
+58) Moved some things out of stdlib.c and into core.pop
+57) Ugly hacks to runtime tali files that make it Popcorn specific until
+    Popcorn can support C calling convention
+56) Both Scheme implementations now use the same scheme.tali file.
+55) Moved sclib.c and scheme.tali to the runtime directory
+54) Minor Scheme bug fixes (both implementations)
+53) Top-level Makefile now does more recursive cleaning and builds popcorn/lib
+52) Re-did tests/scheme directory including a Makefile
+51) Minor bug fix tin tallinkcheck.ml
+50) Changed Popcorn to add popcorn/lib to include list (or POPCORN_LIB
+    environment variable)
+49) Created popcorn/lib directory and moved apps/popcorn/util there
+48) Rewrote Scheme in Popcorn compiler to use bison
+47) Added UnionMember construct to Popcorn
+46) Added a hacked bison (still written in C) that outputs Popcorn code
+45) Fixed scheme in popcorn program & link check stuff and upgraded for (43).
+44) Fixed popcorn due to (42).
+43) General improvements to runtime and runtime documentation.  Files now
+    supported.  System and getenv supported.
+42) Fixed bug in subtype code and subregister file.
+41) Minor fixes to popcorn tests.
+40) Corrected copyright notices.
+39) Implemented Movpart in Talc assembler.
+38) Talc assembler now supports Cyclone macros.
+37) Now allow multiple consistent definitions of types or values.
+36) Added (unsigned/signed) (byte/short/int) and (implicit/explicit)
+	cast to Popcorn. Cast syntax is (:int) e
+35) Implemented Tal.Movpart
+34) Modified talx86_lang_spec.tex to reflect (32).
+33) Modified popcorn to use type tags instead of exn/exnname.
+32) Removed exn, exnname, toexn, mexnname, dexnname, and bexn.  Added type
+    tags.
+31) fix: Instantiating 'a with Void now generates an error.
+30) syntax: eliminated public/private for global variables in favor of 
+	static/(default public)
+29) fix: bug in compilation of a[0]+=4 (reported by Trevor)
+28) Tapp's can now be any of the following:
+ o Con con (as before, a con)
+ o AReg r   (use type of r in the context)
+ o StackTail(r,i) (lookup up r, which must be an sptr, take i tails)
+ o StackSlice(r,i,j,c) (like tail, but take section between i and j tails
+	                and cons it onto c)
+ This addition changes talparser.mly tal.ml tal.mli talverify.ml talpp.ml
+ Popcorn uses this facility, after changes to popcomptypes.ml/mli
+  popcompenv.ml/mli popcompile.ml
+ Scheme is just updated to use the new tal datatype for Tapp.
+27) semi-fix: Implemented but untested pre-processing under Unix.
+26) syntax: allow type variables on function declarations to be omitted.
+25) fix: Now verify that no two globals have the same name.
+24) fix: fixed bug related to cascaded =
+23) syntax: :: is used for module access uniformly.
+22) feature: open is now supported.
+21) syntax: variable names may begin with _
+20) fix: line/col. numbers correctly report inclusive start, exclusive end
+19) minor: strings and tuples are mutable.
+18) feature: Sequence operator (,)
+17) syntax: for(int i=0; .... )
+16) feature: explicit type instantiation (f@<bool,int>)
+15) syntax: type variables begin with ' not `
+14) minor: fixed scomp.ml to type strings correctly
+13) speedup: avoid x/x substitutions (talcon.ml)
+12) speedup: simplify alpha-context (talcon.ml)
+11) speedup: does multiple Tapp substitutions at once (talcon.ml)
+10) speedup: isnorm now 3-valued (tal.ml tal.mli talcon.ml talverify.mlc)
+ 9) speedup: check does not calculate freevars (talverify.ml)
+ 8) speedup: check does abbrevs and checking in one pass (talverify.ml)
+ 7) speedup: explicit substitutions added, but not being used 
+	(tal.ml tal.mli talcon.ml talpp.ml)
+ 6) speedup: tal no longer case-insensitive (tallex.mll talpp.ml tal_prog.tali)
+ 5) speedup: don't splay on dictionary lookup (dict.ml splay.ml splay.mli)
+ 4) speedup: implement sets with unordered lists (set.ml)
+ 3) speedup: hash strings used in identifiers (identifier.ml Makefile .depend)
+ 2) Split popcompile into 3 files (one for types, one for code gen environment)
+ 1) Put an improved ocamldep in computil, modified Makefile to use it
+
+Release 1.6
+===========
+
+11) Cyclone stuff added.
+10) talout modified to have write options, popcorn modified to have an unmasm
+    flag to get around the line limitations.
+ 9) a poppeep optimisation was disabled as it turned an absolute into a
+    relative which breaks cyclone templates.
+ 8) tal.inc modified to call malloc with an absolute address
+ 7) talpp modified to output byte sequences in chunks of 32 bytes
+ 6) tests/cyclone directory added with regression and sample tests
+ 5) tests/popcorn modified to make regression testing easier
+ 4) tal_prog now gives program a blank template register
+ 3) added timer and debugging functions to stdlib
+ 2) removed register allocator from Makefile and popcompilereg from popcorn
+ 1) cyclone syntax changed
+
+Release 1.5
+===========
+
+38) Fixed various other tal verifier bugs
+37) Fixed identifier parsing bug
+36) TALC now links as well as verifies
+35) Added master TODO and CHANGES file in doc directory, removed others.
+34) Introduced an abstract int32 type.
+33) Generic front end added.
+32) Line number parsing added.
+31) Directories restructured:
+      * toplevel apps directory for applications writing in popcorn/TAL
+      * toplevel tests directory for various tests
+30) New Makefile, supports NATIVE=yes and PROFILE=yes, for compiling to
+    native and with profiling respectively.
+29) Old statistics gathering code gone.
+28) Popcorn: while compiling x/y.pop x is added to search path, tal
+    files export and import files y_[ei].tali not x/y_[ei].tali
+27) Added utilities.mli
+26) make runtime almost works under unix, still need gc.a
+25) exnname's take memory types not word types
+24) added cc and tla information to register state
+23) cc tracking is implemented, currently no refinement though
+22) tla implemented
+21) xor r,r hack to make r:S(0)
+20) xchg & cmp reworked
+19) fixed bug in unchecked code label types
+18) fixed bug in link checker
+17) code trees implemented, no longer need code types on all labels
+16) fixed leq cutoff bug
+15) fixed zero length array problem
+14) added interface abbrevs
+13) fixed mov to esp bug
+12) changes to generic driver:
+      * middle phase
+      * error handling doesn't report success when error
+      * produces O/S exit code and examines exit code of subprocesses
+      * added print-at functionality
+      * added typecheck-at functionality
+      * fixed flushing bugs
+      * verify and asm added to prevent multiple verifications
+11) popcorn LAM implemented mostly:
+      * line number directives
+      * calls C preprocessor
+      * open & prefix partially implemented
+10) fixed div/mod bug in popcorn
+ 9) popcorn code generator now looks deeply into boolean expression for
+    better code generation
+ 8) various other code generator improvements in popcorn
+ 7) Polymorphism and exceptions added to popcorn
+ 6) Binary and hexidecimal numbers added to popcorn
+ 5) Updated (and now mandated to) ocaml 2.01
+ 4) Various popcorn bug fixes
+ 3) Various TALC assembler fixes
+ 2) S(i) <= B4 and S(i) <= ^.(i)
+ 1) Equal recursive types are now leq, nonequal recursive type leq still
+    unimplemented
+
+Release 1.4
+===========
+
+- added generic toplevel driver
+- register state is abstract
+- New TAL constructor language
+- New toplevel driver works with TALC assembler
+- top-level global variables with following syntax
+	public int x = 0;
+	private int x = 5;
+	public point x = new point(3,4);
+Constant expressions include constants, new structs, and new unions.  For
+option structs null initializers will break if the type is abstract.
+
+- abstract and public types (public is still the default)
+	abstract struct point { int x,y; }
+	public   struct point { int x,y; }
+- precedence of operators has been fixed and we now parse all C operators.
+	(due to Dan Grossman)
+- We now allow: extern int x,y;
+- bug fixes:
+	Int switch now uses the CMP instruction instead of TST
+	exp1 ? exp2 : exp3 now works even if exp2 and exp3 have void type
+	Eliminated single value case for sums.  It never worked anyways.
+	Popcorn command line should now correctly deal with filenames with
+spaces.
+
+Release 1.0 - 1.3
+=================
+
+- Ocaml 1.07 compatible
+- bug fixes:
+	- BooleanType printed as bool instead of boolean
+	- default: clause of switch takes stmts instead of stmt
+	- handle Not_found when doing a new union instead of Invalid_argument 
+		(List.assoc)
+	- array subscript on strings used wrong scale
+	- stack overflow in TAL pretty printer -- change set_margin 9999
+		instead of 999999.
+	- got rid of re-defined imported types
+	[last two due to Trevor]
+	- continue jumped to break label instead of continue label
+	- various return-check bug fixes
+- additions:
+	- tuples:  
+		- type syntax:  *(t1,...,tn)   (n >= 0)
+		- intro:  new (e1,...,en)      (n >= 0)
+		- elim:   e.i		       (i >= 1)
+  [by Trevor]
+	- do loops
+	- slightly different syntax for arrays, support for first-class
+		function (types) (sort of).
+	- expression instead of id for function call.
+	- constructs for code generation: suspend, resume, compile, hole
+		- type checking support
+		- no compiler support yet (requires TAL changes)

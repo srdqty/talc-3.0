@@ -1,0 +1,422 @@
+/*
+ * pp.cyc
+ * Trevor Jim                                                         
+ *                                                                    
+ * Kamin's  version of Wadler's pretty printing combinators,          
+ * extended to do hyperlinks for Tk.                                  
+ */
+
+#include "core.h"
+#include "list.h"
+#include "string.h"
+#include "hashtable.h"
+#include "fn.h"
+
+open Core;
+open List;
+open String;
+open Hashtable;
+open Fn;
+
+prefix PP;
+open   PP;
+
+union <a>Alist {
+  void Empty;
+  a Single;
+  *(<a>Alist,<a>Alist) Append;
+}
+
+<a>Alist append<a>(<a>Alist a1, <a>Alist a2) {
+  if (a1==^Alist.Empty) return a2;
+  else if (a2==^Alist.Empty) return a1;
+  else return ^Alist.Append(^(a1,a2));
+}
+
+<a>list list_of_alist<a>(<a>Alist a) {
+  <a>list f<a>(<a>Alist a,<a>list l) {
+    switch (a) {
+    case Empty: return l;
+    case Single(x): return cons(x,l);
+    case Append*(a1,a2):
+      return f(a1,f(a2,l));
+    }
+  };
+  return f(a,null);
+}
+
+// I've inlined the type link as *(int,int,int,string) below;
+// it is line, char, length, link content
+// (I'm having problems getting the preprocessor to do it)
+
+struct Ppstate {
+  int ci;  // current indent
+  int cc;  // current column
+  int cl;  // current line
+  int pw;  // page width
+  int epw; // effective page width
+}
+
+struct Out {
+  int newcc;           // new current column
+  int newcl;           // new current line
+  <string>Alist ppout; // pretty-printed output
+  <*(int,int,int,string)>Alist links;   // hyperlinks
+}
+
+struct Doc {
+  int mwo;           // min width, w/o newline
+  int mw;            // min width, w/newline
+  <Ppstate,Out>fn f; // thunk for doing a step of pretty printing
+}
+
+static void dump_out(FILE f,<<string>Alist>list stack) {
+  while (stack != null) {
+    _ x = stack.hd;
+    stack = stack.tl;
+    switch (x) {
+    case Empty: continue;
+    case Single(s): fprint_string(f,s); continue;
+    case Append*(a1,a2):
+      stack = ^list(a1,^list(a2,stack)); continue;
+    }
+  }
+}
+
+// Dump a doc to a file descriptor
+void file_of_doc(Doc d,int w,FILE f) {
+  Out o = apply(d.f,^Ppstate(0,0,1,w,w));
+  dump_out(f,^list(o.ppout,null));
+}
+
+// Convert a Doc to a string.  Takes a Doc and a width as arguments.
+string string_of_doc(Doc d, int w) {
+  Out o = apply(d.f,^Ppstate(0,0,1,w,w));
+  return String::str_sepstr(list_of_alist(o.ppout),"");
+}
+
+/* Convert a Doc to a string and hyperlinks.
+   Takes a Doc and a width as arguments. */
+*(string,<*(int,int,int,string)>list) string_and_links(Doc d, int w) {
+  Out o = apply(d.f,^Ppstate(0,0,1,w,w));
+  return ^(String::str_sepstr(list_of_alist(o.ppout),""),
+           list_of_alist(o.links));
+}
+
+int int_cmp(int i, int j) {
+  if (i<j) return -1;
+  else if (j<i) return 1;
+  else return 0;
+}
+
+int ihash(int x) {
+  return x;
+}
+
+static <<int,string>table>Opt bhashtbl = null;
+
+string nlblanks(int i) {  // a newline followed by i blanks
+  if (bhashtbl == null)
+    bhashtbl = ^Opt(Hashtable::create(61,int_cmp,ihash));
+  if (i<0) raise Failure("nlblanks");
+  try
+    return Hashtable::lookup(bhashtbl.v,i);
+  catch {
+  case Not_found:
+    _ num_tabs = i / 8;
+    _ num_spaces = i % 8;
+    _ total = 1 + num_tabs + num_spaces;
+    string nlb = new_string(total);
+    nlb[0] = '\n';
+    for (int j = 0; j < num_tabs; j++)
+      nlb[j+1] = '\t';
+    for (int j = 0; j < num_spaces; j++)
+      nlb[j+1+num_tabs] = ' ';
+    Hashtable::insert(bhashtbl.v,i,nlb);
+    return nlb;
+  }
+}
+
+// hash the strings...
+static <<string,Doc>table>Opt str_hashtbl = null;
+
+Doc text(string s) {
+  <string,Doc>table t;
+  if (str_hashtbl == null) {
+    t = Hashtable::create(101,strcmp,hash_string);
+    str_hashtbl = ^Opt(t);
+  } else {
+    t = str_hashtbl.v;
+  }
+  try
+    return Hashtable::lookup(t,s);
+  catch {
+  case Not_found:
+    Doc d = text_doc(s);
+    Hashtable::insert(t,s,d);
+    return d;
+  }
+}
+
+int infinity = 9999999;
+
+static Doc text_doc(string s) {
+  int slen = size(s);
+  return
+    ^Doc(slen,
+         infinity,
+         make_fn
+         (fun Out f(*(int,string) clo,Ppstate st) {
+           int slen = clo.1;
+           string s = clo.2;
+           return ^Out(st.cc+slen,
+                       st.cl,
+                       ^Alist.Single(s),
+                       ^Alist.Empty);},
+          ^(slen,s)));
+}
+
+<Doc>Opt nil_doc_opt = null;
+<Doc>Opt blank_doc_opt = null;
+<Doc>Opt line_doc_opt = null;
+
+// This is made a function because non-constant initializers not allowed
+Doc nil_doc() {
+  if (nil_doc_opt == null) {
+    nil_doc_opt = ^Opt(text(""));
+  }
+  return nil_doc_opt.v;
+}
+
+// This is made a function because non-constant initializers not allowed
+Doc blank_doc() {
+  if (blank_doc_opt == null) {
+    blank_doc_opt = ^Opt(text(""));
+  }
+  return blank_doc_opt.v;
+}
+
+Doc hyperlink(string shrt, string full) {
+  int slen = size(shrt);
+  return ^Doc
+    (slen,
+     infinity,
+     make_fn
+     (fun Out f(*(int,string,string) clo, Ppstate st) {
+       int slen = clo.1;
+       string shrt = clo.2;
+       string full = clo.3;
+       return ^Out(st.cc+slen,
+                   st.cl,
+                   ^Alist.Single(shrt),
+                   ^Alist.Single(^(st.cl,st.cc,slen,full)));},
+      ^(slen,shrt,full)));
+}
+
+// This is made a function because non-constant initializers not allowed
+Doc line_doc() {
+  Out line_f(Ppstate st) {
+    return ^Out(st.ci,
+                st.cl+1,
+                ^Alist.Single(nlblanks(st.ci)),
+                ^Alist.Empty);
+  };
+  if (line_doc_opt == null) 
+    line_doc_opt = ^Opt(^Doc(0,0,fp2fn(line_f)));
+  return line_doc_opt.v;
+}
+
+Doc nest(int k, Doc d) {
+  return ^Doc
+    (d.mwo,
+     d.mw,
+     make_fn
+     (fun Out f(*(int,Doc) clo, Ppstate st) {
+       int k = clo.1;
+       Doc d = clo.2;
+       Ppstate st2 = 
+         ^Ppstate(st.ci + k,
+                  st.cc,
+                  st.cl,
+                  st.pw,
+                  st.epw);
+       return apply(d.f,st2);},
+      ^(k,d)));
+}
+
+Doc concat(Doc d1, Doc d2) {
+  return ^Doc(min(d1.mw, d1.mwo+d2.mwo),
+              min(d1.mw, d1.mwo+d2.mw),
+              make_fn
+              (fun Out f(*(Doc,Doc) clo, Ppstate st) {
+                Doc d1 = clo.1;
+                Doc d2 = clo.2;
+                int epw2 = max(st.pw-d2.mw, st.epw-d1.mwo);
+                Ppstate st2 = 
+                  ^Ppstate(st.ci,st.cc,st.cl,st.pw,epw2);
+                Out o1 = apply(d1.f,st2);
+                Ppstate st3 =
+                  ^Ppstate(st.ci,o1.newcc,o1.newcl,st.pw,epw2);
+                Out o2 = apply(d2.f,st3);
+                Out o3 = 
+                  ^Out(o2.newcc,
+                       o2.newcl,
+                       append(o1.ppout, o2.ppout),
+                       append(o1.links, o2.links));
+                return o3;},
+               ^(d1,d2)));
+}    
+
+static Doc long_concats(<Doc>list doclist) {
+#ifdef DEBUG
+  fprintf(tal_stderr,"doing long concats %d\n",List::length(doclist));
+#endif
+  <Doc>list orig = doclist;
+  Doc d = doclist.hd;
+  doclist = doclist.tl;
+  int mw = d.mw;
+  int mwo = d.mw;
+
+  for (_ ds = doclist; ds != null; ds = ds.tl) {
+    int mw2 = min(mw, mwo+ds.hd.mwo);
+    int mwo2 = min(mw, mwo+ds.hd.mw);
+    mw = mw2;
+    mwo = mwo2;
+  }
+
+  Out f(<Doc>list ds, Ppstate st) {
+    <Out>list os = null;
+    for (_ ds = ds; ds != null; ds = ds.tl) {
+      Doc d = ds.hd;
+      Out o = apply(d.f,st);
+      st = ^Ppstate(st.ci,o.newcc,o.newcl,st.pw,st.epw-d.mwo);
+      os = ^list(o,os);
+    }
+    int newcc = os.hd.newcc;
+    int newcl = os.hd.newcl;
+    <string>Alist s = ^Alist.Empty;
+    _ links = ^Alist.Empty;
+    for(; os != null; os = os.tl) {
+      s = append(os.hd.ppout,s);
+      links = append(os.hd.links,links);
+    }
+    return ^Out(newcc,newcl,s,links);
+  };
+  return ^Doc(mw,mwo,make_fn(f,orig));
+}
+
+Doc concats(<Doc>list doclist) {
+  if (doclist==null) return nil_doc();
+  else if (doclist.tl==null) return doclist.hd;
+  // JGM: a hack to avoid stack overflow
+  else if (List::length(doclist) > 30) return long_concats(doclist);
+  else return concat(doclist.hd,concats(doclist.tl));
+}
+
+int min(int x, int y) {
+   if (x<=y) return x;
+   else return y;
+}
+
+int max(int x, int y) {
+   if (x>=y) return x;
+   else return y;
+}
+
+Doc doc_union(Doc d, Doc d2) {
+  return ^Doc
+    (min(d.mwo, d2.mwo),
+     min(d.mw, d2.mw),
+     make_fn
+     (fun Out f(*(Doc,Doc) clo, Ppstate st) {
+       Doc d = clo.1;
+       Doc d2 = clo.2;
+       bool dfits = (st.cc+d.mwo <= st.epw)
+         || (st.cc+d.mw <= st.pw);
+       if (dfits) return apply(d.f,st);
+       else return apply(d2.f,st);},
+      ^(d,d2)));
+}
+
+// This is made a function because non-constant initializers not allowed
+Doc oline_doc() {
+  return doc_union(nil_doc(),line_doc());
+}
+
+Doc tab(Doc d) {
+  Doc d2 =
+    ^Doc(d.mwo,
+         d.mw,
+         make_fn
+         (fun Out f(*(Doc) clo, Ppstate st) {
+           Doc d = clo.1;
+           Ppstate st2 = ^Ppstate(st.cc,st.cc,st.cl,st.pw,st.epw);
+           return apply(d.f,st2);},
+          ^(d)));
+  return d2;
+}
+
+
+/* Sequences */
+Doc ppseq<a>(Doc pp(a), string sep, <a>list l0) {
+  Doc f<a>(Doc pp(a), string sep, <a>list l) {
+      if (l==null) return nil_doc();
+      else if (l.tl==null) return pp(l.hd);
+      else return concats(^list(pp(l.hd),
+                                ^list(text(sep),
+                                      ^list(oline_doc(),
+                                            ^list(f(pp,sep,l.tl),null)))));
+  };
+  return tab(f(pp,sep,l0));
+}
+
+Doc seq(string sep, <Doc>list l0) {
+  Doc f(string sep, <Doc>list l) {
+      if (l==null) return nil_doc();
+      else if (l.tl==null) return l.hd;
+      else {
+	Doc sep = text(sep);
+	Doc oline = oline_doc();
+	_ x = l;
+	while (x.tl != null) {
+	  _ temp = x.tl;
+	  x.tl = ^list(sep,^list(oline,temp));
+	  x = temp;
+	}
+	return concats(l);
+	// This causes stack overflow on big sequences
+	//return concats(^list(l.hd,
+        //                        ^list(text(sep),
+        //                              ^list(oline_doc(),
+        //                                    ^list(f(sep,l.tl),null)))));
+      }
+  };
+  return tab(f(sep,l0));
+}
+
+/* Sequences broken by lines */
+Doc ppseql<a>(Doc pp(a), string sep, <a>list l0) {
+  Doc f<a>(Doc pp(a), string sep, <a>list l) {
+      if (l==null) return nil_doc();
+      else if (l.tl==null) return pp(l.hd);
+      else return concats(^list(pp(l.hd),
+                                ^list(text(sep),
+                                      ^list(line_doc(),
+                                            ^list(f(pp,sep,l.tl),null)))));
+  };
+  return tab(f(pp,sep,l0));
+}
+
+Doc seql(string sep, <Doc>list l0) {
+  Doc f(string sep, <Doc>list l) {
+      if (l==null) return nil_doc();
+      else if (l.tl==null) return l.hd;
+      else return concats(^list(l.hd,
+                                ^list(text(sep),
+                                      ^list(line_doc(),
+                                            ^list(f(sep,l.tl),null)))));
+  };
+  return tab(f(sep,l0));
+}
+
+

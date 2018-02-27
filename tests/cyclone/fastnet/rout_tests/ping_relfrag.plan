@@ -1,0 +1,23 @@
+fun ret (source) =
+  OnRemote (|print|("Success"), source, getRB (), defaultRoute)
+
+svc generateKey : void -> key
+svc sendAck : ('a chunk,key,int) -> unit chunk
+
+fun sendem (c:unit chunk,x:int*host) =
+  let val seq = generateKey() 
+      val d = sendAck(c,seq,10) in
+    (RetransOnRemote([d],seq,3,#2 x,#1 x,defaultRoute);x)
+  end
+
+svc fragment : ('a chunk,int) -> unit chunk list
+svc fragment_overhead : int
+  
+fun ping(source, dest) =
+  let val c = |ret|(source)
+      val seq = generateKey()
+      val cs = fragment(c,100+fragment_overhead)
+      val l = length(cs) in
+    (foldr(sendem,cs,(getRB()/(l*3),dest)); ())
+  end
+

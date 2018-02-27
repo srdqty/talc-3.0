@@ -1,0 +1,39 @@
+#include "poptiming.h"
+#include "core.h"
+open Core;
+
+// We represent a polynomial as an array where the element at position i
+// is the coefficient for exponent i.
+
+double poly(float p[],float x) {
+  unsigned int len = size(p);
+  float x_i = 1.0;
+  double result = 0.0;
+  for(unsigned int i=0; i<len; ++i) {
+    _ ai = p[i];
+    if(ai != 0.0) result += ai * x_i;
+    x_i *= x;
+  }
+  return result;
+}
+
+void pop_main() {
+  string args[] = std_args();
+  if(size(args)!=2) {
+    printf("%s: usage <max exponent>\n",args[0]);
+    return;
+  }
+  int exp = int_of_string(args[1]);
+  double result = 0;
+  float x = 0.8;
+  float p[] = new_array_float(exp+1);
+
+  for(int i = 0; i < (exp + 1); i++) {
+    p[i] = i+1;
+  }
+
+  MAIN_TEST("polyf",COMPILER,PLAIN_KIND,args[1],0,poly(p,x));
+  
+  result = poly(p,x);
+  printf("exponent = %d, result = %g\n",exp,result);
+}

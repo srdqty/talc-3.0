@@ -1,0 +1,97 @@
+/* TAL Language Stuff
+ *
+ * Copyright Greg Morrisett, Neal Glew
+ *   January 1999, all rights reserved
+ *
+ */
+
+/* RLS 5/26/00: split tal_start_nomain.c from tal_start.c to provide
+   a tal-to-C interface that doesn't have a main() or tal_main() function. */
+
+#include <stdio.h>
+#include <stdlib.h>
+
+/*** Memory Allocation ***/
+
+extern void *GC_malloc(int size);
+extern void *GC_malloc_atomic(int size);
+extern void GC_free(void);
+extern void tal_exit(int);
+
+extern void caml_startup(char **argv);
+
+void out_of_memory(void)
+{
+  fprintf(stderr, "\nout of memory!\n");
+  exit(255);
+}
+
+/* Moved from stdlib.c to make Linux happy */
+
+FILE *tal_stdin = NULL;
+FILE *tal_stdout = NULL;
+FILE *tal_stderr = NULL;
+
+void init_stdlib_io() {
+  tal_stdin = stdin;
+  tal_stdout = stdout;
+  tal_stderr = stderr;
+}
+
+/*** Loader initialization ***/
+
+#ifdef __linux__
+#define SYMNAME(s) s
+#else
+#define SYMNAME(s) "_" ## s
+#endif
+
+void
+tal_start_init_loader_syms(void (*register_sym)(long,long))
+{
+  /* register GC symbols here as well, since we can't alter gc.a */
+  register_sym((long)GC_malloc,(long)SYMNAME("GC_malloc"));
+  /* register_sym((long)GC_free,(long)SYMNAME("GC_free")); */
+
+  register_sym((long)out_of_memory,(long)SYMNAME("out_of_memory"));
+  /*  register_sym((long)taltla,(long)SYMNAME("taltla")); */
+  register_sym((long)tal_stdin,(long)SYMNAME("tal_stdin"));
+  register_sym((long)tal_stdout,(long)SYMNAME("tal_stdout"));
+  register_sym((long)tal_stderr,(long)SYMNAME("tal_stderr"));
+  register_sym((long)tal_exit,(long)SYMNAME("tal_exit"));
+}
+
+/*
+extern void init_loader(char **argv);
+*/
+
+/*** Program Entry ***/
+
+/*
+extern void tal_main(void); 
+*/
+
+int tal_argc;  
+char **tal_argv; 
+
+// Returns 0 if successful, error code if not.
+int tal_startup(int argc, char **argv)   
+{    
+  init_stdlib_io();   
+  tal_argc = argc; 
+  tal_argv = argv; 
+
+  /*RLS 5/26/00
+  init_loader(argv);
+
+  tal_main(); 
+  */
+
+  return 0;
+} 
+
+
+typedef struct str_internal {int size; char *chars;} *string;
+typedef struct rep_internal {int size; char chars[1];} *rep;
+
+/* EOF: tal_start_nomain.c */

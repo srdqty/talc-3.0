@@ -1,0 +1,31 @@
+// More extensive exception checking.
+// Checks nested try blocks, and control-flow that escapes try blocks.
+
+#include "core.h"
+
+void test_nested_trys()
+{
+ try {
+   try { 
+     Core::print_string("Passed nested_trys.\n");
+     return; } handle y { return; } 
+ } handle y { return; }
+}
+
+void test_control_flow()
+{
+ while(true)
+   {
+     try { 
+       while(false);
+       break; } handle y { return; }
+   }
+
+ Core::print_string("Control flow out of try worked.\n");
+}
+
+void pop_main()
+{
+ test_nested_trys();
+ test_control_flow();
+}

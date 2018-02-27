@@ -1,0 +1,12 @@
+extern int foo(int a);
+static int con = 6;
+
+int foo(int a) {
+  if (a <= 0) return con;
+  else return (a + bar(a-1));
+}
+int bar(int a) {
+  if (a <= 0) return con;
+  else return (a + 1 + foo(a-1));
+}
+

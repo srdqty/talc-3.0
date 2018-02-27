@@ -1,0 +1,132 @@
+// Dead-code elimination 
+
+////////////////////////// Modules /////////////////////////
+#include "core.h"
+#include "xarray.h"
+#include "dict.h"
+#include "id.h"
+#include "set.h"
+#include "bitvec.h"
+open Core;
+open List;
+
+#include "poperr.h"
+#include "popil.h"
+#include "poprtcg.h"
+open Popil;
+
+prefix Popdead;
+open   Popdead;
+
+////////////////////////// Debugging ///////////////////////
+
+//#define DEBUG
+
+#ifdef DEBUG
+
+#define ASSERT(x)      { if(x) { BUG("Assertion failed."); } }
+#define DEBUG_PR0(x)   { fprintf(tal_stderr,x); fflush(tal_stderr); }
+#define DEBUG_PR1(x,y) { fprintf(tal_stderr,x,y); fflush(tal_stderr); }
+
+#else
+
+#define ASSERT(x)     
+#define DEBUG_PR0(x)
+#define DEBUG_PR1(x,y)
+
+#endif
+
+////////////////////////// Types ///////////////////////////
+
+/////////////////////// Utilities //////////////////////////
+
+///////////////////////// Code /////////////////////////////
+
+// Eliminate dead blocks in f.  Someday eliminate dead code too.
+static void process_fun(cf_function f) {
+
+  // Stage 1: Remove the unreachable blocks
+  // May result in templates being eliminated as well.
+  _ blocks = f.blocks;
+  _ num_blocks = Xarray::length(blocks);
+  _ reachable_blocks = get_df_order(f);
+  _ num_reachable = size(reachable_blocks);
+
+  // If all the blocks are reachable nothing to do in stage 1.
+  if(num_blocks != num_reachable) {
+
+    _ reachable = Bitvec::new_empty(num_blocks);
+    for(_ i=0; i<num_reachable; i++) {
+      _ blk_num = reachable_blocks[i];
+      Bitvec::set(reachable,blk_num);
+    }
+    
+    // Scrunch the xarray of blocks to eliminate the unreachable blocks.
+    // scrunch_i is the offset where the next reachable block should be put.
+    // At the end we must shrink the xarray to size(reachable_blocks)
+    _ scrunch_i = 0;
+    for(_ i=0;i<num_blocks;i++) {
+      if(!Bitvec::get(reachable,i)) { // NOT reachable.
+	_ blk = Xarray::get(blocks,i);
+	DEBUG_PR1("block %s dead\n", Id::id_to_string(blk.label));	
+	Poprtcg::remove_block(blk);
+      } else {
+	if(scrunch_i != i) {
+	  _ blk = Xarray::get(blocks,i);
+	  Xarray::set(blocks,scrunch_i,blk);
+	  blk.num = scrunch_i; // We moved it to scrunch_i.
+	  }
+	scrunch_i++;
+      }
+    }
+
+    // Also must remove unreachable blocks from predecessors of reachable
+    // blocks.
+    // (successors of reachable blocks are by definition reachable.)
+    for(_ i = 0; i < num_reachable; i++) {
+      _ preds = Xarray::get(blocks,i).pred;
+      _ num_preds = Xarray::length(preds);
+      _ scrunch_j = 0;
+      _ dead_preds = 0;
+      for(_ j = 0; j < num_preds; j++) {
+	_ p = Xarray::get(preds,j);
+	if(p.num < num_reachable) {
+	  if(scrunch_j != j)
+	    Xarray::set(preds,scrunch_j,p);
+	  scrunch_j++;
+	} else {
+	  //printf("Eliminated predecessor %d\n",p.num);
+	  dead_preds++;
+	}
+      }
+      if(dead_preds != 0) Xarray::delete(preds,dead_preds);
+    }
+
+    Xarray::delete(blocks,num_blocks - num_reachable);
+  } 
+  // Stage 2: General dead-code elimination.
+
+} 
+/////////////////////// Entry Point ////////////////////////
+
+void do_it(cf_function f) {
+  process_fun(f);
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

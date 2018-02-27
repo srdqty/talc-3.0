@@ -1,0 +1,205 @@
+
+// ported by Dan April 1999
+
+// we reveal that loc is int unlike ocaml implementation
+
+// do some clean-up when/if we get sprintf in Popcorn
+
+// didn't port things specific to the Parsing module which we don't have,
+//  namely seg_symbol and seg_rhs.  We might get better errors if we 
+//  had access to this cleaner Parsing interface.
+
+// The caml version doesn't seem to work well with printing contexts either,
+// at least with Popcorn
+
+#include "core.h"
+#include "list.h"
+#include "string.h"
+#include "ref.h"
+#include "lineno.h"
+#include "gcdfec.h"
+
+using Core;
+using List;
+using String;
+
+namespace Gcdfec;
+
+xenum exn { Exit };
+
+/////////// Location tracking///////////
+
+static string source = ""; // initialized by set_ctxt
+abstract struct seg { int s; int e; };
+
+//Seg dummy_seg = &seg(0,0);    // FIX: Not allowed at top level
+static struct seg dummy = {0,0};
+Seg dummy_seg = &dummy;
+
+Seg seg_of_abs(int start, int end) {
+  return &seg(start,end);
+}
+Seg seg_join(Seg s1, Seg s2) {
+  return &seg(s1->s,s2->e);
+}
+
+string string_of_loc(int loc) {
+  Lineno::Pos p = Lineno::pos_of_abs(source,loc);
+  return strconcat_l(&cons(p->logical_file, 
+		     &cons((string)"(",
+		     &cons(string_of_int(p->line_no), 
+		     &cons((string)":",
+		     &cons(string_of_int(p->col), 
+		     &cons((string)")", null)))))));
+}
+
+string string_of_seg(Seg segment) {
+  Lineno::Pos pos_s = Lineno::pos_of_abs(source,segment->s);
+  Lineno::Pos pos_e = Lineno::pos_of_abs(source,segment->e);
+  if (strcmp(pos_s->logical_file,pos_e->logical_file)==0)
+    return strconcat_l(&cons(pos_s->logical_file,
+		       &cons((string)"(",
+		       &cons(string_of_int(pos_s->line_no),
+		       &cons((string)":",
+		       &cons(string_of_int(pos_s->col),
+		       &cons((string)"-",
+		       &cons(string_of_int(pos_e->line_no),
+		       &cons((string)":",
+		       &cons(string_of_int(pos_e->col), 
+		       &cons((string)")",null)))))))))));
+  else
+    return strconcat_l(&cons(pos_s->logical_file,
+		       &cons((string)"(",
+ 		       &cons(string_of_int(pos_s->line_no),
+		       &cons((string)":",
+ 		       &cons(string_of_int(pos_s->col),
+		       &cons((string)")",
+		       &cons((string)"-",
+		       &cons(pos_e->logical_file,
+		       &cons((string)"(",
+		       &cons(string_of_int(pos_e->line_no),
+		       &cons((string)":",
+		       &cons(string_of_int(pos_e->col), 
+		       &cons((string)")",null))))))))))))));
+}
+
+///////////// Errors ////////////
+
+enum error_kind { Lex, Parse, Elab };
+struct error {
+  string     source;
+  Seg        segment;
+  enum error_kind kind;
+  string     desc;
+};
+
+Error mk_err_lex(Seg l, string desc) {
+  return &error(source, l, Lex, desc);
+}
+Error mk_err_parse(Seg l, string desc) {
+  return &error(source, l, Parse, desc);
+}
+Error mk_err_elab(Seg l, string desc) {
+  return &error(source, l, Elab, desc);
+}
+
+/////////// Error Reporting ///////////
+
+// If there are errors getting stuff from the source file then throw Nocontext
+// and just don't print the source context
+
+xenum exn { Nocontext };
+
+
+static string trunc(int n, string s) {
+  int len = size(s);
+  if (len < n) 
+    return s;
+  int len_one = (n-3)/2;
+  int len_two = n-3-len_one;
+  string ans = new_string(n);
+  strncpy(ans, 0,         s,     0,           len_one);
+  strncpy(ans, len_one,   "...", 0,           3);
+  strncpy(ans, len_one+3, s,     len-len_two, len_two);
+  return ans;
+}
+
+static int line_length = 76;
+
+// Produce a one line string that shows the peice of the source file containing
+// the error; return also the column numbers the error starts and finishes at.
+static $(string,int,int) @get_context(Seg segment) {
+  Lineno::Pos pos_s, pos_e;
+  try {
+    pos_s = Lineno::pos_of_abs(source,segment->s);
+    pos_e = Lineno::pos_of_abs(source,segment->e);
+  } catch {
+  default:
+    throw Nocontext();
+  }
+  
+  string sline = pos_s->line;     string eline = pos_e->line;
+  int    sl    = pos_s->line_no;  int    el    = pos_e->line_no;
+  int    sc    = pos_s->col;      int    ec    = pos_e->col;
+  
+  if (sl == el) {
+    // Case 1: error is all on one line, 
+    // give 1/3 of line to before, error, and after
+    int n = line_length / 3;
+    string sec_one   = trunc(n, substring(sline, 0,  sc            ));
+    string sec_two   = trunc(n, substring(sline, sc, ec-sc         ));
+    string sec_three = trunc(n, substring(sline, sc, size(sline)-ec));
+    return &$(strconcat_l(&cons(sec_one,
+			 &cons(sec_two,
+			 &cons(sec_three, null)))),
+              (int)size(sec_one),
+              (int)(size(sec_one)+size(sec_two)));
+  }
+  else {
+    // Case 2: error on multiple lines,
+    // give 1/4 to start, start line rror, end line error, and end
+    int n = (line_length-3)/4;
+    string sec_one   = trunc(n, substring(sline, 0,  sc            ));
+    string sec_two   = trunc(n, substring(sline, sc, size(sline)-sc));
+    string sec_three = trunc(n, substring(eline, 0,  ec            ));
+    string sec_four  = trunc(n, substring(eline, ec, size(eline)-ec));
+    return &$(strconcat_l(&cons(sec_one,
+			 &cons(sec_two,
+			 &cons((string)".\\.",
+			 &cons(sec_three,
+			 &cons(sec_four, null)))))),
+              (int)size(sec_one),
+              (int)(size(sec_one)+size(sec_two)+3+size(sec_three)));
+  }
+}
+
+static bool error_b = false;
+bool error_p() { return error_b; }
+
+// does this even work when true in ocaml? NO!
+bool print_context = false;
+
+void post_error(Error e) {
+  error_b = true;
+  // why are we not using the source stored in e????
+  fprintf(cyc_stderr, "%s: %s\n", string_of_seg(e->segment), e->desc);
+  if (print_context) {
+    try {
+      let x = get_context(e->segment);
+      string marker_str = new_string(x[2]);
+      int i = -1;
+      while (++i < x[1]) marker_str[i] = ' ';
+      while (++i < x[2]) marker_str[i] = '^';
+      fprintf(cyc_stderr, "  %s\n  %s\n", x[0], marker_str);
+    } catch {
+    case Nocontext: break;
+    case y: throw(y);
+    }
+  }
+  fflush(cyc_stderr);
+}
+
+//////////// Overall Control ///////////
+void reset_fe(string s) { source = s; error_b = false; }
+void set_ctxt(string s) { source = s; error_b = false; }
+string get_ctxt() { return source; }

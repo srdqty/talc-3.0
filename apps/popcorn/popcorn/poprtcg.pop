@@ -1,0 +1,297 @@
+// Some useful IL functions for RTCG
+
+#include "core.h"
+#include "xarray.h"
+#include "list.h"
+#include "dict.h"
+#include "set.h"
+#include "id.h"
+#include "bitvec.h"
+#include "popil.h"
+
+#define list List::list
+
+open Core;
+open Popil;
+
+prefix Poprtcg;
+open Poprtcg;
+
+////////////////////////// Debugging ///////////////////////
+
+//#define DEBUG
+
+#ifdef DEBUG
+
+#define ASSERT(x)      { if(x) { BUG("Assertion failed."); } }
+#define DEBUG_PR0(x)   { fprintf(tal_stderr,x); fflush(tal_stderr); }
+#define DEBUG_PR1(x,y) { fprintf(tal_stderr,x,y); fflush(tal_stderr); }
+#define DEBUG_PR2(x,y,z) { fprintf(tal_stderr,x,y,z); fflush(tal_stderr); }
+
+#else
+
+#define ASSERT(x)     
+#define DEBUG_PR0(x)
+#define DEBUG_PR1(x,y)
+#define DEBUG_PR2(x,y,z)
+
+#endif
+
+////////////////////////////////////////////////////////////////////////////////
+
+static void xarray_find_remove<a>(<a>Xarray::xarray x, a b) {
+
+  int len = Xarray::length(x);
+  for(int i=0;i<len;i++) {
+    if(Xarray::get(x,i)==b) {
+       Xarray::remove(x,i);
+       return;
+       }
+  }
+}
+
+// Stolen from popiltal.  Should probably extern here and make available.
+static int operand2tptr(cf_function f, cf_operand o) {
+  switch operand_type(f,o) {
+  case TemplPtr(x): return x;
+  default: BUG("Expected template pointer.");
+  }
+}
+
+static int operand2region(cf_function f, cf_operand o) {
+    switch operand_type(f,o) {
+    case CodeRgn(x): return x;
+    default: BUG("Expected code region");
+    }
+}
+
+// Remove all the instructions from f that remove says to remove.
+// Should write a similar Xarray::filter function, would be 
+// very useful.
+static void remove_instructions<a>(cf_function f, a env,
+				bool remove(a,cf_instruction)) {
+  _ blks = f.blocks;
+  _ num_blks = Xarray::length(blks);
+
+  for(_ i = 0; i<num_blks; i++) {
+    _ blk = Xarray::get(blks,i);
+    _ insts = blk.insts;
+    _ num_insts = Xarray::length(insts);
+    
+    _ num_removed = 0;
+    for(_ j = 0; j < num_insts; j++) {
+      _ inst = Xarray::get(insts,j);
+      if(remove(env,inst)) {
+	num_removed++;
+      } else {
+	if(num_removed != 0) Xarray::set(insts,j-num_removed,inst);
+      }
+    }
+
+    Xarray::delete(insts,num_removed);
+  }
+}
+
+static bool is_dump(cf_template t, cf_instruction inst) {
+  switch inst {
+  case Dump *(o1,o2,templ): return (templ==t);
+  default: return false;
+  }
+}
+
+// Perform RTCG related work to remove a block from a function.
+// If the block is in a template, 
+//    remove it from the template.
+// If the block contains any holes, 
+//    remove related fill instructions from the generator
+//    remove the hole from this template's list of holes
+//    (note: all_holes need not be renumbered)
+// If no blocks remain (the template is dead)
+//    remove all dump instructions to this template from the generator
+// If the block is the template entry block
+//    pick an arbitrary other block as entry (entry is not used.)
+// If the block is the template exit block
+//    ERROR -- this should never happen
+void remove_block(cf_block b) {
+  if(b.template==null) return;
+
+  DEBUG_PR1("Removing block %s\n",Id::id_to_string(b.label));
+
+  _ t = b.template;
+
+  xarray_find_remove(t.blocks,b);
+  t.labels = Set::delete(t.labels,b);
+
+  if(t.exit!=null) {
+    if(t.exit.v.1 == b) {
+      _ hole = t.exit.v.2;
+      t.exit = null;
+    }
+  }
+
+  // We accumulate a list of removed_holes so that we can remove the fills.
+  // For now do not remove the holes from all_holes as that changes their
+  // numbering.  Still we can remove the holes from the template.
+  _ removed_holes = null;
+  _ holes = t.holes;
+  _ num_holes = Xarray::length(t.holes);
+  _ num_removed = 0;
+  for(int i=0;i<num_holes;i++) {
+    _ this_hole = Xarray::get(t.holes,i);
+
+    if(this_hole.2 == b) {
+      removed_holes = ^list(this_hole.1,removed_holes);
+      num_removed++;
+    }
+    else {
+      if(num_removed != 0) Xarray::set(holes,i-num_removed,this_hole);
+    }
+  }
+
+  if(removed_holes != null) {
+    // XXX - missing piece
+    // Remove fill instructions from the generator.
+    BUG("Unimplemented: Removing holes from generator.");
+  }
+
+  // Already removed the block b from t.blocks.
+  if(Xarray::length(t.blocks)!=0) {
+    if(t.entry == b) {
+      t.entry = Xarray::get(t.blocks,0);
+    }
+
+    if(t.exit != null) {
+      if(t.exit.v.1 == b) BUG("Should never happen unless template is dead.");
+    }
+
+    return;
+  }
+
+  // If we reach here removing this block was the final blow.
+  // This template is now gone.
+    // Still to do:
+    // 1. Remove template from this functions list of templates.
+    // 2. Remove dump/fill instructions, and unneeded operands from generator.
+
+  _ func = b.fn;
+  _ parent = func.generator;
+
+  // Remove this template from the function.
+  if(func.templates.hd == t) {
+    func.templates = func.templates.tl;
+  } else {
+    for(_ x = func.templates; x.tl!=null; x=x.tl) {
+      if(x.tl.hd == t) {
+	x.tl = x.tl.tl;
+	break;
+      }
+    }
+  }
+
+  // Remove all dump instructions in the parent function.
+  remove_instructions(parent,t,is_dump);
+}
+
+// Assume new block contains the same holes as the old block.
+// Simply replace occurences of one for the other in the template body.
+// b_new should be fully initialized before call.
+void replace_block(cf_block b_old, cf_block b_new) {
+  BUG("replace_block unimplemented.");
+}
+
+// RTCG fixup when block m has been merged after block b.
+// the code for m must follow the code for b. (order matters for patching)
+// m and b should be in the same template.
+//   Transfer all holes in m to b
+//   Remove m from the list of template blocks (patch entry exit appropriately)
+//   This change does not affect the generator.
+
+void merge_block(cf_block b, cf_block m) {
+
+  if(b.template==null) return;
+  if(b.template != m.template) BUG("Unequal templates");
+
+  DEBUG_PR2("Merging blocks %s and %s.\n",
+	    Id::id_to_string(b.label),
+	    Id::id_to_string(m.label));
+
+  _ t = b.template;
+
+  _ num_holes = Xarray::length(t.holes);
+  for(int i=0;i<num_holes;i++) {
+    _ this_hole = Xarray::get(t.holes,i);
+
+    if(this_hole.2 == m) this_hole.2 = b;
+  }
+
+  if(Set::member(t.labels,m)) {
+    BUG("Cannot remove block whose label is used for a fill.");
+  }
+  t.labels = Set::delete(t.labels,m);
+
+  xarray_find_remove(t.blocks,m);
+
+  if(m==t.entry) BUG("Cannot merge entry block with anything.");
+
+  if(t.exit!=null) {
+    if(t.exit.v.1 == m) t.exit.v.1 = b;
+  }
+
+}
+
+// Move a block b into a new template t.
+// Assumes all non-rtcg related work has already been done.
+void move_block(cf_template t, cf_block b) {
+  BUG("move_block unimplemented.");
+}
+
+/////////////////////////// Patch the generator ////////////////////////////////
+
+// Given the generating function, a list of removed holes, and the template
+// in which they used to reside, 
+// removed all fill instructions for these holes in the generator.
+static void remove_holes(cf_function gen, 
+			 cf_template t, 
+			 <cf_hole>list removed) {
+
+  _ len = Xarray::length(gen.template_pointers);
+  _ tptrs = Bitvec::new_empty(len);
+  for(int i=0;i<len;i++) {
+    _ this_ptr = Xarray::get(gen.template_pointers,i);
+    if(this_ptr == t) Bitvec::set(tptrs,i);
+  }
+
+  _ num_blocks = Xarray::length(gen.blocks);
+  for(int i =0; i<num_blocks; i++) {
+    _ this_block = Xarray::get(gen.blocks,i);
+    
+    _ insts = this_block.insts;
+    _ num_insts = Xarray::length(insts);
+    _ removed_inst = 0;
+    for(int j=0; j<num_insts; j++) {
+      _ this_inst = Xarray::get(insts,j);
+      _ tmpl;
+      _ hole;
+      switch this_inst {
+      case Fill *(rgn,tmpl1,hole1,value):
+	tmpl = tmpl1; 
+	hole = hole1;
+      case FillJmp *(rgn,tmpl_hole1,hole1,tmpl_value,blk):
+	tmpl = tmpl_hole1;
+	hole = hole1;
+      default: continue; // Not a fill instruction nothing to do.
+      }
+
+      _ tmpl_ptr = operand2tptr(gen,tmpl);
+      if(Bitvec::get(tptrs,tmpl_ptr) && (List::memq(removed,hole))) {
+	removed_inst++;  
+      }
+      else {
+        if(removed_inst!=0) Xarray::set(insts,j-removed_inst,this_inst);
+      }
+    }
+
+  Xarray::delete(insts,removed_inst);  
+  }
+}
+

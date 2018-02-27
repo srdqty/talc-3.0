@@ -1,0 +1,45 @@
+/* This patch allows completing the old set of events and then switching
+   to use a file. */
+
+/* first initialize the new set of events */
+static void init() {
+  Core::print_string("in patch init file\n");
+  New::init_events("events");
+}
+
+static bool got_old_events = false;
+extern event get_next_event();
+extern exception Core::Failure(string);
+
+prefix Stub;
+
+void init_events() {
+  raise (^Core::Failure("called init_events stub"));
+}
+
+/* get_next_event will continue to get the old events until they run
+   out and then start getting new ones. */
+
+event get_next_event() {
+  Core::print_string ("stub:get_next_event\n");
+  /* see if we should be getting new events now */
+  if (got_old_events) {
+    Core::print_string ("stub:calling new version\n");
+    return New::get_next_event();
+  } 
+  else {
+    try {
+      Core::print_string ("stub:calling old version\n");
+      return get_next_event();
+    } handle e {
+      switch e {
+      case No_event:
+	/* no old events left */
+	got_old_events = true;
+	return Stub::get_next_event();
+      default:
+	raise (e);
+      }
+    }
+  }
+}

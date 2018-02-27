@@ -1,0 +1,10 @@
+(* tests chunk scoping and creation *)
+fun h() : unit = ()
+fun g() : unit = ()
+fun f() : unit =
+  (|g|();|h|();())
+(* test1: void -> unit chunk list *)
+fun test1() : unit =
+  [|f|();|g|();|h|()]
+
+val entry_fun       : unit = "f"

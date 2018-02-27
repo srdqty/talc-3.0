@@ -1,0 +1,88 @@
+exception Dave
+val p: int = 7
+
+fun b() : int =
+  let val p: int = 5 in raise Dave end
+
+(* will return 6 *)
+fun test1() : int =
+  let val p: int = 6 in
+    p
+(*
+    try
+	b()
+    handle Dave => p
+*)
+  end
+
+(* will raise an uncaught exception Dave *)
+(*
+fun test2() : int =
+ b()
+*)
+
+(* takes an int list, if a 0 is present, it will return -1, else the sum *)
+(*
+fun test3help(i:int,j:int) : int =
+  if i = 0 then raise Dave else i + j
+
+fun test3(l:int list) : int =
+  let val i:int = 100
+      val ed:int = 
+    try
+      foldr(test3help,l,0)
+    handle Dave => ~1
+  in
+    ed
+  end
+*)
+
+(* returns 6 if the host is found; 5 otherwise *)
+(*
+fun test4(s:string) : int =
+  try
+    (getHostByName(s); 6)
+  handle UnknownHost => 5 
+*)
+
+(* returns i if i > 10, 5 otherwise *)
+(*
+fun test5(i:int): int =
+  let exception Head in
+    try
+      if i > 10 then i
+      else raise Head
+    handle Head => 5
+  end
+*)
+    
+(* returns 5 *)
+(*
+fun test6() : int =
+  let val q:int = 5
+      exception Dave in
+    try
+      let val q:int = 6 in
+          17 + raise Dave
+      end
+    handle Dave => q
+  end
+*)
+     
+(* returns 5 *)
+(*
+fun test7() : int =
+  let val q:int = 5
+      exception Dave in
+    try
+      let val q:int = 6
+          val r:int = raise Dave in
+        4
+      end
+    handle Dave => q
+  end
+*)
+
+fun main() : unit = test1()
+
+val entry_fun : unit = "main"

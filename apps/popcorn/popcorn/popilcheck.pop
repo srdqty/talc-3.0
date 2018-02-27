@@ -1,0 +1,143 @@
+// popilcheck.pop
+//
+
+#include "core.h"
+#include "xarray.h"
+#include "dict.h"
+#include "set.h"
+#include "id.h"
+#include "bitvec.h"
+#include "popil.h"
+#include "poptalenv.h"
+#include "poprtcg.h"
+open Core;
+open Popil;
+
+#define list   List::list
+#define dict   Dict::dict
+#define xarray Xarray::xarray
+
+prefix Popilcheck;
+open Popilcheck;
+
+// Types ///////////////////////////////////////////////////////////////////////
+union template_error {
+  void Dup;
+  cf_block Misplaced; // Block doesn't think its in this template.
+}
+
+struct env {
+  <Id::id>Set::set visited_blocks;
+  <*(cf_block,int)>xarray misnumbered_blocks;
+  <cf_block>xarray duplicate_blocks;
+  <*(cf_template,template_error)>xarray bad_templates;
+  // Possible extensions:
+  // Unused operands, consts holes
+  // All blocks are either in templates or not
+  // All blocks in templates are in all_blocks
+  // Each template has only one terminal hole (fallthru)
+  // All operands refer to legal offsets in all_operands, ...
+  // Types make sense
+}
+
+// Functions ///////////////////////////////////////////////////////////////////
+void check_block(env ev, int num, cf_block b) {
+  
+  if(b.num != num) {
+    Xarray::add(ev.misnumbered_blocks,^(b,num));
+  }
+  _ label = b.label;
+  if(Set::member(ev.visited_blocks,label)) {
+    Xarray::add(ev.duplicate_blocks,b);
+  }
+
+  ev.visited_blocks = Set::insert(ev.visited_blocks,label);
+}
+
+void check_template(env ev, cf_template t) {
+  
+  _ seen = Set::empty(Id::id_compare);
+
+  _ blocks = t.blocks;
+  _ num_blks = Xarray::length(blocks);
+  for(_ i = 0; i < num_blks; i++) {
+    _ blk = Xarray::get(blocks,i);
+    
+    if(Set::member(seen,blk.label)) {
+      Xarray::add(ev.bad_templates,^(t,^template_error.Dup));
+      return; // Finding one error is sufficient.
+    }
+    seen = Set::insert(seen,blk.label);
+
+    if(blk.template != t) {
+      Xarray::add(ev.bad_templates,^(t,^template_error.Misplaced(blk)));
+      return;
+    }
+  }
+}
+
+// Given a file and a function, check that the function obeys certain 
+// simple invariants.
+void check_fun(FILE log, cf_function f) {
+  _ ev = ^env { visited_blocks = Set::empty(Id::id_compare),
+		misnumbered_blocks = Xarray::create_empty(),
+		duplicate_blocks = Xarray::create_empty(),
+                bad_templates = Xarray::create_empty()};
+		
+  _ blocks = f.blocks;
+  _ num_blks = Xarray::length(blocks);
+  for(_ i = 0; i < num_blks; i++) {
+    _ blk = Xarray::get(blocks,i);
+    check_block(ev,i,blk);
+  }
+
+  for(_ x = f.templates; x != null; x = x.tl) {
+    check_template(ev,x.hd);
+  }
+
+  // Now generate the report.
+  fprintf(log,"\n%s: ",f.name);
+  _ misnumbered = Xarray::length(ev.misnumbered_blocks);
+  _ duplicate = Xarray::length(ev.duplicate_blocks);
+  _ bad_template = Xarray::length(ev.bad_templates);
+
+  if(misnumbered == 0 && duplicate == 0 && bad_template == 0) {
+    fprintf(log,"Checked.");
+    return; // No problems.
+  }
+
+  if(misnumbered != 0) {
+    fprintf(log,"\n\tmisnumbered_blocks = ");
+    for(_ i = 0; i < misnumbered; i++) {
+      _ x = Xarray::get(ev.misnumbered_blocks, i);
+      _ blk = x.1;
+      _ num = x.2;
+      fprintf(log,"%s.%d != %d, ",Id::id_to_string(blk.label),blk.num,num);
+    }
+  }
+
+  if(duplicate != 0) {
+    fprintf(log,"\n\tduplicate blocks = ");
+    for(_i = 0; i < duplicate; i++) {
+      _ blk = Xarray::get(ev.duplicate_blocks,i);
+      fprintf(log,"%s, ",Id::id_to_string(blk.label));
+    }
+  }
+
+  if(bad_template != 0) {
+    fprintf(log,"\n\tbad_templates = ");
+    for(_ i = 0; i < bad_template; i++) {
+      _ w = Xarray::get(ev.bad_templates,i);
+      _ t = w.1;
+      _ reason = w.2;
+      _ msg = "?";
+      switch reason {
+      case Dup: msg = "duplicate block";
+      case Misplaced(b):
+	msg = sprintf("%s.template not here.",Id::id_to_string(b.label));
+      }
+
+      fprintf(log," %s (%s), ",Id::id_to_string(t.name),msg);
+    }
+  }
+}

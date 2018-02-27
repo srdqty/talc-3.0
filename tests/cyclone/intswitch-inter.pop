@@ -1,0 +1,23 @@
+#include "core.h"
+open Core;
+
+void pop_main()
+{
+  void p(int) =
+    codegen(void printer(int i)
+	    {
+	      switch i {
+		case 1 : print_int(i * 10);
+		case 2 : cut 0; print_int(i * 20);
+		default: print_string("default");
+	      }
+	      print_string("\n");
+	      return;
+	    });
+
+  p(1);
+  p(2);
+  return;
+}
+
+

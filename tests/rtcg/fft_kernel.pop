@@ -1,0 +1,129 @@
+// fft
+// Copied from Lawall's paper.
+// Faster Fourier Transforms via Automatic Program Specialization
+//
+#include "poptiming.h"
+#include "core.h"
+#include "math.h"
+
+open Core;
+open Math;
+
+#define FP double
+
+
+void prn_fp_arrays(double fr[], double fi[]) {
+  for(int i = 0; i < size(fr); i++) {
+    printf("%d \t (%g + %gi) \t |%g|\n",i,fr[i],fi[i],sqrt(fr[i]*fr[i] + fi[i] * fi[i]));
+  }
+  printf("\n");
+}
+
+double fp_copy(double x[])[] {
+  int len = size(x);
+  double y[] = new_array_double(len);
+
+  for(int i=0; i<len;i++) {
+    y[i] = x[i];
+  }
+
+  return y;
+}
+
+void mean_error(double fr[], double fi[], double gr[], double gi[]) {
+  int len = size(fr);
+  double err[] =  new_array_double(len);
+
+  for(int i=0; i<len;i++) {
+    _ r_err = fr[i] - gr[i];
+    _ i_err = fi[i] - gi[i];
+    
+    err[i] = sqrt(r_err * r_err + i_err * i_err);
+  }
+ 
+  for(int i=0; i<len; i++) {
+    if(err[i] < 1e-10) printf("0 ");
+    else printf("%g ",err[i]);
+  }
+
+  printf("\n");
+}
+
+// Global len_log must be inported.
+int pop_main () {
+
+  string s[] = std_args();
+
+  if(size(s)!=1) {
+    printf("usage: %s\n",s[0]);
+    return -1;
+  }
+
+  int len     = 1 << len_log;
+
+  if(len_log <=0 || len_log >=32) {
+    printf("Input length must be betwee 1 and 31.\n");
+    return -1;
+  }
+
+  FP  fi[] = new_array_double(len);
+  FP  fr[] = new_array_double(len);
+
+  for(int i=0; i<len; i++) {
+    double phi = (i/(:double)(len-1)) * 2.0 * pi;
+
+    fr[i] = sin(phi) + sin(4.0 * phi);
+    fi[i] = 0;
+  }
+
+  FP fr_orig[] = fp_copy(fr);
+  FP fi_orig[] = fp_copy(fi);
+
+
+  FP fr_data[][] = new_array(100,{:FP});
+  FP fi_data[][] = new_array(100,{:FP});
+
+  for(int i=0; i<100; i++) {
+    fr_data[i] = fp_copy(fr);
+    fi_data[i] = fp_copy(fi);
+  }
+
+  MAIN_TEST("fft_spec",COMPILER,PLAIN_KIND,
+	    (string_of_int(len_log)),0,fft(fr,fi));
+
+  return 0;
+}
+
+/* Use pop_main for correctness testing!
+int pop_main () {
+
+  int len = 32, len_log = 5;
+  FP  fi[] = new_array_double(len);
+  FP  fr[] = new_array_double(len);
+
+  for(int i=0; i<len; i++) {
+    double phi = (i/(:double)(len-1)) * 2.0 * pi;
+
+    fr[i] = sin(phi) + sin(4.0 * phi);
+    fi[i] = 0;
+  }
+
+  FP fr_orig[] = fp_copy(fr);
+  FP fi_orig[] = fp_copy(fi);
+
+  fft(fr,fi,len_log,1);
+
+  prn_fp_arrays(fr,fi);
+
+  fft(fr,fi,len_log,-1);
+
+  for(int i=0;i<len;i++) {
+    fr[i] /= len;
+    fi[i] /= len;
+  }
+
+  mean_error(fr_orig,fi_orig,fr,fi);
+
+  return 0;
+}
+*/

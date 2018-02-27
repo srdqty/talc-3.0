@@ -1,0 +1,63 @@
+#include "core.h"
+#include "list.h"
+
+open List;
+open Core;
+
+/* Generate a map function specialized to f and unrolled n times */
+<int>list map_spec(int f(int),int n)(<int>list) {
+  return codegen(
+		 <int>list fmap(<int>list x) {
+		   <int>list last,result;
+		   
+		   if(x==null) return null;
+		   result = new list(fill(f)(x.hd),null);
+		   last = result;
+		   x=x.tl;
+		   
+		   while (x!=null) 
+		     {
+		       cut
+			 for(int i=0;i<n;i++) {
+			   splice {
+			     if(x!=null) {
+			     last.tl = new list(fill(f)(x.hd),null);
+			     last = last.tl;
+			     x = x.tl;
+			     }
+			   }
+			 }
+		     }
+		   return(result);		   
+		 }
+		 );
+}
+
+
+int addone(int x) {
+  return (x+1);
+}
+
+void print_el(int x) {
+  print_int(x); print_string(", ");
+}
+
+void pop_main() {
+
+  <int>list foo = new list(10,^list(20,null));
+  <int>list addmap(<int>list) = map_spec(addone,3);
+  <int>list fool = addmap(foo);
+
+  iter(print_el,foo); 
+  print_newline();
+  iter(print_el,fool);
+  print_newline();
+
+  addmap(null);
+}
+
+
+
+
+
+

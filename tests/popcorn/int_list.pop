@@ -1,0 +1,113 @@
+// int_list.pop
+// Routines for manipulating integer lists.
+// Sort of a list module.
+
+#include "core.h"
+open Core;
+
+?struct int_list {
+  int head;
+  int_list tail;
+}
+
+void foo(int_list x)
+{
+  if (x != null) print_string("yes!!");
+}
+
+void print_list(int_list x) 
+{
+  print_string("[");
+  while (x != null) {
+    print_int(x.head);
+    x = x.tail;
+    if (x != null) print_string(", ");
+  }
+  print_string("]");
+  return;
+}
+
+void add_one_to_list(int_list x)
+{
+  while (x != null) {
+    x.head = x.head + 1;
+    x = x.tail;
+  }
+  return;
+}
+
+int_list merge_sort(int_list x)
+{
+  int_list a = null;
+  int_list b = null;
+  int_list c = null;
+  int_list d = null;
+
+  if ((x == null) || (x.tail == null))
+    return(x);
+
+  // split into two lists
+  while (x != null) {
+    a = new int_list(x.head,a);
+    x = x.tail;
+    if (x != null) {
+      b = new int_list(x.head,b);
+      x = x.tail;
+    }
+  }
+
+  a = merge_sort(a);
+  b = merge_sort(b);
+
+  // merge the two lists:
+  //   d = beginning of the merged list
+  //   c = current cons cell
+ 
+  // set d & c to the smallest cons cell
+  if (a.head <= b.head) {
+    c = a; d = a; a = a.tail; 
+  } else {
+    c = b; d = b; b = b.tail;
+  }
+  // walk through a and b
+  while ((a != null) && (b != null)) {
+    // add a to the list else add b
+    if (a.head <= b.head) {
+      c.tail = a;
+      c = a;
+      a = a.tail;
+    } else {
+      c.tail = b;
+      c = b;
+      b = b.tail;
+    }
+  }
+  // splice in the rest of the other list
+  if (a == null)
+    c.tail = b;
+  else
+    c.tail = a;
+  return(d);
+}
+
+int_list mk_list(int s)
+{
+  int_list x = null;
+  int i;
+
+  for (i = 0; i<s; i++) {
+    x = new int_list(i,x);
+  }
+  return(x); 
+}
+
+int_list reverse(int_list l) {
+  int_list r = null;
+  while (l != null) {
+    r = new int_list(l.head,r);
+    l = l.tail;
+  }
+  return r;
+}
+
+// EOF: int_list.pop

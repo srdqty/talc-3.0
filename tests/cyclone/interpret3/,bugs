@@ -1,0 +1,5 @@
+Type of pop_interpret in interp.pop is (inst prg [], int pc, int sp) -> void.
+
+Type of pop_interpret in test_pop.pop is (inst prg []) -> void.
+
+Why does it link???

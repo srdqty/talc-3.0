@@ -1,0 +1,224 @@
+#include "string.h"
+#include "list.h"
+open List;
+
+exception Internal(string);
+
+/*
+ * data types
+ */
+union binop {
+  void PLUS;
+  void MINUS;
+  void TIMES;
+  void DIV;
+}
+
+union exp {
+  int                        Val;
+  string                     Var;
+  *(string, <exp> list)      App;
+  *(binop,exp,exp)           Bin;
+}
+
+struct fundef {
+  string        var;
+  <string> list params;
+  exp           body;
+}
+
+/*
+ * environments
+ */
+
+
+/* formals:S  actual:D  env_vars:S  env_vals:D 
+ *
+ * return tuple: static data x specialized function
+ */
+*(<string> list,
+  <int> list (<int> list actuals, <int> list env_vals))
+     add_actuals_gen(<string> list formals, <string> list env_vars)
+{
+  <string> list ret_vars = env_vars;
+
+  <int> list add_actuals_sp(<int> list, <int> list) = codegen(
+    
+    <int> list add_actuals_sp(<int> list actuals, <int> list env_vals)
+    {
+      <int> list ret_vals = env_vals;
+
+      cut
+      while(formals != null) {
+	ret_vars = ^list(formals.hd, ret_vars);
+	splice
+	  if (actuals != null)
+	    ret_vals = ^list(actuals.hd, ret_vals);
+	  else
+	    raise Internal(sprintf("add_actuals: too many formals: %s\n",
+				   fill(formals.hd)));
+	
+	formals = formals.tl;
+	splice actuals = actuals.tl;
+      }
+      if (actuals != null)
+      raise Internal(sprintf("add_actuals: too many actuals: %d\n",
+			     actuals.hd));
+      else
+      return ret_vals;
+    }
+    );
+  return ^(ret_vars, add_actuals_sp);
+}
+
+int var_lookup_gen(string v, <string> list env_vars)
+                  (<int> list env_vals)
+{
+  return
+    codegen(
+    int var_lookup_sp(<int> list env_vals)
+    {
+      cut
+	while(env_vars != null) {
+	  if (Core::strcmp(env_vars.hd, v) == 0)
+	    splice return env_vals.hd;
+	  env_vars = env_vars.tl;
+	  splice env_vals = env_vals.tl;
+	}
+      raise Internal(sprintf("var_lookup: %s not found\n", fill(v)));
+    }
+    );
+}
+
+/* start_fun:S prog:S */
+*(<string> list, exp) fun_lookup(string start_fun, <fundef> list prog)
+{
+  while(prog != null) {
+    if (Core::strcmp(prog.hd.var, start_fun) == 0)
+      return ^(prog.hd.params, prog.hd.body);
+    prog = prog.tl;
+  }
+  raise Internal(sprintf("fun_lookup: %s not found\n", start_fun));
+}
+    
+/*
+ * evaluate
+ */
+int eval_bin_gen(binop b)(int v1, int v2)
+{
+  return
+    codegen(
+    int eval_bin_sp(int v1, int v2)
+    {
+      cut
+	switch (b) {
+	case PLUS:  splice return v1 + v2;
+	case MINUS: splice return v1 - v2;
+	case TIMES: splice return v1 * v2;
+	case DIV:   splice return v1 / v2;
+	}
+    });
+}
+
+int eval_exp_gen(exp e, <string> list env_vars, <fundef> list prog)
+     (<int> list env_vals)
+{
+
+  return
+    codegen(
+    int eval_exp_sp(<int> list env_vals)
+    {
+      cut
+	switch(e) {
+	case Val(i): splice return fill(i);
+	case Var(s):
+	  splice return fill(var_lookup_gen(s, env_vars))(env_vals);
+	case App(a):
+	  *(<string> list, exp) f_data = fun_lookup(a.1, prog);
+	  *(<string> list,<int> list (<int> list actuals, <int> list env_vals))
+	    add_actuals_data = add_actuals_gen(f_data.1, env_vars);
+	  splice {
+	    <int> list actuals = fill(eval_exp_lst_gen(a.2, env_vars, prog))
+	                             (env_vals);
+	    <int> list env_vals2 = fill(add_actuals_data.2)(actuals, env_vals);
+	    return fill(eval_exp_gen(f_data.2, add_actuals_data.1, prog))
+	               (env_vals2);
+	  }
+	case Bin(b): 
+	  int eval_bin_sp(int v1, int v2) = eval_bin_gen(b.1);
+	  int sp2(<int> list env_vals) = eval_exp_gen(b.2, env_vars, prog);
+	  int sp3(<int> list env_vals) = eval_exp_gen(b.3, env_vars, prog);
+	  
+	  splice return fill(eval_bin_sp)(fill(sp2)(env_vals),
+					  fill(sp3)(env_vals));
+	}
+    }
+    );
+}
+    
+<int> list eval_exp_lst_gen(<exp> list es,
+                            <string> list env_vars,
+                            <fundef> list prog)
+                           (<int> list env_vals)
+{
+  return
+    codegen(
+    <int> list eval_exp_lst_sp(<int> list env_vals)
+    {
+      cut
+	if (es == null)
+	  splice return null;
+	else
+	  splice 
+	    return
+	    (^list(fill(eval_exp_gen(es.hd, env_vars, prog))(env_vals),
+		   fill(eval_exp_lst_gen(es.tl, env_vars, prog))(env_vals)));
+    });
+}
+
+int eval_prog(<fundef> list prog, string start_fun, <int> list actuals)
+{
+  *(<string> list, exp) f_data = fun_lookup(start_fun, prog);
+
+  *(<string> list, <int> list (<int> list actuals, <int> list env_vals))
+    add_actuals_data = add_actuals_gen(f_data.1, null);
+
+  int eval_exp_sp(<int> list) =
+    eval_exp_gen(f_data.2, add_actuals_data.1, prog);
+
+  return(eval_exp_sp(add_actuals_data.2(actuals, null)));
+}
+
+/*
+ * top level functions
+ */
+void go()
+{
+  /* fun f1(x, y) = x - y */
+  fundef f1 = ^fundef("f1", ^list("x", ^list("y", null)),
+		      ^exp.Bin(^(^binop.MINUS, ^exp.Var("x"),^exp.Var("y"))));
+  /* fun f2(a, b) = f1(a, b * b) */
+  fundef f2 = ^fundef("f2", ^list("a", ^list("b", null)),
+		      ^exp.App(^("f1", 
+		 ^list(^exp.Var("a"),
+		 ^list(^exp.Bin(^(^binop.TIMES,^exp.Var("b"),^exp.Var("b"))),
+		 null)))));
+  /* program */
+  <fundef> list prog = ^list(f1, ^list(f2, null));
+
+  /* -99 */
+  printf("Ans: %d\n", eval_prog(prog, "f2", ^list(1, ^list(10, null))));
+  /* 9 */
+  printf("Ans: %d\n", eval_prog(prog, "f2", ^list(10, ^list(1, null))));
+  return;
+}
+
+void pop_main()
+{
+  try
+    go();
+  handle e
+    switch e {
+      case Internal(s): printf("ERROR: %s\n", s);
+    }
+}

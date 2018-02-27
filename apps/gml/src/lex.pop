@@ -1,0 +1,204 @@
+#line 2 "src/lex.popl"
+ 
+#include "core.h"
+#include "list.h"
+#include "lexing.h"
+#include "dict.h"
+#include "string.h"
+#include "hashtable.h"
+
+#include "gmlsyntax.h"
+#include "parse.h"
+
+open Core;
+open List;
+open Lexing;
+open Gmlsyntax;
+open Parse;
+
+void yyerror(string s) {
+  printf("Parse error: (%d-%d) %s\n",yylloc.first_line,
+  yylloc.last_line,s);
+  
+}
+
+/* for parser -- must not be prefixed */
+int yylex() { 
+ int ans = Lex::token(lbuf.v);
+ yylloc.first_line = lexeme_start (lbuf.v);
+ yylloc.last_line  = lexeme_end   (lbuf.v);
+ 
+ switch ans {
+ case ID:          yylval = ^YYSTYPE.Id(Lex::token_string);
+ case CONSTSTRING: yylval = ^YYSTYPE.String(Lex::token_string);
+ case CONSTINT:    yylval = ^YYSTYPE.Int   (Lex::token_int);
+ case CONSTFP:     yylval = ^YYSTYPE.Fp    (Lex::token_fp);
+ default:          ; /* contents of yylval meaningless */
+ }
+ return ans;
+}
+ 
+prefix Lex;
+open   Lex;
+
+int    token_int = 0;
+string token_string = "xx";
+FP     token_fp = FP_CONST(0.0);
+
+static <<string,short>Hashtable::table>Opt rw = null;
+
+static *(string,short) rw_array[] = {	
+  ^("apply",APPLY),
+  ^("get",GET),
+  ^("if",IF),
+  ^("include",INCLUDE),
+  ^("light",LIGHT),
+  ^("negi",NEGI),
+  ^("negf",NEGF),
+  ^("point",POINT),
+  ^("pointlight",POINTLIGHT),
+  ^("print",PRINT),
+  ^("real",REAL),
+  ^("render",RENDER),
+  ^("scale",SCALE),
+  ^("spotlight",SPOTLIGHT),
+  ^("translate",TRANSLATE),
+  ^("uscale",USCALE),
+  ^("acos",ACOS),
+  ^("asin",ASIN),
+  ^("clampf",CLAMPF),
+  ^("cos",COS),
+  ^("floor",FLOOR),
+  ^("frac",FRAC),
+  ^("sin",SIN),
+  ^("sqrt",SQRT),
+  ^("addf",ADDF),
+  ^("divf",DIVF),
+  ^("eqf",EQF),
+  ^("lessf",LESSF),
+  ^("mulf",MULF),
+  ^("subf",SUBF),
+  ^("addi",ADDI),
+  ^("divi",DIVI),
+  ^("eqi",EQI),
+  ^("lessi",LESSI),
+  ^("modi",MODI),
+  ^("muli",MULI),
+  ^("subi",SUBI),
+  ^("cone",CONE),
+  ^("cube",CUBE),
+  ^("cylinder",CYLINDER),
+  ^("plane",PLANE),
+  ^("sphere",SPHERE),
+  ^("rotatex",ROTATEX),
+  ^("rotatey",ROTATEY),
+  ^("rotatez",ROTATEZ),
+  ^("difference",DIFFERENCE),
+  ^("intersect",INTERSECT),
+  ^("union", UNION),
+  ^("getx",GETX),
+  ^("gety",GETY),
+  ^("getz",GETZ),
+  ^("length",LENGTH),
+  ^("true",TRUE),
+  ^("false",FALSE)
+};	
+
+// WARNING : Call lex_init before lexing.
+void lex_init() {
+  /* build reserved word dictionary */
+  <string,short>Hashtable::table t = 
+     Hashtable::create(101, strcmp, Hashtable::hash_string);
+  rw = ^Opt(t);
+  for (int i=0; i < size(rw_array); ++i) 
+    Hashtable::insert(t, rw_array[i].1, rw_array[i].2);
+}
+
+// can try interning strings once our hashtable resizes
+static short process_id(string s) {
+  try
+    return Hashtable::lookup(rw.v, s);
+  handle y switch y {
+  case Not_found: token_string = s; return ID; 
+  }
+}
+
+open Lexing {
+
+lex_tables lex_tables = ^lex_tables(
+  
+{0,-16,-11,-10,0,1,2,78,-9,90,127,-7,-8,-5,-6,-15,214,100,291,113,301,-3,313,345,323,-4,4,-12,2,-13,9,11,5,-14,11,13,-10},
+  
+{-1,-1,-1,-1,9,15,15,15,-1,0,1,-1,-1,-1,-1,-1,1,-1,0,-1,-1,-1,3,-1,-1,-1,-1,-1,11,-1,-1,-1,-1,-1,-1,-1,-1},
+  
+{1,0,0,0,-1,32,26,-1,0,-1,-1,0,0,0,0,0,-1,-1,-1,-1,-1,0,-1,-1,-1,0,26,0,-1,0,-1,-1,32,0,-1,-1,0},
+  
+{0,0,0,0,0,0,0,0,0,2,3,0,27,4,27,28,0,28,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,0,5,33,0,6,0,33,0,0,0,0,0,7,0,8,9,9,9,9,9,9,9,9,9,9,31,27,35,36,0,0,0,10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,11,34,12,30,0,0,10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,13,0,14,18,18,18,18,18,18,18,18,18,18,17,0,18,18,18,18,18,18,18,18,18,18,22,22,22,22,22,22,22,22,22,22,20,19,0,21,21,21,21,21,21,21,21,21,21,0,16,0,0,16,16,16,16,16,16,16,16,16,16,0,0,0,0,0,0,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,0,0,0,0,16,0,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,0,0,0,0,0,0,15,-1,29,16,29,-1,16,16,16,16,16,16,16,16,16,16,0,0,0,0,0,0,0,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,0,0,0,0,16,0,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,0,18,18,18,18,18,18,18,18,18,18,21,21,21,21,21,21,21,21,21,21,0,19,22,22,22,22,22,22,22,22,22,22,25,25,25,25,25,25,25,25,25,25,0,23,0,0,0,0,0,0,0,24,0,19,25,25,25,25,25,25,25,25,25,25,0,0,0,0,0,0,0,0,0,0,0,23,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+  
+{-1,-1,-1,-1,-1,-1,-1,-1,-1,0,0,-1,6,0,26,6,-1,26,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,0,-1,0,5,-1,0,-1,32,-1,-1,-1,-1,-1,0,-1,0,0,0,0,0,0,0,0,0,0,0,30,31,34,35,-1,-1,-1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,0,28,-1,-1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,-1,0,7,7,7,7,7,7,7,7,7,7,9,-1,9,9,9,9,9,9,9,9,9,9,17,17,17,17,17,17,17,17,17,17,19,9,-1,19,19,19,19,19,19,19,19,19,19,-1,10,-1,-1,10,10,10,10,10,10,10,10,10,10,-1,-1,-1,-1,-1,-1,9,10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,-1,-1,-1,-1,10,-1,10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,-1,-1,-1,-1,-1,-1,0,5,6,16,26,32,16,16,16,16,16,16,16,16,16,16,-1,-1,-1,-1,-1,-1,-1,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,-1,-1,-1,-1,16,-1,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,18,-1,18,18,18,18,18,18,18,18,18,18,20,20,20,20,20,20,20,20,20,20,-1,18,22,22,22,22,22,22,22,22,22,22,24,24,24,24,24,24,24,24,24,24,-1,22,-1,-1,-1,-1,-1,-1,-1,23,-1,18,23,23,23,23,23,23,23,23,23,23,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,22,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1}
+);
+
+int token<a>(<a>lexbuf lexbuf) { return token_rec(lexbuf,0); }
+int token_rec<a>(<a>lexbuf lexbuf, int lexstate) {
+  lexstate = lex_engine(lex_tables,lexstate,lexbuf);  switch lexstate {
+
+case 0: 
+#line 131 "src/lex.popl"
+                   token_int = int_of_string(lexeme(lexbuf)); return CONSTINT; 
+case 1: 
+#line 133 "src/lex.popl"
+                   return process_id(lexeme(lexbuf)); 
+case 2: 
+#line 135 "src/lex.popl"
+                   _ s = lexeme(lexbuf);
+  		   fflush(tal_stdout);
+		   token_fp = float_of_string(s); return CONSTFP; 
+case 3: 
+#line 139 "src/lex.popl"
+                   _ s = lexeme(lexbuf);
+		   fflush(tal_stdout);
+		   token_fp = float_of_string(s); return CONSTFP; 
+case 4: 
+#line 142 "src/lex.popl"
+                        return LBRACE; 
+case 5: 
+#line 143 "src/lex.popl"
+                        return RBRACE; 
+case 6: 
+#line 144 "src/lex.popl"
+                        return LBRACKET; 
+case 7: 
+#line 145 "src/lex.popl"
+                        return RBRACKET; 
+case 8: 
+#line 146 "src/lex.popl"
+                                    return BIND; 
+case 9: 
+#line 147 "src/lex.popl"
+                                    return token(lexbuf); 
+case 10: 
+#line 148 "src/lex.popl"
+                                    return token(lexbuf); 
+case 11: 
+#line 149 "src/lex.popl"
+                                    return token(lexbuf); 
+case 12: 
+#line 150 "src/lex.popl"
+                                    return -1; 
+case 13: 
+#line 151 "src/lex.popl"
+                                    _ s = lexeme(lexbuf);
+                                    _ len = size(s) - 2;
+				    token_string = String::substring(s,1,len);
+	                            return CONSTSTRING; 
+case 14: 
+#line 155 "src/lex.popl"
+                                    return -1; 
+case 15: 
+#line 156 "src/lex.popl"
+                                    return FAIL;  default: lexbuf.refill_buff(lexbuf); return token_rec(lexbuf,lexstate);
+  }
+ raise Error("some action didn't return!");
+}
+
+}

@@ -1,0 +1,125 @@
+
+// Port of the splay tree implementation (c) Morrisett, Glew, Walker, Crary
+// Port by Dan, June 1999
+
+// Actually, I (Dan) changed the old implementation to have a
+// second function for lookup which doesn't splay.  The idea is that 
+// while you lose the theoretical bounds, you win by not allocating repeatedly
+// on small things.  (And I'm not sure the theoretical bounds hold when
+// you have sharing between trees anyway.) We should consider adding this
+// and using it for (some, probably small) dictionaries.
+
+// Note that b/c these are functional things, we have to allocate a lot
+// (such as in rotate_left and rotate_right)
+
+#include "core.h"
+#include "list.h"
+open Core;
+open List;
+
+prefix Splay;
+open   Splay;
+
+union <a,b>tree {
+  void         Leaf;
+  <a,b>noderef Node;
+}
+
+struct <a,b>noderef {
+  <a,b>node v;
+}
+
+struct <a,b>node {
+  a key;
+  b data;
+  <a,b>tree left;
+  <a,b>tree right;
+}
+
+static union direction {
+  void LEFT, RIGHT;
+}
+
+static void rotate_left<a,b>(<a,b>noderef noderef) {
+  <a,b>node node = noderef.v;
+  switch node.left {
+  case Node(noderef2):
+    <a,b>node node2 = noderef2.v;
+    noderef.v = ^node(node2.key, node2.data, node2.left,
+		      ^tree.Node(^noderef(^node(node.key, node.data,
+						node2.right, node.right))));
+  default: raise InvalidArg("Splay::rotate_left");
+  }
+}
+
+static void rotate_right<a,b>(<a,b>noderef noderef) {
+  <a,b>node node = noderef.v;
+  switch node.right {
+  case Node(noderef2):
+    <a,b>node node2 = noderef2.v;
+    noderef.v = ^node(node2.key, node2.data, 
+		      ^tree.Node(^noderef(^node(node.key, node.data,
+						node.left, node2.left))),
+		      node2.right);
+  default: raise InvalidArg("Splay::rotate_right");
+  }
+}
+
+static void lift<a,b>(<*(direction,<a,b>noderef)>list dnl) {
+  while (dnl != null) {
+    if (dnl.tl == null) {
+      switch dnl.hd.1 {
+      case LEFT:  rotate_left (dnl.hd.2);
+      case RIGHT: rotate_right(dnl.hd.2);
+      }
+      return;
+    }
+    direction    parent_dir      = dnl.hd.1;
+    <a,b>noderef parent          = dnl.hd.2;
+    direction    grandparent_dir = dnl.tl.hd.1;
+    <a,b>noderef grandparent     = dnl.tl.hd.2;
+    dnl = dnl.tl.tl;
+    switch parent_dir {
+    case LEFT:
+      switch grandparent_dir {
+      case LEFT:  rotate_left(grandparent);  rotate_left (grandparent);
+      case RIGHT: rotate_left (parent);      rotate_right(grandparent); 
+      }
+    case RIGHT:
+      switch grandparent_dir {
+      case LEFT:  rotate_right(parent);      rotate_left (grandparent);
+      case RIGHT: rotate_right(grandparent); rotate_right(grandparent);
+      }
+    }
+  }
+}
+
+// maybe want a splay_c too, but dict doesn't need it and that's the immediate
+// concern
+bool splay<a,b>(int reln(a,a), a reln_first_arg, <a,b>tree tree) {
+  <*(direction,<a,b>noderef)>list path = null;
+  while(true) {
+    switch tree {
+    case Node(noderef):
+      <a,b>node node = noderef.v;
+      int       comp = reln(reln_first_arg, node.key);
+      if (comp == 0) {
+	lift(path);
+	return true;
+      }
+      else if (comp < 0) {
+	path = ^list(^(^direction.LEFT, noderef), path);
+	tree = node.left;
+      } else {
+	path = ^list(^(^direction.RIGHT, noderef), path);
+	tree = node.right;
+      }
+    case Leaf:
+      if (path == null)
+	return false;
+      lift(path.tl); // must lift b/c of Dict::delete for example
+      return false;
+    }
+  }
+  raise Impossible("Splay::splay");
+}

@@ -1,0 +1,283 @@
+/* Version of hotname.h but without stuff for caching.  This is
+   the first rev of the server, so we ditched this stuff, to be added
+   as updates later. */
+
+#include "c_string.h"
+#include "unixlib.h"
+#include "config.h"
+
+#include "libhttpd.h"
+
+union NameTypes {
+  void HNT_FILE;
+  void HNT_REDIRECT;
+  void HNT_LS;
+}
+
+?struct NameEntry {
+  int hne_refCount;
+  string hne_encoded;		/* the original URL */
+  int hne_time;			/* when this entry was entered */
+  NameEntry hne_next;
+  NameEntry hne_prev;
+  int hne_bin_index;		/* hotNames[] index of this entry */
+  string hne_stripped;		/* decoded, void of query or pathinfo */
+  string hne_expanded;		/* symlinks expanded */
+  NameTypes hne_type;
+  int hne_modTime;		/* currently used only by "ls" */
+  NameEntry hne_nextMRU;	/* if refcount is zero, it's on MRU list */
+  NameEntry hne_prevMRU;
+}
+
+struct HotBin {
+  NameEntry hb_head;
+  int hb_time;
+}
+
+/* cache entry lifetime, in seconds */
+#define NAMECACHELIFETIME 600
+
+#define HOTNAMEBINS 1024	/* change hash function if this changes */
+#define HOTNAMEBINSBITS 10	/* log2(HOTNAMEBINS) */
+/* static HotBin hotNames[HOTNAMEBINS]; */
+static HotBin hotNames[HOTNAMEBINS];
+
+/* only entries without any refs are in
+   the MRU list */
+static NameEntry headMRU;
+static NameEntry tailMRU;
+
+static int numTotalHNEs = 0;
+
+/* ---------------------------------------------------------------- */
+NameEntry GetEmptyNE()
+{
+  if (headMRU != null && numTotalHNEs >= maxNameCacheSize) {
+    if (tailMRU == null) {
+      fprintf(tal_stderr, "hne tail doesn't exist\n");
+      exit(-1);
+    }
+    RemoveHotNameEntry(RemoveFromMRU(tailMRU));
+  }
+  return ^NameEntry {
+    hne_refCount = 0,
+    hne_encoded = "",
+    hne_time = 0,
+    hne_next = null,
+    hne_prev = null,
+    hne_bin_index = -1,
+    hne_stripped = "",
+    hne_expanded = "",
+    hne_type = ^NameTypes.HNT_FILE,
+    hne_modTime = 0,
+    hne_nextMRU = null,
+    hne_prevMRU = null
+  };
+}
+/* ---------------------------------------------------------------- */
+void 
+ReleaseHNE(NameEntry entry)
+{
+  entry.hne_refCount--;
+  if (entry.hne_refCount == 0) {
+    if ((globalTimeOfDay.tv_sec - entry.hne_time) > NAMECACHELIFETIME) {
+      RemoveHotNameEntry(entry);
+    }
+    else 
+      AddToMRU(entry);
+  }
+}
+/* ---------------------------------------------------------------- */
+static int 
+HotNameHash(string encoded)
+{
+  int val;
+
+  val = GenericStringHash(encoded);
+  val += (val >> HOTNAMEBINSBITS) + (val >> (2*HOTNAMEBINSBITS));
+  return(val & (HOTNAMEBINS-1));
+}
+/* ---------------------------------------------------------------- */
+void 
+EnterIntoHotNameCache(*(NameEntry) tempP) 
+{
+  /* always add new entries to the front */
+  int bin;
+  NameEntry temp;
+
+  temp = tempP.1;
+
+  temp.hne_refCount = 1;
+  tempP.1 = null;
+
+  numTotalHNEs++;
+
+  bin = HotNameHash(temp.hne_encoded);
+
+  if (hotNames[bin].hb_head != null)
+    hotNames[bin].hb_head.hne_prev = temp;
+  temp.hne_next = hotNames[bin].hb_head;
+  temp.hne_prev = null;
+  temp.hne_bin_index = bin;
+  hotNames[bin].hb_head = temp;
+
+  temp.hne_time = globalTimeOfDay.tv_sec;
+  if (hotNames[bin].hb_time == 0)
+    hotNames[bin].hb_time = globalTimeOfDay.tv_sec;
+}
+/* ---------------------------------------------------------------- */
+NameEntry
+FindMatchInHotNameCache(string matchName)
+{
+  NameEntry entry;
+  int bin;
+  /*
+  int numWalked = 0;
+  mainStats.cs_numHotNameChecks++;
+  */
+  bin = HotNameHash(matchName);
+
+  fprint_string(tal_stderr,"FindMatchInHotNameCache: looking for ");
+  C_fprint_string(tal_stderr,matchName,0);
+  fprint_char(tal_stderr,'\n');
+
+  if (hotNames[bin].hb_head == null) {
+    fprint_string(tal_stderr,"FindMatchInHotNameCache: no match\n");
+    return(null);
+  }
+
+  if (globalTimeOfDay.tv_sec - hotNames[bin].hb_time > NAMECACHELIFETIME) 
+    RemoveOldEntriesInBin(bin);
+
+  for (entry = hotNames[bin].hb_head; 
+       entry != null; 
+       entry = entry.hne_next) {
+    /* numWalked++; */
+    if (C_strcmp(matchName, 0, entry.hne_encoded, 0) != 0) 
+      continue;
+
+    if ((globalTimeOfDay.tv_sec - entry.hne_time) > NAMECACHELIFETIME) {
+      if (entry.hne_refCount == 0) 
+	RemoveHotNameEntry(RemoveFromMRU(entry));
+      /* mainStats.cs_numHotNameWalks += numWalked; */
+      fprint_string(tal_stderr,"FindMatchInHotNameCache: entry expired\n");
+      return(null);		/* entry is invalid */
+    }
+
+    if (entry.hne_refCount == 0)
+      RemoveFromMRU(entry);
+    entry.hne_refCount++;
+    
+    if (entry != hotNames[bin].hb_head) { /* move entry to front */
+      /* remove from current position */
+      if (entry.hne_next != null)
+	entry.hne_next.hne_prev = entry.hne_prev;
+      if (entry.hne_prev != null)
+	entry.hne_prev.hne_next = entry.hne_next;
+      
+      /* insert at front */
+      if (hotNames[bin].hb_head != null)
+	hotNames[bin].hb_head.hne_prev = entry;
+      entry.hne_next = hotNames[bin].hb_head;
+      entry.hne_prev = null;
+      hotNames[bin].hb_head = entry;
+    }
+    /*
+    mainStats.cs_numHotNameHits++;
+    mainStats.cs_numHotNameWalks += numWalked;
+    */
+    fprint_string(tal_stderr,"FindMatchInHotNameCache: found it\n");
+    return(entry);
+  }
+  /*
+  mainStats.cs_numHotNameWalks += numWalked;
+  */
+  return(null);
+}
+/* ------------------------------------------------------------------*/
+static NameEntry
+RemoveFromMRU(NameEntry h)
+{
+  if (h.hne_refCount != 0) {
+    fprint_string(tal_stderr, "hne shouldn't be on MRU\n");
+    exit(-1);
+  }
+
+  fprintf(tal_stderr,"RemoveFromMRU called for ");
+  C_fprint_string(tal_stderr,h.hne_encoded,0);
+  fprint_char(tal_stderr,'\n');
+
+  if (h.hne_prevMRU != null)
+    h.hne_prevMRU.hne_nextMRU = h.hne_nextMRU;
+  else /* must be at the head */
+    headMRU = h.hne_nextMRU;
+  if (h.hne_nextMRU != null)
+    h.hne_nextMRU.hne_prevMRU = h.hne_prevMRU;
+  else /* must be at the tail */
+    tailMRU = h.hne_prevMRU;
+  return(h);
+}
+/* ---------------------------------------------------------------- */
+static void
+AddToMRU(NameEntry h)
+{
+  if (h.hne_refCount != 0) {
+    fprint_string(tal_stderr, "hne shouldn't be added to MRU\n");
+    exit(-1);
+  }
+  
+  fprintf(tal_stderr,"AddToMRU called for ");
+  C_fprint_string(tal_stderr,h.hne_encoded,0);
+  fprint_char(tal_stderr,'\n');
+
+  h.hne_nextMRU = headMRU;
+  h.hne_prevMRU = null;
+  if (headMRU != null)
+    headMRU.hne_prevMRU = h;
+  else
+    tailMRU = h;
+  headMRU = h;
+}
+/* ---------------------------------------------------------------- */
+static NameEntry
+RemoveHotNameEntry(NameEntry temp)
+{
+  /* removes the entry, returns the next entry */
+  NameEntry del;
+
+  numTotalHNEs--;
+
+  fprintf(tal_stderr,"RemoveHotNameEntry called for ");
+  C_fprint_string(tal_stderr,temp.hne_encoded,0);
+  fprint_char(tal_stderr,'\n');
+
+  del = temp;
+  temp = del.hne_next;
+  if (del.hne_prev != null) {
+    del.hne_prev.hne_next = temp;
+  }
+  else /* at the head */ {
+    hotNames[del.hne_bin_index].hb_head = temp;
+  }
+  if (temp != null)
+    temp.hne_prev = del.hne_prev;
+  return(temp);
+}
+/* ---------------------------------------------------------------- */
+static void
+RemoveOldEntriesInBin(int bin)
+{
+  NameEntry entry;
+
+  fprint_string(tal_stderr,"RemoveOldEntriesInBin called\n");
+  for (entry = hotNames[bin].hb_head; entry != null; ) {
+    if (entry.hne_refCount == 0 &&
+	(globalTimeOfDay.tv_sec - entry.hne_time) > NAMECACHELIFETIME)
+      entry = RemoveHotNameEntry(RemoveFromMRU(entry));
+    else
+      entry = entry.hne_next;
+  }
+
+  fprint_string(tal_stderr,"RemoveOldEntriesInBin finished\n");
+  hotNames[bin].hb_time = globalTimeOfDay.tv_sec;
+}

@@ -1,0 +1,1 @@
+#define MACHINE_CLOCKRATE_MHZ  400

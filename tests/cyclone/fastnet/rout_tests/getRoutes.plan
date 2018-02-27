@@ -1,0 +1,6 @@
+(* query the RIP routing table *)
+
+svc RIPGetRoutes : void -> (host * host * dev * int) list
+
+fun getRoutes() = print(RIPGetRoutes())
+

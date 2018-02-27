@@ -1,0 +1,84 @@
+
+// filename.pop
+// Currently just enough to compile gcd.pop and popcorn.pop
+// No support for backward slashes (a la Windows) yet
+
+#include "core.h"
+#include "string.h"
+#include "list.h"
+
+#define DIR_SEPARATOR '/'
+#define DIR_SEPARATOR_STR "/"
+
+prefix Filename;
+open   Filename;
+
+string current_dir_name = ".";
+
+string concat(string s1, string s2) {
+  return String::strconcat_l(^List::list(s1,
+			     ^List::list(DIR_SEPARATOR_STR, 
+			     ^List::list(s2,null))));
+}
+
+string chop_extension(string filename) {
+  int i = size(filename) - 1;
+  while(i >= 0 && filename[i] != '.') 
+    --i;
+  if (i < 0)
+    raise Core::InvalidArg("chop_extension");
+  return String::substring(filename, 0, i);
+}
+
+string dirname(string filename) {
+  int i = size(filename) - 1;
+  while(i >= 0 && filename[i] != DIR_SEPARATOR) 
+    --i;
+  if (i < 0)
+    return "";
+  return String::substring(filename, 0, i); // doesn't include / -- should it?
+}
+
+string basename(string filename) {
+  int i = size(filename) - 1;
+  while(i >= 0 && filename[i] != DIR_SEPARATOR) 
+    --i;
+  return String::substring(filename, i+1, size(filename)-(i+1)); 
+}
+  
+bool check_suffix(string filename, string suffix) {
+  int i = size(filename)-1;
+  int j = size(suffix)-1;
+  while (i >=0 && j >=0) 
+    if (filename[i--] != suffix[j--])
+      return false;
+  if (j >= 0)
+    return false;
+  return true;
+}
+
+string gnuify(string filename) {
+  // convert drive names and slashes
+  bool has_drive_name = size(filename)>1 && filename[1]==':';
+  int i,j;
+  string ans;
+  if (has_drive_name) {
+    ans = Core::new_string(size(filename)+1);
+    ans[0]=ans[1]='/';
+    ans[2]=filename[0];
+    i=3;
+    j=2;
+  } else {
+    ans = Core::new_string(size(filename));
+    i=0;
+    j=0;
+  }
+  while (i < size(ans)) {
+    ans[i] = filename[j];
+    if (ans[i] == '\\')
+      ans[i] = '/';
+    ++i;
+    ++j;
+  }
+  return ans;
+}

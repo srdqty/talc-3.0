@@ -1,0 +1,759 @@
+
+////////////////////////////////////////////////////////////////////////////
+// Popcorn library, file list.pop                                         //
+// Copyright Greg Morrisett, Dan Grossman                                 //
+// January 1999, all rights reserved                                      //
+//                                                                        //
+////////////////////////////////////////////////////////////////////////////
+#include "core.h"
+
+prefix List;
+open   List;
+
+/* list.pop: defines generic lists and various operations over them,
+ *           following the conventions of the Ocaml list library as much
+ *           as possible.  Also, a reasonable attempt to make things as
+ *           space efficient as possible, while remaining "functional".
+ */
+?struct <a>list { a hd; <a>list tl; }
+
+/* Return the length of a list. */
+int length<a>(<a>list x) {
+  int i = 0;
+
+  while (x != null) {
+    ++i;
+    x = x.tl;
+  }
+  return(i);
+}
+
+<a>list cons<a>(a hd,<a>list tl) {
+  return(new list(hd,tl));
+}
+
+/* raised when some function expects a non-empty list */
+exception List_empty;
+
+/* return the first element in a list, if any, raise List_empty otherwise. */
+a hd<a>(<a>list x) {
+  if (x == null) raise List_empty();
+  return(x.hd);
+}
+
+/* return the tail of a list, if any, raise List_empty otherwise. */
+<a>list tl<a>(<a>list x) {
+  if (x == null) raise List_empty();
+  return(x.tl);
+}
+
+/* return a fresh copy of the list (same as map of the identity) */
+<a>list copy<a>(<a>list x) {
+  if (x == null) return null;
+
+  <a>list result = new list(x.hd,null);
+  <a>list prev = result;
+
+  for (x=x.tl; x != null; x=x.tl) {
+    prev.tl = new list(x.hd,null);
+    prev = prev.tl;
+  }
+  return(result);
+}  
+
+/* Apply a function to each element in a list, returning a new list. */
+<b>list map<a,b>(b f(a),<a>list x) {
+
+  if (x == null) return null;
+
+  <b>list result = new list(f(x.hd),null);
+  <b>list prev = result;
+
+  for (x=x.tl; x != null; x=x.tl) {
+    <b>list temp = new list(f(x.hd),null);
+    prev.tl = temp;
+    prev = temp;
+  }
+  return(result);
+}
+
+/* Apply a function to each element in a list, returning a new list. */
+<b>list map_c<a,b,c>(b f(c,a),c env,<a>list x) {
+
+  if (x == null) return null;
+
+  <b>list result = new list(f(env,x.hd),null);
+  <b>list prev = result;
+
+  for (x=x.tl; x != null; x=x.tl) {
+    prev.tl = new list(f(env,x.hd),null);
+    prev = prev.tl;
+  }
+  return(result);
+}
+
+/* raised when two lists don't have the same size */
+exception List_mismatch;
+
+/* Given two lists of the same length and a function, apply the function
+ * to each pair of elements (in order) and collect the results in a new list.
+ * Raises List_mismatch if the sizes of the lists aren't the same.
+ */
+<c>list map2<a,b,c>(c f(a,b),<a>list x,<b>list y) {
+
+  if (x == null && y == null) return null;
+  if (x == null || y == null) raise List_mismatch();
+
+  <c>list result = new list(f(x.hd,y.hd),null);
+  <c>list prev = result;
+
+  x = x.tl;
+  y = y.tl;
+
+  while (x != null && y != null) {
+    prev.tl = new list(f(x.hd,y.hd),null);
+    prev = prev.tl;
+    x = x.tl;
+    y = y.tl;
+  }
+  if (x != null || y != null) raise List_mismatch();
+  return(result);
+}
+
+/* Apply some function to each element of the list, but don't bother to
+ * save the result.  Similar to Ocaml's List.iter but doesn't require
+ * void type for the result of the function.
+ */
+void app<a,b>(b f(a),<a>list x) {
+  while (x != null) {
+    f(x.hd);
+    x = x.tl;
+  }
+}
+
+void app_c<a,b,c>(c f(a,b),a env,<b>list x) {
+  while (x != null) {
+    f(env,x.hd);
+    x = x.tl;
+  }
+}
+
+// same as app but with void functions
+void iter<a>(void f(a),<a>list x) {
+  while (x != null) {
+    f(x.hd);
+    x = x.tl;
+  }
+}
+// same as app_c but with void functions
+void iter_c<a,b>(void f(b,a),b env,<a>list x) {
+  while (x != null) {
+    f(env,x.hd);
+    x = x.tl;
+  }
+}
+
+/* Same as app, but generalized to a pair of lists.  Raises List_mismatch
+ * if the lengths of the list aren't the same.  
+ */
+void app2<a,b,c>(c f(a,b),<a>list x,<b>list y) {
+  while (x != null && y != null) {
+    f(x.hd,y.hd);
+    x = x.tl;
+    y = y.tl;
+  }
+  if (x != null || y != null) raise List_mismatch();
+}
+
+void app2_c<a,b,c,d>(d f(a,b,c),a env,<b>list x,<c>list y) {
+  while (x != null && y != null) {
+    f(env,x.hd,y.hd);
+    x = x.tl;
+    y = y.tl;
+  }
+  if (x != null || y != null) raise List_mismatch();
+}
+
+/* Same as iter, but generalized to a pair of lists.  Raises List_mismatch
+ * if the lengths of the list aren't the same.  
+ */
+void iter2<a,b>(void f(a,b),<a>list x,<b>list y) {
+  while (x != null && y != null) {
+    f(x.hd,y.hd);
+    x = x.tl;
+    y = y.tl;
+  }
+  if (x != null || y != null) raise List_mismatch();
+}
+void iter2_c<a,b,c>(void f(a,b,c),a env,<b>list x,<c>list y) {
+  while (x != null && y != null) {
+    f(env,x.hd,y.hd);
+    x = x.tl;
+    y = y.tl;
+  }
+  if (x != null || y != null) raise List_mismatch();
+}
+
+/* Given a list [x1,x2,...,xn-1,xn], a function f, and an accumulator a,
+ * return f(f(...(f(x2,f(x1,a))),xn-1),xn).  Notice that the function is
+ * first applied to the left-most element of the list.
+ */
+a fold_left<a,b>(a f(a,b),a accum,<b>list x) {
+  while (x != null) {
+    accum = f(accum,x.hd);
+    x = x.tl;
+  }
+  return(accum);
+}
+
+a fold_left_c<a,b,c>(a f(c,a,b),c env,a accum,<b>list x) {
+  while (x != null) {
+    accum = f(env,accum,x.hd);
+    x = x.tl;
+  }
+  return(accum);
+}
+
+/* Given a list [x1,x2,....,xn-1,xn], a function f, and an accumulator a,
+ * return f(x1,f(x2,...,f(xn-1,f(xn,a))...)).  Notice that the function is
+ * first applied to the right-most element of the list. 
+ */
+b fold_right<a,b>(b f(a,b),<a>list x,b accum) {
+  if (x == null) return accum;
+  else return(f(x.hd,fold_right(f,x.tl,accum)));
+}
+b fold_right_c<a,b,c>(b f(c,a,b),c env,<a>list x,b accum) {
+  if (x == null) return accum;
+  else return(f(env,x.hd,fold_right_c(f,env,x.tl,accum)));
+}
+
+/* Given [x1,...,xn] and [y1,...,ym], return [xn,...,x1,y1,...,ym].
+ * That is, the first list reversed and appended to the second list.
+ */
+<a>list revappend<a>(<a>list x,<a>list y) {
+  while (x != null) {
+    y = new list(x.hd,y);
+    x = x.tl;
+  }
+  return(y);
+}
+
+/* Return the reverse of a list. */
+<a>list rev<a>(<a>list x) {
+  return(revappend(x,null));
+}
+
+/* Imperatively reverse a list */
+<a>list imp_rev<a>(<a>list x) {
+  if (x == null) return x;
+  else {
+    <a>list first = x;
+    <a>list second = x.tl;
+    x.tl = null;
+    while (second != null) {
+      <a>list temp = second.tl;
+      second.tl = first;
+      first = second;
+      second = temp;
+    } 
+    return first;
+  }
+}
+      
+/* Return two appended lists -- creates sharing */
+<a>list append<a>(<a>list x,<a>list y) {
+  if (x == null) return y;
+  if (y == null) return x;
+
+  <a>list result = new list(x.hd,null);
+  <a>list prev = result;
+
+  for (x=x.tl; x != null; x=x.tl) {
+    prev.tl = new list(x.hd,null);
+    prev = prev.tl;
+  }
+  prev.tl = y;
+  return(result);
+}
+
+/* Modify x so that y is appended to it -- if x is empty, return y else
+ * return the modified list x.
+ */
+<a>list imp_append<a>(<a>list x,<a>list y) {
+  if (x == null) return y;
+  if (y == null) return x;
+  <a>list z;
+  for(z = x; z.tl != null; z = z.tl) /* skip */ ;
+  z.tl = y;
+  return x;
+}
+
+/* Flatten a list of lists into a new list */
+<a>list flatten<a>(<<a>list>list x) {
+  return fold_right(append@<a>,x,null);
+}
+
+/* Given a partial order less_eq on 'a elements and a list, return
+ * the list sorted by less_eq.  Uses a merge sort.  The less_eq
+ * function should return 0 if the elements are equal, i < 0 if
+ * the first is less than the second, and i > 0 otherwise.
+ */
+<a>list merge_sort<a>(int less_eq(a,a), <a>list x)
+{
+  <a>list a = null;
+  <a>list b = null;
+  
+  if ((x == null) || (x.tl == null))
+    return(x);
+
+  // split into two lists
+  while (x != null) {
+    a = new list(x.hd,a);
+    x = x.tl;
+    if (x != null) {
+      b = new list(x.hd,b);
+      x = x.tl;
+    }
+  }
+  a = merge_sort(less_eq,a);
+  b = merge_sort(less_eq,b);
+  return(merge(less_eq,a,b));
+}
+
+<a>list merge<a>(int less_eq(a,a),<a>list a,<a>list b) {
+  // Dan bug fix: now works on empty lists by special-casing it first:
+  if (a==null) return b;
+  if (b==null) return a;
+  
+  <a>list c = null;
+  <a>list d = null;
+
+  // merge the two lists:
+  //   d = beginning of the merged list
+  //   c = current cons cell
+ 
+  if (less_eq(a.hd,b.hd) <= 0) {
+    c = a; d = a; a = a.tl; 
+  } else {
+    c = b; d = b; b = b.tl;
+  }
+  // walk through a and b
+  while ((a != null) && (b != null)) {
+    // add a to the list else add b
+    if (less_eq(a.hd, b.hd) <= 0) {
+      c.tl = a;
+      c = a;
+      a = a.tl;
+    } else {
+      c.tl = b;
+      c = b;
+      b = b.tl;
+    }
+  }
+  // splice in the rest of the other list
+  if (a == null)
+    c.tl = b;
+  else
+    c.tl = a;
+  return(d);
+}
+
+/* Given a partial order less_eq on 'a elements and a list, return
+ * the list sorted by less_eq.  Uses a merge sort.  The less_eq
+ * function should return 0 if the elements are equal, i < 0 if
+ * the first is less than the second, and i > 0 otherwise.
+ */
+<a>list merge_sort_c<a,b>(int less_eq(b,a,a), b env,<a>list x)
+{
+  <a>list a = null;
+  <a>list b = null;
+  
+  if ((x == null) || (x.tl == null))
+    return(x);
+
+  // split into two lists
+  while (x != null) {
+    a = new list(x.hd,a);
+    x = x.tl;
+    if (x != null) {
+      b = new list(x.hd,b);
+      x = x.tl;
+    }
+  }
+  a = merge_sort_c(less_eq,env,a);
+  b = merge_sort_c(less_eq,env,b);
+  return(merge_c(less_eq,env,a,b));
+}
+
+<a>list merge_c<a,b>(int less_eq(b,a,a),b env, <a>list a,<a>list b) {
+  // Dan bug fix: now works on empty lists by special-casing it first:
+  if (a==null) return b;
+  if (b==null) return a;
+  
+  <a>list c = null;
+  <a>list d = null;
+
+  // merge the two lists:
+  //   d = beginning of the merged list
+  //   c = current cons cell
+ 
+  if (less_eq(env,a.hd,b.hd) <= 0) {
+    c = a; d = a; a = a.tl; 
+  } else {
+    c = b; d = b; b = b.tl;
+  }
+  // walk through a and b
+  while ((a != null) && (b != null)) {
+    // add a to the list else add b
+    if (less_eq(env,a.hd, b.hd) <= 0) {
+      c.tl = a;
+      c = a;
+      a = a.tl;
+    } else {
+      c.tl = b;
+      c = b;
+      b = b.tl;
+    }
+  }
+  // splice in the rest of the other list
+  if (a == null)
+    c.tl = b;
+  else
+    c.tl = a;
+  return(d);
+}
+
+/* raised when nth doesn't have enough elements in the list. */
+exception Nth;
+
+/* Given [x0,x1,...,xn], return the ith element of the list (0 <= i <= n).
+ * Raise Nth if the list doesn't have enough elements.  Notice that the
+ * indexing is zero-based.
+ */
+a nth<a>(<a>list x,int i) {
+
+  while (i > 0 && x != null) {
+    --i;
+    x = x.tl;
+  }
+  if (i < 0 || x == null) raise Nth();
+  return(x.hd);
+}
+
+/* Given a predicate on 'a values, determine whether every element in a list
+ * satisfies the predicate.
+ */
+bool forall<a>(bool pred(a),<a>list x) {
+  while (x != null && pred(x.hd)) x=x.tl; // modified by Dan
+  return(x == null);
+}
+bool forall_c<a,b>(bool pred(a,b),a env,<b>list x) {
+  while (x != null && pred(env,x.hd)) x=x.tl; 
+  return(x == null);
+}
+
+/* Given a predicate on 'a values, determine whether there exists an element
+ * in the list that satisfies the predicate.
+ */
+bool exists<a>(bool pred(a),<a>list x) {
+  while (x != null && (!pred(x.hd))) x=x.tl; // modified by Dan
+  return(x != null);
+}
+
+/* Given [x1,...,xn] and [y1,...,yn], return [(x1,y1),...,(xn,yn)].  
+ * Raises List_mismatch if the lengths are not the same.
+ */
+<*(a,b)>list zip<a,b>(<a>list x,<b>list y) {
+  
+  if (x == null && y == null) return null;
+  if (x == null || y == null) raise List_mismatch();
+
+  <*(a,b)>list result = new list(new(x.hd,y.hd),null);
+  <*(a,b)>list prev = result;
+
+  x = x.tl;
+  y = y.tl;
+
+  while (x != null && y != null) {
+    prev.tl = new list(new(x.hd,y.hd),null);
+    prev = prev.tl;
+    x = x.tl;
+    y = y.tl;
+  }
+  if (x != null || y != null) raise List_mismatch();
+  return(result);
+}
+
+/* Given [(x1,y1),...,(xn,yn)], return ([x1,...,xn],[y1,...,yn]) */
+*(<a>list,<b>list) split<a,b>(<*(a,b)>list x) {
+  
+  if (x == null) return new(null,null);
+
+  <a>list result1 = new list(x.hd.1,null);
+  <b>list result2 = new list(x.hd.2,null);
+  <a>list prev1 = result1;
+  <b>list prev2 = result2;
+
+  for (x=x.tl; x != null; x=x.tl) {
+    prev1.tl = new list(x.hd.1,null);
+    prev2.tl = new list(x.hd.2,null);
+    prev1 = prev1.tl;
+    prev2 = prev2.tl;
+  }
+  return(new(result1,result2));
+}
+
+/* Given [(x1,y1),...,(xn,yn)], return ([x1,...,xn],[y1,...,yn]) */
+*(<a>list,<b>list,<c>list) split3<a,b,c>(<*(a,b,c)>list x) {
+  
+  if (x == null) return new(null,null,null);
+
+  <a>list result1 = new list(x.hd.1,null);
+  <b>list result2 = new list(x.hd.2,null);
+  <c>list result3 = new list(x.hd.3,null);
+  <a>list prev1 = result1;
+  <b>list prev2 = result2;
+  <c>list prev3 = result3;
+
+  for (x=x.tl; x != null; x=x.tl) {
+    prev1.tl = new list(x.hd.1,null);
+    prev2.tl = new list(x.hd.2,null);
+    prev3.tl = new list(x.hd.3,null);
+    prev1 = prev1.tl;
+    prev2 = prev2.tl;
+    prev3 = prev3.tl;
+  }
+  return(new(result1,result2,result3));
+}
+
+
+/* Given a list [x1,...,xn] and x, determine if x is in the list.  Uses
+ * physical equality for comparison.
+ */
+bool memq<a>(<a>list l, a x) {
+  while (l != null) {
+    if (l.hd == x) return(true);
+    l = l.tl;
+  }
+  return(false);
+}
+
+static int phys_cmp<a>(a x1, a x2) {
+  if(x1==x2) return 0;
+  return -1;
+}
+
+/* Removes an element from the list; uses physical equality */
+<a>list rmq<a>(<a>list l,a x) {
+  return rm (l,x,phys_cmp@<a>);
+}
+
+/* Removes an element from the list, returning the resulting list
+ * (in case the first element was removed).  Uses the provided
+ * function for comparison.
+ */
+<a>list rm<a>(<a>list l,a x,int compare(a,a)) {
+  if (compare(l.hd,x) == 0) { // is the first element
+    return l.tl;
+  }
+  else {
+    <a>list here = l;
+    <a>list next = l.tl;
+	    
+    for ( ; next != null; here = next, next = next.tl) 
+      if (compare(next.hd,x) == 0) {
+	here.tl = next.tl;
+	break;
+      }
+  }
+  return l;
+}
+
+bool mem<a>(int compare(a,a), <a>list l, a x) {
+  while (l != null) {
+    if (compare(l.hd,x)==0) return true;
+    l = l.tl;
+  }
+  return false;
+}
+
+// now defined in Core
+// exception Not_found;
+
+/* Given an association list [(k1,d1),...,(kn,dn)] and a key x,
+ * return the first di such that ki = x.  Uses physical equality.
+ * Raises Not_found if no such ki exists.
+ */
+b assoc<a,b>(<*(a,b)>list l,a x) {
+  while (l != null) {
+    if (l.hd.1 == x) return(l.hd.2);
+    l = l.tl;
+  }
+  raise Core::Not_found();
+}
+
+b assoc_cmp<a,b>(int compare(a,a),<*(a,b)>list l,a x) {
+  while (l != null) {
+    if (compare(x,l.hd.1) == 0) return(l.hd.2);
+    l = l.tl;
+  }
+  raise Core::Not_found();
+}
+
+/* Given an association list [(k1,d1),...,(kn,dn)] and a key x,
+ * returns true iff there exists a ki = x.
+ */
+bool mem_assoc<a,b>(<*(a,b)>list l,a x) {
+  while (l != null) {
+    if (l.hd.1 == x) return(true);
+    l = l.tl;
+  }
+  return(false);
+}
+
+// checks that a list of elements is unique -- assumes they're sorted
+// returns an element that is duplicated if one exists, otherwise returns
+// null.
+<a>Core::Opt check_unique<a>(int cmp(a,a),<a>list x) {
+  while (x != null) {
+    if (x.tl != null) 
+      if (cmp(x.hd,x.tl.hd) == 0) return ^Core::Opt(x.hd);
+    x = x.tl;
+  }
+  return null;
+}
+
+// makes a new array with index i being the ith element of the list
+a to_array<a>(<a>list x) [] {
+  if (x == null)
+    return {:a};
+  int s = length(x);
+  a arr[] = new_array(s,x.hd);
+  for(int i = 0; i < s; ++i, x = x.tl)
+    arr[i] = x.hd;
+  return arr;
+}
+
+// makes a new list with ith element arr[i]
+<a>list from_array<a>(a arr[]) {
+  <a>list ans = null;
+  for(int i = size(arr)-1; i >= 0; --i)
+    ans = ^list(arr[i],ans);
+  return ans;
+}
+  
+// filters out all values for which pred is true
+<a>list filter<a>(bool pred(a), <a>list lis) {
+  <a>list res = null;
+  <a>list prev = null;
+  while (lis != null) {
+    a x = lis.hd;
+    if (!pred(x)) {
+      if (prev == null) {
+	res = ^list(x,null);
+	prev = res;
+      } else {
+	<a>list t = ^list(x,null);
+	prev.tl = t;
+	prev = t;
+      }
+    };
+    lis = lis.tl;
+  }
+  return res;
+}
+
+// closure version of filter.
+<a>list filter_c<a,b>(bool pred(b,a), b env, <a>list lis) {
+  <a>list res = null;
+  <a>list prev = null;
+  while (lis != null) {
+    a x = lis.hd;
+    if (!pred(env,x)) {
+      if (prev == null) {
+	res = ^list(x,null);
+	prev = res;
+      } else {
+	<a>list t = ^list(x,null);
+	prev.tl = t;
+	prev = t;
+      }
+    };
+    lis = lis.tl;
+  }
+  return res;
+}
+
+// splits a list into those elements satisfying a predicate and those that dont
+*(<a>list,<a>list) split_filter<a>(bool pred(a), <a>list lis) {
+  <a>list res_true = null;
+  <a>list res_false = null;
+  <a>list prev_true = null;
+  <a>list prev_false = null;
+  for (; lis != null; lis = lis.tl) {
+    a x = lis.hd;
+    if (pred(x)) {
+      if (prev_true == null) {
+	res_true = ^list(x,null);
+	prev_true = res_true;
+      } else {
+	prev_true.tl = ^list(x,null);
+	prev_true = prev_true.tl;
+      }
+    } else {
+      if (prev_false == null) {
+	res_false = ^list(x,null);
+	prev_false = res_false;
+      } else {
+	prev_false.tl = ^list(x,null);
+	prev_false = prev_false.tl;
+      }
+    }
+  }
+  return ^(res_true,res_false);
+}
+
+*(<a>list,<a>list) split_filter_c<a,b>(bool pred(b,a),b env,<a>list lis) {
+  <a>list res_true = null;
+  <a>list res_false = null;
+  <a>list prev_true = null;
+  <a>list prev_false = null;
+  for (; lis != null; lis = lis.tl) {
+    a x = lis.hd;
+    if (pred(env,x)) {
+      if (prev_true == null) {
+	res_true = ^list(x,null);
+	prev_true = res_true;
+      } else {
+	prev_true.tl = ^list(x,null);
+	prev_true = prev_true.tl;
+      }
+    } else {
+      if (prev_false == null) {
+	res_false = ^list(x,null);
+	prev_false = res_false;
+      } else {
+	prev_false.tl = ^list(x,null);
+	prev_false = prev_false.tl;
+      }
+    }
+  }
+  return ^(res_true,res_false);
+}
+
+<a>list tabulate<a>(int n, a f(int)) {
+  <a>list res = null;
+  for (int i = 0; i < n; ++i) {
+    res = ^list(f(i),res);
+  }
+  return imp_rev(res);
+}
+
+<a>list tabulate_c<a,b>(int n, a f(b,int), b env) {
+  <a>list res = null;
+  for (int i = 0; i < n; ++i) {
+    res = ^list(f(env,i),res);
+  }
+  return imp_rev(res);
+}
+

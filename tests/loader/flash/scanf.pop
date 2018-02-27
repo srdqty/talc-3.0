@@ -1,0 +1,156 @@
+/* Routines for reading data from strings.  Assumes C-style strings
+   (i.e looks for a null terminator) */
+
+#include "char.h"
+#include "core.h"
+#include "c_string.h"
+open Core;
+open Char;
+
+void eat_whitespace(string s, *(int) ofs_ret) {
+  int i, len;
+  len = C_strnlen(s, ofs_ret.1);
+
+  for (i=ofs_ret.1; i<len; i++)
+    if (!is_space(s[i]))
+      break;
+
+  ofs_ret.1 = i;
+}
+
+static bool read_sign(string s, *(int) ofs_ret, *(int) sign_ret) {
+  try {
+    if (s[ofs_ret.1]=='-') {
+      sign_ret.1 = -1;
+      (ofs_ret.1)++;
+      return true;
+    }
+    else if (s[ofs_ret.1] == '+') {
+      sign_ret.1 = 1;
+      (ofs_ret.1)++;
+      return true;
+    }
+    else
+      return true;
+  } handle e {
+    return false;
+  }
+}
+
+bool read_int(string s, *(int) ofs_ret, *(int) int_ret) {
+  int n, i, len, base, ofs_old = ofs_ret.1;
+  *(int) sign = ^(1);
+
+  try {
+    /* eat any leading whitespace */
+    eat_whitespace(s,ofs_ret);
+
+    /* get the sign */
+    if (!read_sign(s, ofs_ret, sign)) 
+      return false;
+    i = ofs_ret.1;
+
+    /* determine the base */
+    if (s[i] == '0') {
+      ++i;
+      if (s[i] == 'x' || s[i] == 'X') {
+	base = 16; ++i;
+      }
+      else
+	base = 8; /* octal */
+    }
+    else if (!is_num(s[i])) {  /* make sure first character is numeric */
+      ofs_ret.1 = ofs_old;
+      return false;
+    }
+    else 
+      base = 10;
+    
+    /* read in the number */
+    len = C_strnlen(s,i) + i;
+    for(n=0; i<len; ++i) {
+      if (is_xnum(s[i])) {
+	int digit;
+	if (is_num(s[i]))
+	  digit = (:int)(s[i] - '0');
+	else
+	  digit = (:int)(to_upper(s[i]) - 'A' + 10);
+	if (digit >= base) /* digit is for wrong base */
+	  break;
+	n = n*base+digit;
+      }
+      else /* non-digit, we're done */
+	break;
+    }
+    ofs_ret.1 = i;
+    int_ret.1 = sign.1*n;
+    return true;
+  } handle e {
+    ofs_ret.1 = ofs_old;
+    return false;
+  }
+}
+
+bool read_alphastring(string s, *(int) ofs_ret, 
+		      string string_ret, int string_ret_ofs) {
+  int i, j, len, ofs_old = ofs_ret.1;
+  len = C_strnlen(s,ofs_old) + ofs_old;
+
+  try {
+    /* eat any leading whitespace */
+    eat_whitespace(s,ofs_ret);
+
+    /* keep reading alphanumeric characters */
+    for (i = ofs_ret.1, j = 0; i<len; i++, j++)
+      if (!is_alpha(s[i]))
+	string_ret[j+string_ret_ofs] = s[i];
+      else
+	break;
+    if (j != size(string_ret))
+      string_ret[j] = '\000';
+    ofs_ret.1 = i;
+    return true;
+
+  } handle e {
+    ofs_ret.1 = ofs_old;
+    return false;
+  }
+}
+
+bool eat_pattern(string s, *(int) ofs_ret, string pat) {
+  int pat_len, s_len;
+  int i, j;
+  int old_ofs = ofs_ret.1;
+
+  s_len = C_strnlen(s, old_ofs) + old_ofs;
+  pat_len = C_strlen(pat);
+
+  try {
+    /* eat any leading whitespace */
+    eat_whitespace(s,ofs_ret);
+
+    /* match the pattern */
+    for (i=ofs_ret.1, j=0; i<s_len && j<pat_len; ) {
+      /* space characters match 0 or more space chars */
+      if (is_space(pat[j])) {
+	ofs_ret.1 = i;
+	eat_whitespace(s,ofs_ret);
+	i = ofs_ret.1;
+	j++;
+      }
+      /* match particular characters */
+      else if (pat[j] == s[i]) {
+	j++; i++;
+      }
+      /* failed match */
+      else {
+	ofs_ret.1 = old_ofs;
+	return false;
+      }
+    }
+  } handle e {
+    ofs_ret.1 = old_ofs;
+    return false;
+  }
+  return true;
+}

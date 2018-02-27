@@ -1,0 +1,19 @@
+fun ack(count:int,where:host) : unit = 
+  (print (where); print (" : "); print (count); print("\n"))
+
+fun traceroute (source:host, destination:host, count:int) : unit =
+ (OnRemote(|ack|(count,thisHost(getSrcDev())), 
+           source, count, defaultRoute);
+  if (thisHostIs (destination)) then ()
+  else
+    let val nextdev:host * dev = defaultRoute(destination) in
+      OnNeighbor (|traceroute| (source, destination, count+1), 
+                  fst nextdev, getRB (), snd nextdev)
+    end)
+
+val entry_fun  : unit = "traceroute"
+val entry_args : unit = ["cyclone.cis.upenn.edu:4000";
+		         "cyclone.cis.upenn.edu:4003"; 20]
+val entry_src  : unit = "cyclone.cis.upenn.edu:4000"
+val entry_eval : unit = "cyclone.cis.upenn.edu:4000"
+val entry_rb   : unit = 7890

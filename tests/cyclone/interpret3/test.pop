@@ -1,0 +1,40 @@
+#include "core.h"
+#include "bench.h"
+
+struct inst
+{
+  int opcode;
+  int val;
+}
+
+extern void test_pop(int, inst []), test_cyclone(int, inst []);
+extern void test_c(int, int);
+extern inst pprog1[], pprog2[], pprog3[], pprog4[], pprog5[];
+
+void main()
+{
+  printf("Program #1\n");
+  test_pop(TEST, pprog1);
+  test_cyclone(TEST, pprog1);
+  test_c(TEST, 1);
+
+  printf("\nProgram #2\n");
+  test_pop(TEST, pprog2);
+  test_cyclone(TEST, pprog2);
+  test_c(TEST, 2);
+
+  printf("Program #3\n");
+  test_pop(TEST, pprog3);
+  test_cyclone(TEST, pprog3);
+  test_c(TEST, 3);
+
+  printf("Program #4\n");
+  test_pop(TEST, pprog4);
+  test_cyclone(TEST, pprog4);
+  test_c(TEST, 4);
+
+  printf("Program #5\n");
+  test_pop(TEST, pprog5);
+  test_cyclone(TEST, pprog5);
+  test_c(TEST, 5);
+}

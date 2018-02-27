@@ -1,0 +1,451 @@
+#include "core.h"
+#include "list.h"
+#include "string.h"
+#include "queue.h"
+
+#include "absyn.h"
+#include "lex.h"
+#include "parse.h"
+
+struct string_file {
+  int index;
+  string file;
+}
+
+open Core;
+open List;
+
+/******************************************************************************
+ * globals
+ *****************************************************************************/
+
+<*(string, string, string, int, string, int)> list pland_interface_info;
+<string> list pland_neighbors;
+<*(string, string)> list pland_rtable;
+<*(FILE, string)>   list pland_interfaces;
+<*(string, string)> list pland_spf_edges;
+string              received_host;
+FILE                logfile;
+
+int                 MAX_LST_LEN = 255;
+int                 MAX_IDENT_LEN = 255;
+int                 MAX_PLANPROG = 20000;
+
+/******************************************************************************
+ * Exceptions
+ *****************************************************************************/
+
+exception InternalError(string);
+exception PlanExcept(string);
+exception ResourceBound(string);
+
+void print_Error(string str)
+{
+  printf("ERROR %s\n", str);
+}
+
+void print_Internal(string str)
+{
+  print_string(strconcat("INTERNAL ERROR [eval.pop]",
+	       strconcat(str, "\n")));
+}
+
+/******************************************************************************
+ * misc
+ *****************************************************************************/
+
+<*(string, int)> list parse_hostnames(<string> list hostnames)
+{
+  return ^list(parse_hostname(hostnames.hd), null);
+}
+
+*(string, int) parse_hostname(string hostname)
+{
+  int colon_loc = -1, colons = 0, tmp = 0;
+  
+  while(tmp < size(hostname)) {
+    if(hostname[tmp] == ':') {
+      colon_loc = tmp;
+      colons++;
+    }    
+    tmp++;
+  }
+  
+  if (colons < 1)
+    raise InternalError(sprintf("Hostname %s must be of form machine:port\n", hostname));
+  
+  if (colons > 1)
+    raise InternalError(sprintf("Hostname %s contains too many colons (must have only one)\n",
+			hostname));
+  
+  string host_str = String::substring(hostname, 0, colon_loc);
+  int host_i = int_of_string(String::substring(hostname, colon_loc+1,
+					       (size(hostname) - colon_loc - 1)));
+  return ^(host_str, host_i);
+}
+
+
+string get_host(string_file str)
+{
+  string s1;
+  int i;
+
+  switch (next_token(str)) {
+  case Id(s):  
+    switch (next_token(str)) {
+    case COLON:
+      switch (next_token(str)) {
+      case Number(n):  
+	return sprintf("%s:%d", s, n);
+      default:  raise InternalError("Expecting Identifier in host\n");
+      }
+    default:  raise InternalError("Expecting : in host\n");
+    }
+  default:  raise InternalError("Expecting Identifier in host\n");
+  }
+}
+
+void read_rout_table_file(string_file str_file)
+{
+  string s1, s2;
+  <*(string, string)> list rtable;
+  
+  reset_topt();
+  pland_rtable = null;
+  while(true) 
+    switch (peek_token(str_file)) {
+    case PEOF:
+      return;
+    default:
+      s1 = get_host(str_file);
+      s2 = get_host(str_file);
+      
+      /* printf("(%s %s)", s1, s2); */
+      pland_rtable = ^list(^(s1, s2), pland_rtable);
+    }
+}
+
+string rout_table_lookup(string dst_str,
+			 <*(string, string)> list tmp)
+{
+  try {
+    return assoc_cmp(Core::strcmp, pland_rtable, dst_str);
+  } handle e
+      switch e {
+      case Core::Not_found:
+	printf("Destination (%s) not found in:\n", dst_str);
+	map(fun int baz(*(string, string) s) {
+	            printf("[%s %s]", s.1, s.2); return 0;
+	          },
+	    pland_rtable);
+	printf("\n");
+	raise InternalError("");
+      default: raise InternalError("(eval_prog): problem w/ assoc");
+      }
+}
+
+string make_node(string name,  int port)
+{
+  return String::strconcat_l(^list(name, ^list(":",
+			   ^list(Core::string_of_int(port), null))));
+}
+
+*(string, string) make_edge(string host_name,  int host_port, 
+			    string neigh_name, int neigh_port)
+{
+  string s1, s2;
+
+  s1 = make_node(host_name, host_port);
+  s2 = make_node(neigh_name, neigh_port);
+
+  if (strcmp(s1, s2) < 0)
+    return(^(s1, s2));
+  else
+    return(^(s2, s1));
+}
+
+void read_interface_file(string_file str_file)
+{
+  int i;
+  token t;
+  <*(string, int)> list lst;
+  <*(string, int)> list internal_edge_nodes;
+  <*(string, int)> list edges, edges2;
+  <*(string, int)> list edges2;
+
+  pland_interface_info = null;
+  pland_spf_edges = null;
+  internal_edge_nodes = null;
+  pland_neighbors = null;
+  reset_topt();
+
+  switch(t = next_token(str_file)) {
+  case Number(n):
+    for(i = 0; i < n; i++) {
+      switch (next_token(str_file)) {
+      case Id(inter):
+	switch (next_token(str_file)) {
+	case Id(protocol):
+	  switch (next_token(str_file)) {
+	  case Id(host_name):
+	    switch (next_token(str_file)) {
+	    case COLON:
+	      switch (next_token(str_file)) {
+	      case Number(host_port):
+		if ((host_port < 3000) || (host_port > 8000)) {
+		  printf("ERROR: 3000 <= port <= 8000\n");
+		  raise InternalError("");
+		}
+		switch (next_token(str_file)) {
+		case Id(neigh_name):
+		  switch (next_token(str_file)) {
+		  case COLON:
+		    switch (next_token(str_file)) {
+		    case Number(neigh_port):
+		      if ((neigh_port < 3000) || (neigh_port > 8000)) {
+			printf("ERROR: 3000 <= port <= 8000\n");
+			raise InternalError("");
+		      }
+		      /* all info */
+		      pland_interface_info =
+			^list(^(inter, protocol, host_name, host_port,
+				      neigh_name, neigh_port),
+			             pland_interface_info);
+
+		      /* edges (for spf) */
+		      pland_spf_edges = 
+			^list(make_edge(host_name, host_port,
+					neigh_name, neigh_port),
+			      pland_spf_edges);
+		      internal_edge_nodes =
+			^list(^(host_name, host_port),
+			internal_edge_nodes);
+
+		      /* neighbors */
+		      pland_neighbors =^list(make_node(neigh_name,neigh_port),
+					     pland_neighbors);
+		      
+		    default:  raise InternalError("IF: Expecting number\n");
+		    }
+		  default:  raise InternalError("IF: Expecting : in host\n");
+		  }
+		default:  raise InternalError("IF: Expecting Identifier\n");
+		}
+	      default:  raise InternalError("IF: Expecting number\n");
+	      }
+	    default:  raise InternalError("IF: Expecting :\n");
+	    }
+	  default:  raise InternalError("IF: Expecting Identifier\n");
+	  }
+	default:  raise InternalError("IF: Expecting Identifier\n");
+	}
+      default:  raise InternalError("IF: Expecting Identifier\n");
+      }
+    }
+  default: raise InternalError("(read_interface_file): expecting integer");
+  }
+
+  /* add internal (virtual) edges to pland_spf_edges */
+  edges = internal_edge_nodes;
+  while (edges != null) {
+    edges2 = edges.tl;
+    while (edges2 != null) {
+      pland_spf_edges = ^list(make_edge(edges.hd.1, edges.hd.2,
+				edges2.hd.1, edges2.hd.2), pland_spf_edges);
+      edges2 = edges2.tl;
+    }
+    edges = edges.tl;
+  }
+
+  /* print_edges(pland_spf_edges); */
+  /* print_interface_info(); */
+} 
+
+<*(string, int)> list pland_hosts_ports()
+{
+  <*(string, string, string, int, string, int)> list lst;
+  <*(string, int)> list ret_val = null;
+  
+  lst = pland_interface_info;
+  while(lst != null) {
+    ret_val = ^list(^(lst.hd.3, lst.hd.4), ret_val);
+    lst = lst.tl;
+  }
+  return ret_val;
+}
+
+<*(string, int)> list pland_neighbors_ports()
+{
+  <*(string, string, string, int, string, int)> list lst;
+  <*(string, int)> list ret_val = null;
+  
+  lst = pland_interface_info;
+  while(lst != null) {
+    ret_val = ^list(^(lst.hd.5, lst.hd.6), ret_val);
+    lst = lst.tl;
+  }
+  return ret_val;
+}
+
+void print_pland_hosts_ports(<*(string, int)> list lst)
+{
+  while(lst != null) {
+    printf("[%s:%d]\n", lst.hd.1, lst.hd.2);
+    lst = lst.tl;
+  }
+  printf("\n");
+}
+
+void print_interface_info()
+{
+  <*(string, string, string, int, string, int)> list lst;
+
+  lst = pland_interface_info;
+  while(lst != null) {
+    printf("<%s %s %s:%d %s:%d>\n", lst.hd.1, lst.hd.2,
+	   lst.hd.3, lst.hd.4, lst.hd.5, lst.hd.6);
+    lst = lst.tl;
+  }
+}
+
+void print_edges(<*(string, string)> list edges)
+{
+  while(edges != null) {
+    printf("(%s %s)\n", edges.hd.1, edges.hd.2);
+    edges = edges.tl;
+  }
+}
+
+bool eval_dest(*(string, int) ev_addr)
+{
+  bool ret_val = false;
+  <*(string, int)> list lst;
+
+  lst = pland_hosts_ports();
+  while(lst != null) {
+    ret_val = ret_val ||
+      (Core::strcmp(ev_addr.1, lst.hd.1) == 0) &&(ev_addr.2 == lst.hd.2);
+    lst = lst.tl;
+  }
+
+  return ret_val;
+}
+
+
+/******************************************************************************
+ * spf algorithm
+ *****************************************************************************/
+
+<*(string, string)> list test_edges =
+  ^list(^("c:1", "c:2"),
+  ^list(^("c:1", "c:3"),
+  ^list(^("c:2", "c:4"),
+  ^list(^("c:2", "c:7"),
+  ^list(^("c:3", "c:5"),
+  ^list(^("c:4", "c:8"),
+  ^list(^("c:5", "c:6"),
+  ^list(^("c:7", "c:8"),
+  ^list(^("c:7", "c:9"),
+  ^list(^("c:8", "c:9"),
+  ^list(^("c:9", "c:10"),
+     null)))))))))));
+
+
+void test_spf()
+{
+  List::map (fun int _(*(string, string) s)
+  { printf("(%s %s)", s.1, s.2); return 0;}, do_spf("c:1", test_edges));
+  printf("\n");
+
+  List::map (fun int _(*(string, string) s)
+  { printf("(%s %s)", s.1, s.2); return 0;}, do_spf("c:8", test_edges));
+  printf("\n");
+}
+
+<*(string, string)> list do_spf(string root, <*(string, string)> list edges)
+{
+  <*(string, string)> list seen, tmp_seen;
+  <*(string, string)> Queue::queue todo_next;
+  <*(string, string)> list tmp_edges;
+  <*(string, string)> list frontier_next;
+  bool already_seen;
+
+  /* initialize data structures: seen, todo_next, frontier_next */
+  seen = ^list(^(root, "NONE"), null);
+
+  todo_next = Queue::create();
+  Queue::add(todo_next, ^(root, "NONE"));
+
+  frontier_next = null;
+
+  /* process todo_next until it's empty */
+
+  while (!Queue::is_empty(todo_next)) {
+
+    /* check edges for new frontier nodes */
+    tmp_edges = edges;
+    while (tmp_edges != null) {
+      /* check "forward" edge */
+      Queue::peek(todo_next).1;
+      Queue::peek(todo_next).2;
+      if(strcmp(Queue::peek(todo_next).1, tmp_edges.hd.1) == 0)
+	if(strcmp(Queue::peek(todo_next).1, root) == 0)
+	  /* next hop is the node found */
+	  frontier_next =^list(^(tmp_edges.hd.2,tmp_edges.hd.2),frontier_next);
+	else
+	  /* next hop is taken from previously calculated next hop */
+	  frontier_next = ^list(^(tmp_edges.hd.2, Queue::peek(todo_next).2),
+	  frontier_next);
+
+      /* check for edge begining w/ the second node */
+      if(strcmp(Queue::peek(todo_next).1, tmp_edges.hd.2) == 0)
+	if(strcmp(Queue::peek(todo_next).1, root) == 0)
+	  frontier_next =^list(^(tmp_edges.hd.1,tmp_edges.hd.1),frontier_next);
+	else
+	  frontier_next = ^list(^(tmp_edges.hd.1,
+				  Queue::peek(todo_next).2), frontier_next);
+
+      tmp_edges = tmp_edges.tl;
+    }
+    Queue::take(todo_next);
+
+    while(frontier_next != null) {
+
+      /* see if top element in frontier has already been seen */
+      already_seen = false;
+      tmp_seen = seen;
+      while (tmp_seen != null) {
+	if (strcmp(frontier_next.hd.1, tmp_seen.hd.1) == 0)
+	  already_seen = true;
+	tmp_seen = tmp_seen.tl;
+      }
+      
+      if (!already_seen) {
+	Queue::add(todo_next, frontier_next.hd);
+	seen = ^list(frontier_next.hd, seen);
+      }
+    frontier_next = frontier_next.tl;
+    }
+  }
+
+  return seen;
+}
+
+
+
+/******************************************************************************
+ * Should go in popcorn/lib/list.pop eventually
+ *****************************************************************************/
+
+<a> list list_del<a>(a val, <a> list lst)
+{
+  <a> list ret_val = null;
+  
+  if(lst == null)
+    return null;
+  else
+    if (lst.hd == val)
+      return list_del(val, lst.tl);
+    else
+      return ^list(lst.hd, list_del(val, lst.tl));
+}

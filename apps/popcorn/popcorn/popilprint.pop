@@ -1,0 +1,638 @@
+
+// we might walk back through this some day and spit out html
+// for now, let's just get something quick and dirty
+
+#include "popil.h"
+#include "core.h"
+#include "dict.h"
+#include "id.h"
+#include "set.h"
+#include "bitvec.h"
+open Popil;
+open Popsyntax;
+open Core;
+
+#define cf_typname string
+#define cf_var     string
+#define id         Id::id
+#define list       List::list
+
+prefix Popilprint;
+open   Popilprint;
+
+FILE out_place = null;
+bool suppress_output = true;
+
+void set_output(FILE f) { 
+  out_place = f; 
+}
+
+// now we're non-functional, but this is quick and dirty without passing
+// an environment everywhere:
+cf_function current_function = null; 
+
+#define PRN0(x)                fprintf(out_place, x)
+#define PRN1(x,y)              fprintf(out_place, x, y)
+#define PRN2(x,y1,y2)          fprintf(out_place, x, y1, y2)
+#define PRN3(x,y1,y2,y3)       fprintf(out_place, x, y1, y2, y3)
+#define PRN4(x,y1,y2,y3,y4)    fprintf(out_place, x, y1, y2, y3, y4)
+#define PRN5(x,y1,y2,y3,y4,y5) fprintf(out_place, x, y1, y2, y3, y4, y5)
+
+static void big_header(string s) {
+  string big_divider = "\n================================\n";
+  PRN3("\n%s%s%s\n", big_divider,s,big_divider);
+}
+static void small_header(string s) {
+  string small_divider = "\n-------------------\n";
+  PRN3("\n%s%s%s\n", small_divider,s,small_divider);
+}
+
+void prn_file(cf_file file) {
+  if(suppress_output) return;
+
+  prn_topdict("Abstract Types",            prn_abstract,   file.abstracts);
+  prn_topdict("Structs",                   prn_struct,     file.structs);
+  prn_topdict("Unions",                    prn_union,      file.unions);
+  prn_topdict("Exceptions",                prn_exception,  file.exns);
+  prn_topdict("Extern Values",             prn_extern,     file.extern_vals);
+  prn_topdict("Globals",                   prn_global,     file.globals);
+  prn_topdict("Functions",                 prn_id_fun,     file.funs);
+  prn_topdict("RTCG Functions",            prn_id_fun,     file.rtcg_funs);
+}
+
+void prn_topdict<a,b>(string header, void prn_decl(a,b), <a,b>Dict::dict d) {
+  big_header(header);
+  Dict::iter(prn_decl,d);
+}
+
+void prn_abstract(cf_typname name, cf_absdecl decl) {
+  PRN1("\n%s:\t", name);
+  prn_tyvars(decl.tyvars);
+  PRN1("\t%s\n", decl.possibly_null ? "nullable" : "not nullable");
+}
+
+void prn_struct(cf_typname name, cf_structdecl decl) {
+  PRN2("\n\n\n%s:\t%s\t", name, scope2str(decl.scope));
+  prn_tyvars(decl.tyvars);
+  PRN1("\t%s\n", decl.possibly_null ? "nullable" : "not nullable");
+  for(int i=0; i < size(decl.fields); ++i) {
+    cf_field x = decl.fields[i];
+    PRN1("\n\t%d ", i); prn_capability(x.cap); PRN0(":\t"); prn_typ(x.typ);
+    PRN0("@\t"); prn_int(x.offset);
+  }
+}
+
+void prn_union(cf_typname name, cf_uniondecl decl) {
+  PRN2("\n\n%s:\t%s\t", name, scope2str(decl.scope)); prn_tyvars(decl.tyvars);
+  PRN0("\nVoids: "); prn_list("", prn_int, decl.fields.1, "", false);
+  PRN0("\nValues:");
+  for(<*(int,cf_typ)>list vl = decl.fields.2; vl != null; vl = vl.tl) {
+    PRN1("\n\t%d: ", vl.hd.1); prn_typ(vl.hd.2);
+  }
+}
+
+void prn_exception(id name, cf_exndecl decl) {
+  PRN2("\n%s:\t%s\t", Id::id_to_string(name), scope2str(decl.scope));
+  if (decl.typOpt == null) PRN0("(void)"); else prn_typ(decl.typOpt.v);
+}
+
+void prn_extern(id name, cf_typ t) {
+  PRN1("\n%s:\t", Id::id_to_string(name));  prn_typ(t);
+}
+
+void prn_global(id name, cf_globaldecl decl) {
+  // still a stub, since we don't have globals yet
+  // should we call the TAL pretty printer since we'll be TAL?
+  PRN1("\n%s: (see TAL for the value)",
+       Id::id_to_string(name));
+}
+
+void prn_id_fun(id name, cf_function f) {
+
+  if(suppress_output) return;
+
+  PRN1("Function : %s\n",Id::id_to_string(name));
+  prn_fun(f);
+}
+
+void prn_int_typ(int x,cf_typ t) {
+ PRN1("(%d, ",x);
+ prn_typ(t);
+ PRN0(") ");
+}
+
+// Cyclone +
+
+void prn_template_name(cf_template t) {
+  prn_id(t.name);
+}
+
+void prn_template(cf_function fn, cf_template t) {
+  string hdr = sprintf("%s to %s",Id::id_to_string(t.name),
+		       Id::id_to_string(t.end_name));
+  small_header(hdr);
+
+  PRN0("Entry: ");
+  prn_label(t.entry);
+
+  PRN0("\nExit: ");
+  if(t.exit != null) {
+    prn_label(t.exit.v.1);
+    PRN1(", %d (hole)",t.exit.v.2);
+  }
+
+  if(Xarray::length(t.holes)!=0) {
+    PRN0("\nHoles: (");
+    for(int x=0;x<Xarray::length(t.holes);x++) {
+      _ z = Xarray::get(t.holes,x);
+      PRN2("%d in %s, ", z.1, Id::id_to_string(z.2.label));  
+    }
+    PRN0(")\n");
+  }
+
+  if(!Set::is_empty(t.labels)) {
+    PRN0("\nLabels: ");
+    prn_list("(",prn_label,Set::elements(t.labels),")",true);
+  }
+
+  PRN0("\n\nBlocks:");
+  int len = Xarray::length(t.blocks);
+  for(int i=0;i<len;i++) {
+    _ blk = Xarray::get(t.blocks,i);
+    if(blk.template!=t) 
+      PRN0("WARNING: Template is inconsistent.\n");
+    prn_block_internal(fn,blk);
+  }  
+}
+// Cyclone -
+
+void prn_convention(cf_convention c) {
+  switch c {
+  case Stdcall: PRN0("__stdcall");
+  case Cdecl: PRN0("__cdecl");
+  }
+}
+
+void prn_fun(cf_function fn) {
+  if(suppress_output) return;
+
+  current_function = fn;
+  small_header(Id::id_to_string(fn.entry.label));
+  if (fn.is_static) PRN0("static "); else PRN0("public ");
+  prn_convention(fn.convention);
+  prn_list("(",prn_typ,fn.arg_typs,")->",true);
+  if (fn.ret_typ == null) PRN0("(void)"); else prn_typ(fn.ret_typ.v);
+
+  //Cyclone +
+    if(fn.generator != null) {
+      PRN1("\n Generated by: %s\n", Id::id_to_string(fn.generator.entry.label));
+    }
+  //Cyclone -
+
+  PRN0("\nOperands:\n");
+  // would probably be better to sort the operands by use
+  for(int i=0; i < Xarray::length(fn.all_operands); ++i) {
+    PRN0("\n "); prn_local(i); PRN0(": ");
+    prn_typ(Xarray::get(fn.all_operands,i).typ);
+  }
+  PRN0("\n\nConstants:\n");
+  for(int i=0; i < Xarray::length(fn.all_consts); ++i) {
+    PRN2("\n c%d:\t%d\t", i, Xarray::get(fn.all_consts,i).val);
+    prn_typ(Xarray::get(fn.all_consts,i).typ);
+  }
+  
+  PRN1("\n\nEntry block = %d\n\n",fn.entry.num);
+
+  // Cyclone +
+  if(fn.templates!=null) {
+    PRN0("\n\nHoles:");
+    for(int i=0; i < Xarray::length(fn.all_holes); ++i) {
+      PRN1("\n h%d:\t",i);
+      prn_holeinfo(Xarray::get(fn.all_holes,i));
+    }
+
+    PRN0("\n\nTemplates:\n");
+    int template_blks = 0;
+    for(_ ts = fn.templates; ts != null; ts = ts.tl) {
+      prn_template(fn,ts.hd);
+      template_blks += Xarray::length(ts.hd.blocks);
+    }
+
+    int num_blks = Xarray::length(fn.blocks);
+    if(num_blks != template_blks) {
+      PRN2("\nWARNING: Templates contain %d blocks, function contains %d.\n",
+	   template_blks, num_blks);
+      for(int i=0;i<num_blks;i++) {
+	PRN1("%s, ",Id::id_to_string(Xarray::get(fn.blocks,i).label));
+      }
+    }
+  }
+  else {
+    PRN0("\n\nBlocks:\n");
+    Xarray::iter_c(prn_block_internal, fn, fn.blocks);
+  }
+
+  if(Xarray::length(fn.code_regions)!=0) {
+    PRN0("\nCode Regions:\n");
+    for(int i=0; i < Xarray::length(fn.code_regions); ++i)
+      prn_code_region(i,Xarray::get(fn.code_regions,i));
+  }
+  
+  if(Xarray::length(fn.template_pointers)!=0) {
+    PRN0("\nTemplate Pointers:\n");
+    for(int i=0; i < Xarray::length(fn.template_pointers); ++i)
+      prn_template_pointer(i,Xarray::get(fn.template_pointers,i));
+  }
+
+  // Cyclone -
+
+}
+
+void prn_block(cf_block blk) {
+  if(suppress_output) return;
+
+  prn_block_internal(blk.fn,blk);
+}
+
+void prn_block_internal(cf_function f, cf_block blk) {
+  current_function = blk.fn; // Heh Heh.
+  if(current_function != f)
+    PRN0("WARNING: .fn is inconsistent.\n");
+  
+  PRN2("\n\n%d %s:", blk.num, Id::id_to_string(blk.label));
+  if(blk.handler_var != null) 
+    PRN0(" (exception handler) ");
+  if (blk.handler != null)
+    PRN1("\n\thandler:     %s", Id::id_to_string(blk.handler.v.label));
+  if (Xarray::length(blk.pred)!=0) {
+    PRN0("\n\tpred:       "); Xarray::iter(prn_label, blk.pred);
+  }
+  if (Xarray::length(blk.succ)!=0) {
+    PRN0("\n\tsucc:       "); Xarray::iter(prn_label, blk.succ);
+  }
+  if (!Dict::is_empty(blk.refined_locals)) {
+    PRN0("\n\trefined locals:    "); 
+    Dict::iter(prn_refined_local, blk.refined_locals);
+  }
+  if(blk.ltes != null) {
+    PRN0("\n\tltes:       "); List::iter(prn_lte, blk.ltes);
+  }
+  if (!Dict::is_empty(blk.partial_inits)) {
+    PRN0("\n\tpart_inits: "); Dict::iter(prn_partial_init, blk.partial_inits);
+  }
+
+  if(!Dict::is_empty(blk.regions)) {
+    PRN0("\n\tregions: ");
+    Dict::iter(prn_region,blk.regions);
+  }
+  
+  if(!Dict::is_empty(blk.filled)) {
+    PRN0("\n\tfilled: ");
+    Dict::iter(prn_filled,blk.filled);
+  }
+
+  if(blk.template!=null) {
+    PRN0("\n\ttemplate: ");
+    prn_id(blk.template.name);
+  }
+
+  Xarray::iter(prn_inst, blk.insts);
+  prn_transfer(blk.trans);
+}
+
+void prn_refined_local(int name, cf_refinement r) {
+  PRN0(" "); prn_local(name); PRN0(": "); 
+  switch r {
+  case NotNull:             PRN0("not null");
+  case VoidVariant(i):      PRN1("void %d", i);
+  case ValueVariant(i):     PRN1("value %d", i);
+  case ExceptionVariant(i): PRN0("exception "); prn_id(i);
+  case IsNull:              PRN0("is null");
+  case UnknownUnion:        PRN0("unknown union");
+  case UnknownException:    PRN0("unknown exception");
+  }
+}
+void prn_refined_global(id name, cf_typ t) {
+  PRN0(" "); prn_id(name); PRN0(":"); prn_typ(t);
+}
+void prn_lte(*(cf_sing,cf_sing) x) {
+  PRN0(" "); prn_sing(x.1); PRN0("<="); prn_sing(x.2);
+}
+void prn_partial_init(int name, *(int[],int) num_pr) {
+  int length = num_pr.2;
+  int bv[] = num_pr.1;
+  PRN0(" "); prn_local(name); PRN0("[");
+  for (int i=0; i < length; i++) {
+    if (Bitvec::get(bv,i))
+      PRN0("1");
+    else 
+      PRN0("0");
+  }
+  PRN0("]");
+}
+void prn_transfer(cf_transfer trans) {
+  PRN0("\n\t\t");
+  switch trans {
+  case Abort:     PRN0("abort");
+  case Uncond(b): PRN0("uncond "); prn_dest(b);
+  case Raise(p):  PRN0("raise ");  prn_op(p);
+  case Retn(po):  PRN0("retn ");   if (po!=null) prn_op(po.v);
+  case Call(x):
+    PRN0("call ");
+    if (x.1 != null) {
+      prn_op(x.1.v); PRN0(" = ");
+    }
+    prn_op(x.2); 
+    prn_list("<",prn_typ,x.3,">",false);
+    prn_list("(",prn_op, x.4,")",true);
+    PRN0(" --> "); prn_dest(x.5); 
+  case TailCall *(fn,targs,args):
+    PRN0("tailcall ");
+    prn_op(fn);
+    prn_list("<",prn_typ,targs,">",false);
+    prn_list("(",prn_op,args,")",true);
+  case Cond(x):   
+    prn_op(x.3); PRN1(" %s ", primop2string(x.5)); prn_op(x.4);
+    PRN0(" then "); prn_dest(x.1); PRN0(" else "); prn_dest(x.2);
+  case NumSwitch(x):
+    PRN0("switch "); prn_op(x.1);
+    for (_ arms = x.2; arms!=null; arms=arms.tl) {
+      PRN1("\n\t\t\t %d: ", arms.hd.1); prn_dest(arms.hd.2);
+    }
+    PRN0("\n\t\t\t"); prn_dest(x.3);
+  case SumSwitch(x):
+    PRN0("switch "); prn_op(x.1);
+    for (_ arms = x.2; arms!=null; arms=arms.tl) {
+      PRN1("\n\t\t\t %d: ", arms.hd.1); prn_dest(arms.hd.2);
+    }
+    for (_ arms = x.3; arms!=null; arms=arms.tl) {
+      PRN1("\n\t\t\t %d: ", arms.hd.1); prn_dest(arms.hd.2);
+    }
+    if (x.4 != null) {
+      PRN0("\n\t\t\t"); prn_dest(x.4.v);
+    }
+  case ExnSwitch(x):
+    PRN0("switch "); prn_op(x.1);
+    for (_ arms = x.2; arms!=null; arms=arms.tl) {
+      PRN1("\n\t\t\t %s: ", Id::id_to_string(arms.hd.1)); prn_dest(arms.hd.2);
+    }
+    PRN0("\n\t\t\t"); prn_dest(x.3);
+  case NullCheck(x):
+    PRN0("nullCheck "); prn_op(x.1);
+  case UnionCheck(x):
+    PRN0("unionCheck "); prn_op(x.1); 
+    if(x.3) PRN0(" void "); else PRN0(" value ");
+    PRN1("%d",x.2);
+  case NullBranch(x):
+    PRN0("nullBranch "); prn_op(x.1); PRN0(" ");
+    prn_dest(x.2); PRN0(" "); prn_dest(x.3);
+  }
+}
+void prn_inst(cf_instruction inst) {
+  PRN0("\n\t\t");
+  switch inst {
+  case Nop:      PRN0("nop");
+  case Copy(x):  prn_op(x.1); PRN0(" = "); prn_op(x.2);
+  case Nullop *(p,o): prn_op(o); PRN1(" = %s ",primop2string(p));
+  case Unop(x):  prn_op(x.2); PRN1(" = %s ", primop2string(x.1)); prn_op(x.3);
+  case Binop(x): prn_op(x.2); PRN0(" = "); 
+                    prn_op(x.3); PRN1(" %s ", primop2string(x.1)); prn_op(x.4);
+  case TypedCopy(x): prn_op(x.1); PRN0(" = "); prn_op(x.2);
+    switch x.3 {
+    case InitRoll:          PRN0("init roll");
+    case Instantiation(tl): prn_list("@<",prn_typ,tl,">",true); 
+    case Unpacking(vl):     prn_list(" unpacking<",prn_string,vl,">",true);
+    case Packing(tl):       prn_list(" packing<",prn_typ,tl,">",true); 
+    }
+  case SelectField(x): prn_op(x.2); PRN0(" = "); prn_op(x.3); PRN1(".%d", x.1);
+  case AssignField(x): prn_op(x.2); PRN1(".%d", x.1); PRN0(" = "); prn_op(x.3);
+  case ArrayCheck(x):  PRN0("? "); prn_op(x.1); PRN0(" < "); prn_op(x.2);
+  case CArrayCheck(x): PRN0("? "); prn_op(x.1); PRN1(" < %d",x.2);
+  case ArraySub(x):    prn_op(x.1); PRN0(" = "); prn_op(x.2);
+                       PRN0("["); prn_op(x.3); PRN0("]");
+  case ArrayUpd(x):    prn_op(x.1); PRN0("["); prn_op(x.2); PRN0("]");
+                       PRN0(" = "); prn_op(x.3);
+  case New(x): prn_op(x); PRN0(" = new ");
+  case Rdtsc *(o1,o2):
+    PRN0("rdtsc ");
+    prn_op(o1);
+    PRN0(":");
+    prn_op(o2);
+    // Cyclone +
+  case Start(x):            prn_op(x); PRN0(" = cg_start");
+  case Dump *(o1,o2,templ): PRN0("("); prn_op(o1); PRN0(", "); prn_op(o2); 
+                            PRN0(") = cg_dump "); prn_id(templ.name);
+  case Hole *(h,o) : prn_op(o); PRN1(" = [ %d ]",h);
+  case Fill *(o1,o2,h,o3) : prn_op(o1); PRN0(" @ "); prn_op(o2); 
+                            PRN1("[%d] <-- ",h);prn_op(o3);
+  case FillJmp *(o1,o2,h,o3,b):
+    prn_op(o1); PRN0(" @ "); prn_op(o2);
+    PRN1("[%d] <-- ",h); prn_op(o3);
+    PRN0("."); prn_label(b);
+  case End *(o1,o2) : prn_op(o1); PRN0(" = cg_end "); prn_op(o2);
+    // Cyclone -
+  }
+}
+void prn_op(cf_operand p) {
+  switch p {
+  case Const(i):  PRN1("c%d", i);
+  case Local(i):  prn_local(i);
+  case Global(i): prn_id(i);
+  }
+}
+void prn_local(int i) { // should really pass in function, but that's a pain
+  if(suppress_output) return;
+  switch Xarray::get(current_function.all_operands,i).usage {
+  case Generated:    PRN1("t%d",i);
+  case FromAbove(s): PRN2("%s%d",s,i);
+  case Param(x):     PRN2("%s%d",x.1,i);
+  }
+}
+
+void prn_typ(cf_typ t) {
+  switch t {
+  case Exn:         PRN0("exn");
+  case ExnName (i): PRN1("(exnName:%s)", Id::id_to_string(i));
+  case Var(v):      PRN1("'%s", v);
+  case Bool:        PRN0("bool");
+  case Num(n):      PRN2("num%d%c", size2int(n.s), n.is_signed ? 's' : 'u');
+  case Float:       PRN0("float");
+  case Double:      PRN0("double");
+  case Fn(f): 
+    prn_convention(f.1);
+    prn_tyvars(f.2); prn_list("(",prn_typ,f.4,")", true);
+    PRN0("->");
+    if (f.2 == null) 
+      PRN0("(void)"); 
+    else 
+      prn_typ(f.3.v);
+  case Array *(szopt,et): 
+    PRN0("Arr("); 
+    if(szopt!=null) { prn_int(szopt.v); PRN0(","); }
+    prn_typ(et); PRN0(")");
+  case UnpackedArray *(sing,t):
+    PRN0("UnpackedArray("); prn_sing(sing); PRN0(","); prn_typ(t); PRN0(")");
+  case Sing(s):
+    PRN0("Sing("); prn_sing(s); PRN0(")");
+  case Named(x):
+    prn_list("<", prn_typ, x.2, ">", false);
+    PRN1("%s", x.1);
+  case Tuple(x):
+    prn_list("*(", prn_tuple_field, List::from_array(x), ")", true);
+  case Option(t):
+    PRN0("? "); prn_typ(t);
+    // Cyclone +
+  case CodeRgn(x): PRN1("cg%d",x);
+  case TemplPtr(x): PRN1("tp%d",x);
+    // Cyclone -
+  }
+}
+
+void prn_sing(cf_sing s) {
+  switch s {
+  case Var(v): PRN1("%s", v);
+  case Int(i): PRN1("%d", i);
+  }
+}
+
+void prn_capability(cf_capability cap) {
+  string s;
+  switch cap {
+  case Read:      s = "r";
+  case ReadWrite: s = "rw";
+  }
+  PRN1("%s", s);
+}
+
+void prn_tyvars(<cf_var>list l) {
+  prn_list("<", prn_string, l, ">", false);
+}
+
+string scope2str(Popsyntax::scope s) {
+  switch s {
+  case Static:   return "static";
+  case Public:   return "public";
+  case Extern:   return "extern";
+  case Abstract: return "abstract";
+  }
+}
+int size2int(Popsyntax::size_of s) {
+  switch s {
+  case B1: return 1;
+  case B2: return 2;
+  case B4: return 4;
+  }
+}
+
+static void prn_string(string s) {
+  PRN1("%s", s);
+}
+static void prn_int(int i) {
+  PRN1("%d", i);
+}
+static void prn_id(id i) {
+  PRN1("%s", Id::id_to_string(i));
+}
+static void prn_label(cf_block b) {
+  PRN1(" %s ", Id::id_to_string(b.label));
+}
+
+// Cyclone +
+
+static void prn_code_region(int v,*(<int>Xarray::xarray,cf_function) info) {
+  _ name = info.2.name;
+  _ ops = info.1;
+  
+  PRN2("cg%d <- %s ",v,name);
+
+  _ length = Xarray::length(ops);
+  PRN0("[");
+  for(int x=0;x<length;x++) {
+    PRN1("t%d",Xarray::get(ops,x));
+    if(x<(length-1)) PRN0(", "); 
+  }
+  PRN0("]");
+}
+
+static void prn_template_pointer(int v, cf_template t) {
+  PRN2("tp%d <- %s\n",v,Id::id_to_string(t.name));
+}
+
+static void prn_region(int i,int t[]) {
+  PRN1("\n\t\tcg%d last = ", i);
+  _ ts = Bitvec::to_sorted_list(t,size(t)*32);
+
+  if(ts==null) PRN0("?");
+  else {
+    for(;ts!=null;ts=ts.tl) {
+      PRN1("tp%d ",ts.hd);
+    }
+  }
+}
+
+static void prn_filled(int i,<cf_hole>list hs) {
+  PRN1("tp%d",i);
+  prn_list("[",prn_int,hs,"]",true);
+}
+
+static void prn_dest(cf_dest d) {
+  switch d {
+  case Known(b): prn_label(b);
+  case Unknown(i):
+    PRN1("[h%d]",i);
+  }
+}
+
+static void prn_holeinfo(cf_holeinfo h) {
+  switch h {
+  case Value(t):   PRN0("["); prn_typ(t); PRN0("]");
+  case Jmp(succs): PRN0("Jmp"); prn_list("(",prn_label,succs,")",true);
+  case Terminal(succs):
+    PRN0("Terminal"); prn_list("(",prn_template_name,succs,")",true);
+  }
+}
+
+// Cyclone -
+
+static void prn_variant(*(int,cf_typ) x) {
+  PRN1("%d:", x.1);
+  prn_typ(x.2);
+}
+static void prn_tuple_field(cf_field x) {
+  prn_typ(x.typ); PRN0(":"); prn_capability(x.cap);PRN0("@"); prn_int(x.offset);
+}
+  
+static void prn_list<a>(string start, void prn_elmt(a), <a>list elmts, 
+			string end, bool print_if_empty) {
+  if (elmts == null)
+    if (!print_if_empty)
+      return;
+    else {
+      PRN2("%s%s", start, end);
+      return;
+    }
+  PRN1("%s", start);
+  for (; elmts.tl != null; elmts = elmts.tl) {
+    prn_elmt(elmts.hd);
+    PRN0(", ");
+  }
+  prn_elmt(elmts.hd);
+  PRN1("%s", end);
+}
+
+
+void prn_edge_stats(cf_function f) {
+  _ num_preds = 0;
+  _ num_succs = 0;
+  _ num_blocks = Xarray::length(f.blocks);
+  _ num_templates = List::length(f.templates);
+  for(int i =0; i < num_blocks; i++) {
+    _ b = Xarray::get(f.blocks,i);
+    num_preds += Xarray::length(b.pred);
+    num_succs += Xarray::length(b.succ);
+  }
+
+  PRN1("%s: ",f.name);
+  PRN4("predecessors = %d, successors = %d templates = %d blocks = %d\n",
+       num_preds,num_succs,num_templates,num_blocks);
+}

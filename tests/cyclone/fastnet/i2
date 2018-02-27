@@ -1,0 +1,4 @@
+3
+ip0 ip cyclone:4002 cyclone:4001
+ip0 ip cyclone:4003 cyclone:4007
+ip0 ip cyclone:4004 cyclone:4005

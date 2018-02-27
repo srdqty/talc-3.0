@@ -1,0 +1,174 @@
+/* copyright (c) 1998, Greg Morrisett
+ * lex.pop:  lexer for the calculator example Popcorn program
+ *
+ * imports:
+ *   print_string, print_int -- from stdlib.c
+ *   tal_getchar, tal_ungetchar, print_char, & char_array_to_string  
+ *         -- from calclib.c
+ *
+ * exports:
+ *   type token
+ *   token peek_token()  -- returns but does not consume next token in stream
+ *   token next_token()  -- returns and consumes next token in stream
+ *   void print_token(token) -- prints token to stdout
+ */
+
+/* From stdlib.c -- would be nice to break out into an #include file */
+extern void print_string(string);
+extern void print_int(int);
+
+/* From calclib.c -- would be nice to break out into an #include file */
+extern int tal_getchar();
+extern int tal_ungetchar(int);
+extern void print_char(char);
+extern string char_array_to_string(char[],int);
+
+/* definition is shared with parser -- would be nice to break this out
+ * into an #include file.
+ */
+union token {
+  char    ERROR;
+  void    EOF;
+  int     Number;
+  string  Ident;
+  void    LPAREN;
+  void    RPAREN;
+  void    DIV;
+  void    ASTERISK;
+  void    PLUS;
+  void    MINUS;
+  void    EQUAL;
+  void    SEMICOLON;
+}
+
+void print_token(token t) {
+
+  switch (t) {
+    case ERROR(c):
+	print_string("ERROR("); 
+	print_char(c); 
+	print_string(" = ");
+	print_int(ord(c));
+	print_string(")");
+    case EOF: print_string("EOF");
+    case Number(n):
+	print_string("Number("); 
+	print_int(n); 
+	print_string(")");
+    case Ident(x):
+	print_string("Ident(");
+	print_string(x);
+	print_string(")");
+    case LPAREN: print_string("(");
+    case RPAREN: print_string(")");
+    case DIV: print_string("/");
+    case ASTERISK: print_string("*");
+    case PLUS: print_string("+");
+    case MINUS: print_string("-");
+    case EQUAL: print_string("=");
+    case SEMICOLON: print_string(";");
+  }
+  print_string("\n");
+}
+private int EOF = 4;
+
+/* numbers:  [0-9]*
+ * identifiers:  [a-zA-Z][0-9a-zA-Z_]*  (max size 256)
+ * space, tab, \n (linefeed?) are white space
+ * rest are self-explanatory
+ */
+static token get_token() {
+  int c;
+
+  while (true) {
+    c = tal_getchar();
+
+    if (c == EOF)
+      return(new token.EOF);
+    else 
+    {
+      if (c >= ord('0') && c <= ord('9'))
+	return(new token.Number(getint(c - ord('0'))));
+
+      if ((c >= ord('a') && c <= ord('z')) ||
+	  (c >= ord('A') && c <= ord('Z')))
+	return(new token.Ident(getident(chr(c))));
+      
+      switch (chr(c)) {
+      case '(': return(new token.LPAREN);
+      case ')': return(new token.RPAREN);
+      case '*': return(new token.ASTERISK);
+      case '+': return(new token.PLUS);
+      case '-': return(new token.MINUS);
+      case '/': return(new token.DIV);
+      case ' ': continue;
+      case '\n': continue;
+      case '\t': continue;
+      case ';' : return(new token.SEMICOLON);
+      case '=' : return(new token.EQUAL);
+      default:
+	return(new token.ERROR(chr(c)));
+      }
+    }
+  }
+  return(new token.ERROR(' '));  /* impossible */
+} 
+
+static int getint(int i) {
+  int c = tal_getchar();
+
+  while (c >= ord('0') && c <= ord('9')) {
+      i = i*10 + (c - ord('0'));
+      c = tal_getchar();
+  }
+  tal_ungetchar(c);
+  return(i);
+}
+
+static string getident(char c) {
+  char buffer[] = newarray(255,c);
+  int len = 1;
+  int c = tal_getchar();
+
+  while (((c >= ord('a')) && (c <= ord('z'))) ||
+	 ((c >= ord('0')) && (c <= ord('9'))) ||
+	 ((c >= ord('A')) && (c <= ord('Z'))) ||
+	 (c == ord('_'))) {
+	buffer[len] = chr(c);
+	len++;
+	c = tal_getchar();
+  } 
+  tal_ungetchar(c);
+  return(char_array_to_string(buffer,len));
+}  
+
+/* we collect all of the tokens from the input stream into a list to
+ * provide convenient lookahead.  this should be re-done so as to only
+ * suck one token in at a time.
+ */	
+static ?struct token_opt {
+  token token;
+}
+
+/* private variables used to hold the current token */
+private token_opt topt;
+
+token next_token() {
+  if (topt == null)
+    return(get_token());
+  else {
+    token t = topt.token;
+    topt = null;
+    return(t);
+  }
+}
+
+token peek_token() {
+  if (topt == null)
+    topt = new token_opt(get_token());
+  return(topt.token);
+}
+
+    
+
+

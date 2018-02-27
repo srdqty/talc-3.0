@@ -1,0 +1,404 @@
+/* copyright (c) 1998, Greg Morrisett
+ * lex.pop:  lexer for the PLAN interpreter
+ *   doesn't properly deal with special characters in character or string
+ *   quotes yet.
+ *
+ * imports:
+ *   print_string, print_int -- from stdlib.c
+ *   tal_getchar, tal_ungetchar, print_char, & char_array_to_string  
+ *         -- from calclib.c
+ *
+ * exports:
+ *   type token
+ *   token peek_token()  -- returns but does not consume next token in stream
+ *   token next_token()  -- returns and consumes next token in stream
+ *   void print_token(token) -- prints token to stdout
+ */
+
+/* From stdlib.c -- would be nice to break out into an #include file */
+extern void print_string(string);
+extern void print_int(int);
+
+/* From planlib.c -- would be nice to break out into an #include file */
+extern int tal_getchar();
+extern int tal_ungetchar(int);
+extern void print_char(char);
+extern string char_array_to_string(char[],int);
+extern bool eqstring(string,string);
+
+union keyword {
+  void   IF;
+  void   IN;
+  void   HD;
+  void   TL;
+  void   OR;
+  void   FUN;
+  void   VAL;
+  void   KEY;
+  void   EXN;
+  void   DEV;
+  void   TRY;
+  void   LET;
+  void   END;
+  void   NOT;
+  void   FST;
+  void   SND;
+  void   ORD;
+  void   CHR;
+  void   AND;
+  void   ORI;
+  void   INT;
+  void   LIST;
+  void   UNIT;
+  void   CHAR;
+  void   BOOL;
+  void   HOST;
+  void   PORT;
+  void   BLOB;
+  void   THEN;
+  void   ELSE;
+  void   TRUE;
+  void   NOTI;
+  void   XORI;
+  void   ANDI;
+  void   CHUNK;
+  void   RAISE;
+  void   FALSE;
+  void   FOLDR;
+  void   FOLDL;
+  void   HANDLE;
+  void   STRING;
+  void   EXPLODE;
+  void   IMPLODE;
+  void   ONREMOTE;
+  void   EXCEPTION;
+  void   ONNEIGHBOR;
+  void   RETRANSONREMOTE;
+}
+
+private *(string,keyword) keys[] = { 
+    new ("if",new keyword.IF),
+    new ("in",new keyword.IN),
+    new ("hd",new keyword.HD),
+    new ("tl",new keyword.TL),
+    new ("or",new keyword.OR),
+    new ("fun",new keyword.FUN),
+    new ("val",new keyword.VAL),
+    new ("key",new keyword.KEY),
+    new ("exn",new keyword.EXN),
+    new ("dev",new keyword.DEV),
+    new ("try",new keyword.TRY),
+    new ("let",new keyword.LET),
+    new ("end",new keyword.END),
+    new ("not",new keyword.NOT),
+    new ("fst",new keyword.FST),
+    new ("snd",new keyword.SND),
+    new ("ord",new keyword.ORD),
+    new ("chr",new keyword.CHR),
+    new ("and",new keyword.AND),
+    new ("ori",new keyword.ORI),
+    new ("int",new keyword.INT),
+    new ("list",new keyword.LIST),
+    new ("unit",new keyword.UNIT),
+    new ("char",new keyword.CHAR),
+    new ("bool",new keyword.BOOL),
+    new ("host",new keyword.HOST),
+    new ("port",new keyword.PORT),
+    new ("blob",new keyword.BLOB),
+    new ("then",new keyword.THEN),
+    new ("else",new keyword.ELSE),
+    new ("true",new keyword.TRUE),
+    new ("noti",new keyword.NOTI),
+    new ("xori",new keyword.XORI),
+    new ("andi",new keyword.ANDI),
+    new ("chunk",new keyword.CHUNK),
+    new ("raise",new keyword.RAISE),
+    new ("false",new keyword.FALSE),
+    new ("foldr",new keyword.FOLDR),
+    new ("foldl",new keyword.FOLDL),
+    new ("handle",new keyword.HANDLE),
+    new ("string",new keyword.STRING),
+    new ("explode",new keyword.EXPLODE),
+    new ("implode",new keyword.IMPLODE),
+    new ("onremote",new keyword.ONREMOTE),
+    new ("exception",new keyword.EXCEPTION),
+    new ("onneighbor",new keyword.ONNEIGHBOR),
+    new ("retransonremote",new keyword.RETRANSONREMOTE)
+};
+
+void print_keyword(keyword k) {
+  int i;
+
+  for(i=0; i < size(keys); i++) {
+    if (k == keys[i].2) 
+      print_string(keys[i].1);
+  }
+}
+
+string bad_char(char c) {
+  char x[] = newarray(9,c);
+  x[0] = 'b'; x[1] = 'a'; x[2] = 'd'; x[3] = ' '; x[4] = 'c';
+  x[5] = 'h'; x[6] = 'a'; x[7] = 'r'; x[8] = ' ';
+  return(char_array_to_string(x,9));
+}
+
+union token {
+  string  ERROR;
+  void    EOF;
+  int     Number;
+  keyword Keyword;
+  string  Id;
+  char    Char;
+  string  String;
+  void    LPAREN;
+  void    RPAREN;
+  void    LBRACKET;
+  void    RBRACKET;
+  void    BAR;
+  void    TILDE;
+  void    DIV;
+  void    PERCENT;
+  void    ASTERISK;
+  void    PLUS;
+  void    MINUS;
+  void    LESS;
+  void    GREATER;
+  void    EQ;
+  void    COLON;
+  void    SEMICOLON;
+  void    HASH;
+  void    CARAT;
+  void    PERIOD;
+  void    COMMA;
+}
+
+void print_token(token t) {
+
+  switch (t) {
+  case ERROR(s):
+    print_string("ERROR("); 
+    print_string(s); 
+    print_string(")");
+  case EOF: print_string("EOF");
+  case Number(n):
+    print_string("Number("); 
+    print_int(n); 
+    print_string(")");
+  case Keyword(k):
+    print_string("Keyword(");
+    print_keyword(k);
+    print_string(")");
+  case Id(x):
+    print_string("Ident(");
+    print_string(x);
+    print_string(")");
+  case Char(c):
+    print_string("Char(");
+    print_char(c);
+    print_string(")");
+  case String(s):
+    print_string("String(");
+    print_string(s);
+    print_string(")");
+  case LPAREN: print_string("(");
+  case RPAREN: print_string(")");
+  case LBRACKET: print_string("[");
+  case RBRACKET: print_string("]");
+  case BAR: print_string("|");
+  case TILDE: print_string("~");
+  case DIV: print_string("/");
+  case PERCENT: print_string("%");
+  case ASTERISK: print_string("*");
+  case PLUS: print_string("+");
+  case MINUS: print_string("-");
+  case LESS: print_string("<");
+  case GREATER: print_string(">");
+  case EQ: print_string("=");
+  case COLON: print_string(":");
+  case SEMICOLON: print_string(";");
+  case HASH: print_string("#");
+  case CARAT: print_string("^");
+  case PERIOD: print_string(".");
+  case COMMA: print_string(",");
+  }
+  print_string("\n");
+}
+
+private int EOF = 4;
+
+/* numbers:  [0-9]*
+ * identifiers:  [a-zA-Z][0-9a-zA-Z_]*  (max size 256)
+ * space, tab, \n (linefeed?) are white space
+ * rest are self-explanatory
+ */
+static token get_token() {
+  int c;
+
+  while (true) {
+    c = tal_getchar();
+
+    if (c == EOF)
+      return(new token.EOF);
+    else 
+    {
+      if (c >= ord('0') && c <= ord('9'))
+	return(new token.Number(getint(c - ord('0'))));
+
+      if ((c >= ord('a') && c <= ord('z')) ||
+	  (c >= ord('A') && c <= ord('Z'))) {
+	string s = getident(chr(c));
+	int i;
+
+	for (i=0; i < size(keys); i++) {
+	  if (eqstring(keys[i].1,s))
+	    return(new token.Keyword(keys[i].2));
+	}
+	return(new token.Id(s));
+      }
+
+      if (c == ord('\'')) return(get_char());
+
+      if (c == ord('"')) return(get_string());
+
+      switch (chr(c)) {
+      case ' ': continue;
+      case '\n': continue;
+      case '\t': continue;
+      case '(': return(new token.LPAREN);
+      case ')': return(new token.RPAREN);
+      case '[': return(new token.LBRACKET);
+      case ']': return(new token.RBRACKET);
+      case '|': return(new token.BAR);
+      case '~': return(new token.TILDE);
+      case '/': return(new token.DIV);
+      case '%': return(new token.PERCENT);
+      case '*': return(new token.ASTERISK);
+      case '+': return(new token.PLUS);
+      case '-': return(new token.MINUS);
+      case '<': return(new token.LESS);
+      case '>': return(new token.GREATER);
+      case '=': return(new token.EQ);
+      case ':': return(new token.COLON);
+      case ';': return(new token.SEMICOLON);
+      case '#': return(new token.HASH);
+      case '^': return(new token.CARAT);
+      case '.': return(new token.PERIOD);
+      case ',': return(new token.COMMA);
+      default:
+	return(new token.ERROR(bad_char(chr(c))));
+      }
+    }
+  }
+  return(new token.ERROR(" "));  /* impossible */
+} 
+
+static token get_char() {
+  int c = tal_getchar();
+  
+  if (c == ord('\\')) {
+    c = tal_getchar();
+    switch (chr(c)) {
+    case '\\': c = ord('\\');
+    case 'n':  c = ord('\n');
+    case 't':  c = ord('\t');
+    case 'b':  c = ord('\b');
+    case 'r':  c = ord('\r');
+    case '\'': c = ord('\'');
+    default:  
+      return(new token.ERROR("bad esc character"));
+    }
+  }
+  if (tal_getchar() != ord('\''))
+    return(new token.ERROR("bad character literal"));
+  return(new token.Char(chr(c)));
+}
+
+
+
+static int getint(int i) {
+  int c = tal_getchar();
+
+  while (c >= ord('0') && c <= ord('9')) {
+      i = i*10 + (c - ord('9'));
+      c = tal_getchar();
+  }
+  tal_ungetchar(c);
+  return(i);
+}
+
+static string getident(char c) {
+  char buffer[] = newarray(255,c);
+  int len = 1;
+  int c = tal_getchar();
+
+  while (((c >= ord('a')) && (c <= ord('z'))) ||
+	 ((c >= ord('0')) && (c <= ord('9'))) ||
+	 ((c >= ord('A')) && (c <= ord('Z'))) ||
+	 (c == ord('_'))) {
+	buffer[len] = chr(c);
+	len++;
+	c = tal_getchar();
+  } 
+  tal_ungetchar(c);
+  return(char_array_to_string(buffer,len));
+}  
+
+static token get_string() {
+  char buffer[] = newarray(255,' ');
+  int len = 0;
+  int c = tal_getchar();
+
+  while (c != ord('"')) {
+    if (c == ord('\n') || c == EOF || c < 0 || c > 255)
+      return(new token.ERROR("bad string character"));
+    if (c == ord('\\')) {
+      c = tal_getchar();
+      switch (chr(c)) {
+      case '\\': c = ord('\\');
+      case 'n' : c = ord('\n');
+      case 't' : c = ord('\t');
+      case 'b' : c = ord('\b');
+      case 'r' : c = ord('\r');
+      case '"' : c = ord('"');
+      default:
+	return(new token.ERROR("bad esc char in string"));
+      }
+    }
+    buffer[len] = chr(c);
+    len++;
+    c = tal_getchar();
+  }
+  tal_ungetchar(c);
+  return(new token.String(char_array_to_string(buffer,len)));
+}
+      
+
+static ?struct token_opt {
+  token token;
+}
+
+/* private variables used to hold the current token */
+private token_opt topt;
+
+token next_token() {
+  if (topt == null) {
+    token t = get_token();
+    // print_string("next_token: ");
+    // print_token(t);
+    // print_string("\n");
+    return(t);
+  } else {
+    token t = topt.token;
+    topt = null;
+    // print_string("next_token: ");
+    // print_token(t);
+    // print_string("\n");
+    return(t);
+  }
+}
+
+token peek_token() {
+  if (topt == null)
+    topt = new token_opt(get_token());
+  return(topt.token);
+}

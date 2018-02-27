@@ -1,0 +1,38 @@
+#include "core.h"
+#include "dlpop.h"
+open Core;
+
+int foo(int i) {
+  printf("in foo\n");
+  return i;
+}
+
+void pop_main() {
+  try {
+    handle_t h = dlopen("simphand");
+    int bar(int) = dlsym(h,"bar",repterm@<int (int)>);
+    printf("bar(1) = %d\n", bar(1));
+    dlclose(h);
+  } handle y {
+    switch y {
+    case WrongType(s): {
+      print_string ("Wrong type for symbol : ");
+      print_string (s);
+    }
+    case SymbolNotFound(s): {
+      print_string ("Can't find symbol : ");
+      print_string (s);
+    }
+    case FailsTypeCheck: {
+      print_string ("File doesn't type-check");
+    }
+    case Core::FileOpenError(s): {
+      print_string ("Can't open file : ");
+      print_string (s);
+    }
+    default:
+      print_string ("Exception Raised");
+    }
+    print_string ("\n");
+  }  
+}

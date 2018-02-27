@@ -1,0 +1,89 @@
+%% texture.gmi
+%% Texture combinators.
+%% -- requires point.gmi
+include "point.gmi"
+
+%% A texture is a function taking an x and y coordinate and returning a color.
+
+0.2 0.2 0.8 point /lightblue
+0.0 0.0 0.0 point /black
+0.8 0.8 0.2 point /yellow
+0.8 0.4 0.2 point /orange
+1.0 0.0 0.0 point /red
+0.0 1.0 0.0 point /green
+0.0 0.0 1.0 point /blue
+0.2 0.8 0.2 point /lightgreen
+1.0 1.0 1.0 point /white
+  
+%% Texture combinators
+
+%% Black is a special color.  It is transparent!
+{ /f /t2 /t1 
+  { /y /x 
+    x y t1 apply /c1
+    x y t2 apply /c2
+    c2 black eqp apply
+    { c1 }
+    { c1 black eqp apply { c2 } {c1 c2 f apply} if }
+    if }
+} /combt
+
+{ mulp combt apply } /mixt
+{ { addp apply 0.5 scalep apply } combt apply } /avgt
+{ { addp apply clampp apply } combt apply } /addt
+{ /s /t { /y /x x s mulf y s mulf t apply } } /scalet
+{ /s_y /s_x /t {/y /x x s_x addf y s_y addf t apply } } /shiftt
+{ { /c2 /c1 c2 } combt apply } /layert
+{ /t { /y /x y x t apply } } /flipt
+{ /r /t { /y /x r cos /rc r sin /rs 
+           x rc mulf y rs mulf subf 
+           x rs mulf y rc mulf addf 
+           t apply } } /rott
+
+{ /h /w /t { /y /x x w divf frac y h divf frac t apply } } /tilet
+
+{ /r /t { /y /x 
+          y y mulf x x mulf addf sqrt /d
+          d r divf 360.0 mulf /a
+	  a cos /ac a sin /as
+	  x ac mulf y as mulf subf
+          x as mulf y ac mulf addf
+	  t apply } } /swirlt
+
+{ /d /t { /y /x 
+          x        y        t apply /c1
+          x d addf y        t apply /c2
+          x d subf y        t apply /c3
+          x        y d addf t apply /c4
+          x        y d subf t apply /c5
+          c1 c2 addp apply c3 addp apply c4 addp apply c5 addp apply /c
+          c 0.2 scalep apply } } /blurt
+
+{ /d /t 
+  [ { -1.0  0.0 }
+    { -1.0 -3.0 }
+    {  0.0 -5.0 }
+    {  1.0 -1.0 }
+    {  2.0 -6.0 }
+  ] /offsets
+  { /i /y /x  offsets i get apply
+       /yo /xo xo d mulf x addf 
+               yo d mulf y addf } /get_offset
+{ /y /x 
+  { /self /i /c
+    i 0 eqi 
+    { c }
+    { i 1 subi /i 
+      x y i get_offset apply t apply c addp apply
+      i
+      self self apply } if  
+   } /loop
+ black offsets length loop loop apply
+ 1.0 offsets length real divf scalep apply
+ } } /rising_blurt
+
+{ /c { /y /x c } } /baset
+{ /c { /y /x x 0.0 lessf { black } {x 0.5 lessf { c } { black } if} if } } /stripet %% vertical stripe
+
+
+

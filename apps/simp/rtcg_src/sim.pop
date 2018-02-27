@@ -1,0 +1,762 @@
+// The actual simulator.
+
+// Define INLINE_MEM to inline memory operations.
+#define INLINE_MEM
+
+// Define NO_ICHECKS to eliminate overflow checks for arithmetic
+#define NO_ICHECKS
+
+// Define LOCAL_MEM_TABLE to copy mem_table into a local.
+// Usually only a modest win in non-rtcg case.  For RTCG may not make a
+// difference
+//#define LOCAL_MEM_TABLE
+
+// Define COUNT_INSNS to count the instructions executed.
+
+#include "core.h"
+#include "hashtable.h"
+#include "math.h"
+#include "spec.h"
+#include "mem.h"
+#include "cmisc.h"
+#include "simp.h"
+#include "syscall.h"
+#include "cstat.h"
+
+#ifdef COLLECT_STATS
+#define STAT_OUTPUT(X,Y) rtcg_stat_output(X,Y)
+#define STAT_GENBLOCK(X) rtcg_stat_genblock(X)
+#define COUNT_INSNS
+
+#else
+#define STAT_OUTPUT(X,Y)
+#define STAT_GENBLOCK(X)
+#endif
+
+open Core;
+prefix Sim;
+open Sim;
+
+struct register_file {
+  *(word) gp[|NUM_BASE_REGS|]; // 32 of these
+  *(word) fp[|NUM_BASE_REGS|]; // 32 of these
+  *(word) hi,lo;
+  *(word) fcc,tmp,mem,ctrl;
+  *(word) pc;
+}
+
+struct cont { // Type of a continuation.
+  ptr addr; // Address of block this continuation represents.
+  ptr exit_addr; // Final address of covered code!
+  cont f __stdcall(cont,register_file); // Function to call to execute block.
+  // We pass ourselves into the function so it can generate code if need be.
+}
+
+< <ptr,cont>Hashtable::table>Opt code_cache;
+
+cont get_code(ptr a) {
+  if(code_cache==null) code_cache = ^Opt(Hashtable::create(101,uintcmp,hash@<word>));
+
+  try {
+    return Hashtable::lookup(code_cache.v,a);
+  } handle y {
+
+    _ c = default_cont(a);
+
+    Hashtable::insert(code_cache.v,a,c);
+
+    return c;
+  }
+}
+
+cont default_cont(ptr a) {
+  return ^cont(a,a,install_block);
+}
+
+cont install_block __stdcall(cont c, register_file rf) {
+
+  if(c.addr > Mem::text_end || c.addr < Mem::text_start) {
+    printf("Trying to generate code at address %x\n",c.addr);
+    printf("This is not in the text segment.");
+    FAIL("Bad code.");
+  }
+
+  _ fe = gen_code(c.addr,rf);
+
+  c.f = fe.1;
+  c.exit_addr = fe.2;
+  return fe.1(c,rf);
+}
+
+register_file new_register_file() {
+
+  _ gp = cnew_register_file_indirect();
+  _ fp = cnew_register_file_indirect();
+
+  return ^register_file(gp,fp,
+			^((:word)0),^((:word)0),^((:word)0),
+			^((:word)0),^((:word)0),^((:word)0),
+			^((:word)0));
+}
+
+int uintcmp(word a, word b) {
+  return (:signed int)a - (:signed int)b;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Execute code
+
+unsigned int instructions_executed = (:unsigned int)0;
+
+void execute_n(register_file rf,unsigned int max_insts) {
+  _ stop_after = instructions_executed + max_insts;
+  _ c = get_code(rf.pc.1);
+
+  rf.gp[|0|].1 = 0;
+
+  try {
+#ifdef COUNT_INSNS
+    while(instructions_executed < stop_after) {
+#else
+      while(true) {
+#endif
+      c = c.f(c,rf);
+    }
+    rf.pc.1 = c.addr;
+  } handle y {
+    STAT_OUTPUT(file_open("rstat.m","w"),string_to_Cstring(Simp::prog_name));
+    fprintf(tal_stderr,"Executed %d instructions.\n",instructions_executed);
+    raise(y);
+  }
+
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Macros for interpreter.
+
+/* ss.def contains the description of the semantics of each instruction.
+   To make the description valid we must define the following macros. */
+
+#define RS (inst_b >> 24)
+#define RT ((inst_b >> 16) & 0xff)
+#define RD ((inst_b >> 8) & 0xff)
+#define FS RS
+#define FT RT
+#define FD RD
+#define BS RS
+
+// TARG should extract the low order 26 bits of inst_b.
+#define TARG  (inst_b & 0x3ffffff)
+
+// We write this code inefficiently to avoid using any 32 bit constants
+// They get parsed incorrectly.
+#define TARG_TO_PC(T,PC) ((((PC >> 2) & 0x3b000000) | (T)) << 2)
+
+#define OFS   IMM
+#define IMM ((:int)((:short)(inst_b & 0xffff)))
+#define UIMM  (inst_b & 0xffff)
+#define SHAMT (inst_b & 0xff)
+#define BCODE (inst_b & 0xfffff)
+#define COMP_OP ((inst_a & 0xff00) >> 8)
+#define OPCODE (inst_a & 0xff)
+
+#define GPR_PLAIN(N) gp[|N|].1
+
+// NOTE: alt_r0 is just a dummy location to bury writes into r0
+#define GPR(N) (fill(gp[|N|]).1)
+#define SET_GPR(N,E) ((fill((N)==0 ? alt_r0 : gp[|N|]).1) = (E))
+
+//#define GPR_D(N)
+//#define SET_GPR_D(N,E)
+
+// For the FP registers we need to be able to treat them both as buckets of
+// bits and as floats and as doubles.
+#define FPR_L(N) (:signed int)fill(fp[|N|]).1 
+#define FPR_L_PLAIN(N) (:signed int)fp[|N|].1 
+#define SET_FPR_L(N,E) (fill(fp[|N|]).1 = (E))
+// _F indicates single precision floating point number.
+#define FPR_F(N) bits2float(fill(fp[|N|]).1)
+#define FPR_F_PLAIN(N) bits2float(fp[|N|].1)
+#define SET_FPR_F(N,E) (fill(fp[|N|]).1 = float2bits(E))
+// _D a double precision floating number.
+#define FPR_D(N) bits2double(fill(fp[|N & ~1|]).1,fill(fp[|N | 0x1|]).1)
+#define FPR_D_PLAIN(N) bits2double(fp[|N & ~1|].1,fp[|N | 0x1|].1)
+#define SET_FPR_D(N,E) double2bits_indirect(fill(fp),fill(N),(E))
+
+#define HI_PLAIN rf.hi.1
+#define LO_PLAIN rf.lo.1
+#define SET_HI_PLAIN(E) rf.hi.1 = (E)
+#define SET_LO_PLAIN(E) rf.lo.1 = (E)
+#define FCC_PLAIN rf.fcc.1
+
+#define HI  fill(rf.hi).1
+#define SET_HI(E) (fill(rf.hi).1 = (E))
+#define LO  fill(rf.lo).1
+#define SET_LO(E) (fill(rf.lo).1 = (E))
+#define FCC (fill(rf.fcc).1)
+#define SET_FCC(E) (fill(rf.fcc).1 = (E))
+#define CPC cpc
+#define NPC npc
+
+#ifdef COUNT_INSNS
+#define INCR_INSN_COUNT instructions_executed+=fill(num_insts)
+#else
+#define INCR_INSN_COUNT 
+#endif
+
+#ifdef TRAMPOLINE
+
+#define SET_NPC_STATIC(E) { INCR_INSN_COUNT; return fill(get_code(E)); }
+#define SET_NPC(E) { INCR_INSN_COUNT; return get_code(E); }
+#else
+#define SET_NPC_STATIC(E) { INCR_INSN_COUNT; _ c = fill(get_code(E)); return c.f(c,fill(rf)); }
+#define SET_NPC(E) { INCR_INSN_COUNT; _ c = get_code(E);  return c.f(c,fill(rf)); }
+#endif
+
+// TPC is a dummy register we don't use.
+#define TPC
+#define SET_TPC(E)
+
+#ifdef LOCAL_MEM_TABLE
+#define MEM_TABLE mem_table
+#else
+#define MEM_TABLE Mem::mem_table
+#endif
+
+#define MEM_TICKLE(A) (Mem::mem_block[|MEM_BLOCK(A)|] == null ? (Mem::mem_block[|MEM_BLOCK(A)|] = Mem::new_block()),0 : 0)
+
+// Unchecked!! (Makes a significant difference.)
+#ifdef INLINE_MEM
+#define MEM_READ_WORD(A) ((blk = MEM_TABLE[| MEM_BLOCK(A) |]),((blk==null) ? Mem::r_word(A) : blk[|MEM_OFFSET(A)|]))
+#define UNCHECKED_READ_WORD(A) (MEM_TABLE[|MEM_BLOCK(A)|][|MEM_OFFSET(A)|])
+#else
+#define MEM_READ_WORD(A) Mem::r_word(A)
+#define UNCHECKED_READ_WORD(A) Mem::r_word(A)
+#endif
+
+#define MEM_READ_HALF(A) Mem::r_short(A)
+
+#ifdef INLINE_MEM
+#define MEM_READ_BYTE(A) ((MEM_READ_WORD(A) >> ((A & 0x3) << 3)) & 0xff)
+#else
+#define MEM_READ_BYTE(A) Mem::r_byte(A)
+#endif
+
+// Modest win (if any?)
+#ifdef INLINE_MEM
+#define MEM_WRITE_WORD(A,W) {if((A)<Mem::text_end) FAIL("Write to text segment."); _ b=MEM_TABLE[|MEM_BLOCK(A)|]; if(b==null) Mem::w_word(A,W); else b[|MEM_OFFSET(A)|]=(W); }
+#else
+#define MEM_WRITE_WORD(A,W) Mem::w_word(A,W)
+#endif
+
+//#define MEM_WRITE_WORD(A,W) Mem::w_word(A,W)
+#define MEM_WRITE_HALF(A,H) Mem::w_short(A,H)
+#define MEM_WRITE_BYTE(A,B) Mem::w_byte(A,B)
+
+/* precise architected memory state help functions */
+#define __READ_WORD(DST_T, SRC_T, SRC)					\
+  ((:DST_T)(:SRC_T)MEM_READ_WORD((SRC)))
+
+#define __READ_HALF(DST_T, SRC_T, SRC)					\
+  ((:DST_T)(:SRC_T)MEM_READ_HALF((SRC)))
+
+#define __READ_BYTE(DST_T, SRC_T, SRC)					\
+  ((:DST_T)(:SRC_T)MEM_READ_BYTE((SRC)))
+
+#define READ_SIGNED_BYTE(A) __READ_BYTE(signed int, signed byte,(A))
+#define READ_UNSIGNED_BYTE(A) __READ_BYTE(unsigned int, unsigned byte,(A))
+#define READ_SIGNED_HALF(A) __READ_HALF(signed int, signed short,(A))
+#define READ_UNSIGNED_HALF(A) __READ_HALF(unsigned int, unsigned short,(A))
+#define READ_WORD(A) __READ_WORD(unsigned int,unsigned int,(A))
+#define WRITE_WORD(SRC,DST) MEM_WRITE_WORD(DST,(:unsigned int)(SRC))
+#define WRITE_HALF(SRC,DST) MEM_WRITE_HALF(DST,(:unsigned short)(SRC))
+#define WRITE_BYTE(S,D) MEM_WRITE_BYTE(D,(:unsigned byte)(:unsigned int)(S))
+
+// RN is the contents of register N,
+// SIZE is the amount to increment/decrement RN by
+#define PRE_INC_DEC(N,RN,SIZE)              \
+     { cut {                                \
+       _ comp = COMP_OP;                    \
+       if(comp == COMP_PRE_INC) {           \
+	 splice { RN += SIZE;               \
+	          SET_GPR(N,RN); }          \
+       } else if(comp == COMP_PRE_DEC) {    \
+	 splice { RN -= SIZE;               \
+	         SET_GPR(N,RN); }           \
+       }                                    \
+     } }
+
+#define POST_INC_DEC(N,RN,SIZE)             \
+     { cut {                                \
+       _ comp = COMP_OP;                    \
+       if(comp == COMP_POST_INC) {          \
+	 splice { RN += SIZE;               \
+	          SET_GPR(N,RN); }          \
+       } else if(comp == COMP_POST_DEC) {   \
+	 splice { RN -= SIZE;               \
+	          SET_GPR(N,RN); }          \
+       }                                    \
+     } }
+
+/* inst check macros, activated if NO_ICHECKS is not defined (default) */
+#ifndef NO_ICHECKS
+
+/* instruction failure notification macro, this can be defined by the
+   target simulator if, for example, the simulator wants to handle the
+   instruction fault in a machine specific fashion; a string describing
+   the instruction fault is passed to the IFAIL() macro */
+#ifndef IFAIL
+#define IFAIL(S)	FAIL(S)
+#endif /* IFAIL */
+
+/* check for overflow in X+Y, both signed */
+#define OVER(X,Y)   {                                           \
+  signed int x = (X);                                           \
+  signed int y = (Y);                                           \
+  if ((x > 0) && (y > 0) && ((MAXINT_VAL - x) < y)) {           \
+    IFAIL("+ overflow");                                        \
+  }                                                             \
+  if ((x < 0) && (y < 0) && ((-MAXINT_VAL - x) > y)) {          \
+    IFAIL("+ undeflow");                                        \
+  }                                                             \
+}
+
+/* check for underflow in X-Y, both signed */
+#define UNDER(X,Y) {                                               \
+  signed int x = (X);                                              \
+  signed int y = (Y);                                              \
+  if((x > 0) && (y < 0) && ((MAXINT_VAL + y) < x)) {               \
+    IFAIL("- overflow.");                                          \
+  }                                                                \
+  if((x < 0) && (y > 0) && ((-MAXINT_VAL + y) > x)) {              \
+    IFAIL("- undeflow");                                           \
+  }                                                                \
+}
+
+/* check for divide by zero error, N is denom */
+#define DIV0(N)		{ if((N) == 0) IFAIL("divide by 0"); }
+
+/* check reg specifier N for required double integer word alignment */
+#define INTALIGN(N) { if(((N) & 0x1) != 0) { done = true; splice { IFAIL("bad INT register alignment"); } } }
+
+/* check reg specifier N for required double FP word alignment */
+#define FPALIGN(N) { if (((N) & 0x1) != 0) { done = true; splice { IFAIL("bad FP register alignment"); } } }
+
+/* check target address TARG for required jump target alignment */
+#define TALIGN_STATIC(TARG)	{ if(((TARG) & 0x7) != 0) { done = true; splice { IFAIL("bad jump alignment"); } } }
+
+#define TALIGN(TARG) { if(((TARG) & 0x7) != 0){ IFAIL("bad jump alignment"); } }
+
+#else /* NO_ICHECKS */
+
+/* inst checks disables, change all checks to NOP expressions */
+#define OVER(X,Y)	
+#define UNDER(X,Y)	
+#define DIV0(N)		
+#define INTALIGN(N)	
+#define FPALIGN(N)	
+#define TALIGN(TARG)	
+
+#endif /* NO_ICHECKS */
+
+#define IDIV(A, B)	((A) / (B))
+#define IMOD(A, B)	((A) % (B))
+#define FDIV(A, B)	((A) / (B))
+
+// When converting from double/float to int the compiler rounds to the 
+// nearest integer.  This does not match the C spec which says you should
+// drop the fractional part.
+// So the below simple definition won't work unless we change the compiler:
+//#define FINT(A)		((:int)A)
+// Instead we use the following slightly complicated definition:
+#define FINT(A) (:int)((A) < 0.0 ? (A) + Math::frac(A) : (A) - Math::frac(A))
+
+#ifdef COLLECT_STATS
+#define SYSCALL { INIT_TIMER(syscall); START_TIMER(syscall); Syscall::call(fill(inst_a),fill(inst_b),fill(rf)); END_TIMER(syscall); }
+#else
+#define SYSCALL Syscall::call(fill(inst_a),fill(inst_b),fill(rf));
+#endif
+
+#define MULT  mult(fill(inst_a),fill(inst_b),fill(rf))
+#define MULTU multu(fill(inst_a),fill(inst_b),fill(rf))
+//#define SRA   sra(inst_a,inst_b,rf)
+//#define SRAV  srav(inst_a,inst_b,rf)
+
+  *(word) alt_r0; // Write to r0 go here!!!
+
+// Generate the specialized code.
+*(cont w __stdcall(cont,register_file), ptr)  gen_code(ptr a,register_file rf) {
+  int num_insts = 0;
+  bool done = false;
+  word cpc = a; // The values in rf are dynamic, the pointers are static! 
+  word npc = a;
+  _ gp = rf.gp;
+  _ fp = rf.fp;
+  word inst_a = 0, inst_b = 0;
+  bool r0_modified = false;
+
+  _ blk = null; // used by MEM_READ_WORD macro for a temporary.
+  
+#ifdef LOCAL_MEM_TABLE
+  _ mem_table = Mem::mem_table;
+#endif
+
+  cont f __stdcall(cont,register_file) = 
+    codegen(cont execute __stdcall(cont ignored_cont, register_file ignored_rf) {
+      _ blk = null; // used by MEM_READ_WORD macro for a temporary.
+      
+#ifdef LOCAL_MEM_TABLE
+      _ mem_table = Mem::mem_table;
+#endif
+
+      cut {
+	while(!done) {
+	  cpc = npc;
+	  npc = cpc + INST_SIZE;
+
+#ifdef COUNT_INSNS
+	  num_insts++;
+#endif
+	    
+	  inst_a = READ_WORD(cpc);
+	  inst_b = READ_WORD(cpc+4);
+
+	  switch OPCODE {
+#define DEFINST(OP,MSK,NAME,OPFORM,RES,FLAGS,O1,O2,I1,I2,I3,STMT)     \
+      case MSK: STMT
+#define DEFLINK(OP,MSK,NAME,MASK,SHIFT)                               \
+      case MSK: FAIL("Attempted to execute a linking opcode.");
+#define CONNECT(OP)
+#include "ss.def"
+#undef DEFINST
+#undef DEFLINK
+#undef CONNECT
+	  default: FAIL("Unrecognized opcode.");
+	  }
+
+	  /*	  splice {
+	    if(Simp::log_file != null) {
+	      _ ia = fill(inst_a);
+	      _ ib = fill(inst_b);
+	      _ rf = fill(rf);
+	      _ cpc = fill(cpc);
+	      verbose_print_insn(Simp::log_file,
+				 ia,
+				 ib,
+				 rf,
+				 cpc);
+	    }
+	  }
+	  */
+	}
+      }
+      SET_NPC_STATIC(npc);
+   });
+  
+  STAT_GENBLOCK(num_insts);
+
+  return ^(f,npc);
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// Helpers for the simulator.
+
+/*
+ * non-expression instruction implementations
+ */
+
+
+/*
+ * HI,LO <- [rs] * [rt], integer product of [rs] & [rt] to HI/LO
+ */
+static void mult(word inst_a, word inst_b, register_file rf) {
+  _ gp = rf.gp, fp = rf.fp;
+  int sign1, sign2;
+  int i, op1, op2;
+
+  sign1 = sign2 = 0;
+  SET_HI_PLAIN(0);
+  SET_LO_PLAIN(0);
+  op1 = GPR_PLAIN(RS);
+  op2 = GPR_PLAIN(RT);
+
+  /* For multiplication, treat -ve numbers as +ve numbers by
+     converting 2's complement -ve numbers to ordinary notation */
+  if (((op1 >> 31) & 0x1) != 0) {
+    sign1 = 1;
+    op1 = (~op1) + 1;
+  }
+  if (((op2 >> 31) & 0x1) != 0) {
+    sign2 = 1;
+    op2 = (~op2) + 1;
+  }
+  if (((op1 >> 31) & 0x1) != 0)
+    SET_LO_PLAIN(op2);
+  for (i = 0; i < 31; i++) {
+    SET_HI_PLAIN(HI_PLAIN << 1);
+    SET_HI_PLAIN(HI_PLAIN + extractl(LO_PLAIN, 31, 1));
+    SET_LO_PLAIN(LO_PLAIN << 1);
+    if ((extractl(op1, 30-i, 1)) == 1) {
+      if (((:unsigned int)(~(0x1 << 31)) - (: unsigned int)LO_PLAIN) < 
+	  (: unsigned int)op2) {
+	SET_HI_PLAIN(HI_PLAIN + 1);
+      }
+      SET_LO_PLAIN(LO_PLAIN + op2);
+    }
+  }
+
+  /* Take 2's complement of the result if the result is negative */
+  if ((sign1 ^ sign2) != 0) {
+    SET_LO_PLAIN(~LO_PLAIN);
+    SET_HI_PLAIN(~HI_PLAIN);
+    if ((: unsigned int)LO_PLAIN == ~(0x1 << 31)) {
+      SET_HI_PLAIN(HI_PLAIN + 1);
+    }
+    SET_LO_PLAIN(LO_PLAIN + 1);
+  }
+}
+
+/*
+ * HI,LO <- [rs] * [rt], integer product of [rs] & [rt] to HI/LO
+ */
+static void multu(word inst_a, word inst_b, register_file rf) {
+  _ gp = rf.gp, fp = rf.fp;
+  int i;
+
+  SET_HI_PLAIN(0);
+  SET_LO_PLAIN(0);
+  if (((GPR_PLAIN(RS) >> 31) & 0x1) != 0)
+    SET_LO_PLAIN(GPR_PLAIN(RT));
+  for (i = 0; i < 31; i++) {
+    SET_HI_PLAIN(HI_PLAIN << 1);
+    SET_HI_PLAIN(HI_PLAIN + extractl(LO_PLAIN, 31, 1));
+    SET_LO_PLAIN(LO_PLAIN << 1);
+    if ((extractl(GPR_PLAIN(RS), 30-i, 1)) == 1) {
+      if (((:unsigned int)(~(0x1 << 31)) - (:unsigned int)LO_PLAIN) < 
+	  (:unsigned int)GPR_PLAIN(RT)) {
+	SET_HI_PLAIN(HI_PLAIN + 1);
+      }
+      SET_LO_PLAIN(LO_PLAIN + GPR_PLAIN(RT));
+    }
+  }
+}
+
+static unsigned int
+extractl(int wd,		/* the word from which to extract */
+         int pos,		/* bit positions 31 to 0 */
+         int num)		/* number of bits to extract */
+{
+    return(((:unsigned int) wd >> (pos + 1 - num)) & ~(~0 << num));
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Pretty-printing instructions
+
+static string op2name(word op) {
+  switch op {
+#define DEFINST(OP,MSK,NAME,OPFORM,RES,FLAGS,O1,O2,I1,I2,I3,EXPR) \
+      case MSK: return NAME;
+#define DEFLINK(OP,MSK,NAME,MASK,SHIFT) NAME,
+#define CONNECT(OP)
+#include "ss.def"
+#undef DEFINST
+#undef DEFLINK
+#undef CONNECT
+  default: return "????";
+  }
+}
+
+static string op2format(word op) {
+  switch op {
+#define DEFINST(OP,MSK,NAME,OPFORM,RES,FLAGS,O1,O2,I1,I2,I3,EXPR)  \
+   case MSK: return OPFORM;
+#define DEFLINK(OP,MSK,NAME,MASK,SHIFT) NULL,
+#define CONNECT(OP)
+#include "ss.def"
+#undef DEFINST
+#undef DEFLINK
+#undef CONNECT
+  default: return "";
+  }
+}
+
+/* disassemble a SimpleScalar instruction */
+void print_insn(FILE f,                  /* output stream. */
+		word inst_a, word inst_b,/* instruction to disassemble */
+		register_file rf,
+		ptr pc)		         /* addr of inst, used for PC-rels */
+{
+
+  _ op = OPCODE;
+
+  /* disassemble the instruction */
+  if (op >= 0xff)
+    {
+      /* bogus instruction */
+      fprintf(f, "<invalid inst: 0x%x:%x>", inst_a, inst_b);
+    }
+  else
+    {
+      _ gp = rf.gp;
+      _ fp = rf.fp; 
+
+      string op_name = op2name(op);
+      string op_format = op2format(op);
+
+      fprintf(f,"%s", op_name);
+      _ spaces = 10 - size(op_name);
+      for(_ i = 0; i< spaces; i++) 
+	fprint_char(f,' ');
+
+      for(_ i = 0; i < size(op_format); i++) {
+	_ s = op_format[i];
+	switch (s) {
+	case 'd': fprintf(f, "r%d", RD);
+	case 's': fprintf(f, "r%d", RS);
+	case 't': fprintf(f, "r%d", RT);
+	case 'b': fprintf(f, "r%d", BS);
+	case 'D': fprintf(f, "f%d", FD);
+	case 'S': fprintf(f, "f%d", FS);
+	case 'T': fprintf(f, "f%d", FT);
+	case 'j': fprintf(f, "0x"); my_fprint_hex(f,(pc + 8 + (OFS << 2)));
+	case 'o': fprintf(f, "%d", IMM);
+	case 'i': fprintf(f, "%d", IMM);
+	case 'H': fprintf(f, "%d", SHAMT);
+	case 'u': fprintf(f, "%u", UIMM);
+	case 'U': fprintf(f, "0x"); my_fprint_hex(f,UIMM);
+	case 'J': fprintf(f, "0x"); my_fprint_hex(f,TARG_TO_PC(TARG,pc));
+	case 'B': fprintf(f, "0x"); my_fprint_hex(f,BCODE);
+	case ')':
+	  /* handle pre- or post-inc/dec */
+	  _ comp_op = COMP_OP;
+	  switch comp_op {
+	  case COMP_NOP         : fprintf(f,")"   );
+	  case COMP_POST_INC    : fprintf(f,")+"  );
+	  case COMP_POST_DEC    : fprintf(f,")-"  );
+	  case COMP_PRE_INC     : fprintf(f,")^+" );
+	  case COMP_PRE_DEC     : fprintf(f,")^-" );
+	  case COMP_POST_DBL_INC: fprintf(f,")++" );
+	  case COMP_POST_DBL_DEC: fprintf(f,")--" );
+	  case COMP_PRE_DBL_INC : fprintf(f,")^++");
+	  case COMP_PRE_DBL_DEC : fprintf(f,")^--");
+	  default               : fprintf(f,")???");
+	  }
+	default: fprintf(f,"%c",s); // Rest are just passed through.
+	}
+      }
+    }
+}
+
+static char hex_digit(int n) {
+    _ c;
+    n = n & 0xf;
+    switch n {
+    case 10: c = 'a';
+    case 11: c = 'b';
+    case 12: c = 'c';
+    case 13: c = 'd';
+    case 14: c = 'e';
+    case 15: c = 'f';
+    default: c = '0' + n;
+    }
+    return c;
+}
+
+static void my_fprint_hex(FILE f, word w) {
+  for(_ i = 0; i < 32; i+=4) {
+    fprintf(f,"%c",hex_digit(w >> (28 - i)));
+  }
+}
+
+static void print_register(FILE f,char kind,int i, unsigned int v) {
+  fprintf(f,"%c[%d%d]:               0x",kind,i/10,i % 10);
+  my_fprint_hex(f,v);
+}
+
+void print_register_file(FILE f,register_file rf) {
+  _ gp = rf.gp, fp = rf.fp;
+
+  fprintf(f,"PC: 0x");
+  my_fprint_hex(f,rf.pc.1);
+  fprintf(f,"     ");
+  fprintf(f,"HI: 0x");
+  my_fprint_hex(f,rf.hi.1);
+  fprintf(f,"     ");
+  fprintf(f,"LO: 0x");
+  my_fprint_hex(f,rf.lo.1);
+  for(_ i = 0; i < NUM_BASE_REGS; i+=2) {
+    fprintf(f,"\n");
+    print_register(f,'R',i,gp[|i|].1);
+    fprintf(f," ");
+    print_register(f,'R',i+1,gp[|i+1|].1);
+  }
+  for(_ i = 0; i < NUM_BASE_REGS; i+=2) {
+    fprintf(f,"\n");
+    print_register(f,'F',i,fp[|i|].1);
+    fprintf(f," ");
+    print_register(f,'F',i+1,fp[|i+1|].1);
+  }
+  fprintf(f,"\nFCC: 0x");
+  my_fprint_hex(f,rf.fcc.1);
+  fprintf(f,"     ");
+  fprintf(f,"TMP: 0x");
+  my_fprint_hex(f,rf.tmp.1);
+  fprintf(f,"     ");
+  fprintf(f,"MEM: 0x");
+  my_fprint_hex(f,rf.mem.1);
+  fprintf(f,"    ");
+  fprintf(f,"CTRL: 0x");
+  my_fprint_hex(f,rf.ctrl.1);
+  fprintf(f,"\n");
+}
+
+static void print_insn_effects(FILE f, word inst_a, word inst_b, register_file rf, ptr cpc) {
+  _ gp = rf.gp, fp = rf.fp;
+  
+  switch OPCODE
+    {
+#define DGPR(N) fprintf(f,"r%d: 0x",(N)); my_fprint_hex(f,gp[|N|].1)
+#define DGPR_D(N) fprintf(f,"r%d,r%d: 0x", (N),(N)+1); my_fprint_hex(f,gp[|N|].1); fprintf(f,":0x"); my_fprint_hex(f,gp[|(N)+1|].1)
+#define DCGPR(N) DGPR(N)
+#define DFPR_L(N) fprintf(f,"f%d: 0x",(N)); my_fprint_hex(f,FPR_L_PLAIN(N))
+#define DFPR_F(N) fprintf(f,"f%d: %f",(N),FPR_F_PLAIN(N))
+#define DFPR_D(N) fprintf(f,"f%d: %g",(N),FPR_D_PLAIN(N))
+#define DHI       fprintf(f,"hi: 0x") ;  my_fprint_hex(f,HI_PLAIN)
+#define DLO       fprintf(f,"lo: 0x") ;  my_fprint_hex(f,LO_PLAIN)
+#define DFCC      fprintf(f,"fcc: 0x"); my_fprint_hex(f,FCC_PLAIN)
+#define DCPC      fprintf(f,"pc: 0x") ;  my_fprint_hex(f,cpc)
+#define DNPC      
+#define DNA 
+#define DEFINST(OP,MSK,NAME,OPFORM,RES,FLAGS,O1,O2,I1,I2,I3,EXPR)	\
+	case MSK:                                                       \
+          O1; fprintf(f,", ");                                          \
+          O2; fprintf(f,", ");                                          \
+          fprintf(f," / ");                                             \
+          I1; fprintf(f,", ");                                          \
+          I2; fprintf(f,", ");                                          \
+          I3; fprintf(f,", ");                                          
+#define DEFLINK(OP,MSK,NAME,MASK,SHIFT)                                 \
+        case OP: ;
+#define CONNECT(OP)
+#include "ss.def"
+#undef DEFINST
+#undef DEFLINK
+#undef CONNECT
+    default:
+      FAIL("bogus opcode");
+    }
+}
+
+
+void verbose_print_insn(FILE f, word inst_a, word inst_b, register_file rf, ptr pc) {
+  my_fprint_hex(f,pc);
+  fprintf(f,": ");
+  print_insn(f,inst_a,inst_b,rf,pc);
+  fprintf(f," / ");
+  print_insn_effects(f,inst_a,inst_b,rf,pc);
+  fprintf(f,"\n");
+}
+
+
+
+

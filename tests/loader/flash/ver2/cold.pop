@@ -1,0 +1,622 @@
+/*
+
+Copyright (c) '1999' RICE UNIVERSITY. All rights reserved 
+Created by Vivek Sadananda Pai [vivek@cs.rice.edu], Departments of
+Electrical and Computer Engineering and of Computer Science
+
+
+This software, "Flash", is distributed to individuals for personal
+non-commercial use and to non-profit entities for non-commercial
+purposes only.  It is licensed on a non-exclusive basis, free of
+charge for these uses.  All parties interested in any other use of the
+software should contact the Rice University Office of Technology
+Transfer [techtran@rice.edu]. The license is subject to the following
+conditions:
+
+1. No support will be provided by the developer or by Rice University.
+2. Redistribution is not permitted. Rice will maintain a copy of Flash
+   as a directly downloadable file, available under the terms of
+   license specified in this agreement.
+3. All advertising materials mentioning features or use of this
+   software must display the following acknowledgment: "This product
+   includes software developed by Rice University, Houston, Texas and
+   its contributors."
+4. Neither the name of the University nor the names of its
+   contributors may be used to endorse or promote products derived
+   from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY WILLIAM MARSH RICE UNIVERSITY, HOUSTON,
+TEXAS, AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES,
+INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+IN NO EVENT SHALL RICE UNIVERSITY OR CONTRIBUTORS BE LIABLE FOR ANY
+DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE
+GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+INTERRUPTIONS) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER
+IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
+OTHERWISE), PRODUCT LIABILITY, OR OTHERWISE ARISING IN ANY WAY OUT OF
+THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH
+DAMAGE.
+
+This software contains components from computer code originally
+created and copyrighted by Jef Poskanzer (C) 1995. The license under
+which Rice obtained, used and modified that code is reproduced here in
+accordance with the requirements of that license:
+
+** Copyright (C) 1995 by Jef Poskanzer <jef@acme.com>.  All rights reserved.
+**
+** Redistribution and use in source and binary forms, with or without
+** modification, are permitted provided that the following conditions
+** are met:
+** 1. Redistributions of source code must retain the above copyright
+**    notice, this list of conditions and the following disclaimer.
+** 2. Redistributions in binary form must reproduce the above copyright
+**    notice, this list of conditions and the following disclaimer in the
+**    documentation and/or other materials provided with the distribution.
+** 
+** THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+** ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+** IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+** ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+** FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+** DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+** OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+** HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+** LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+** OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+** SUCH DAMAGE.
+*/
+
+#include "unixlib.h"
+#include "core.h"
+#include "string.h"
+#include "c_string.h"
+
+#include "config.h"
+#include "data.h"
+/* #include "datacache.h" */
+#include "handy.h"
+#include "name.h" /* rather than hotname */
+#include "libhttpd.h"
+#include "conn.h"
+#include "loop.h"
+#include "nameconvert.h"
+#include "match.h"
+#include "file.h"
+
+/*
+#include "datacache.h"
+#include "handy.h"
+#include "cgi.h"
+#include "hotname.h"
+#include "loop.h"
+#include "nameconvert.h"
+#include "helper.h"
+#include "config.h"
+#include "match.h"
+#include "hotfile.h"
+#include "common.h"
+*/
+
+/* ---------------------------------------------------------------- */
+static struct table {
+  string ext;
+  string val;
+}
+static table enc_tab[] = {
+#include "mime_encodings.h"
+};
+static table typ_tab[] = {
+#include "mime_types.h"
+};
+
+static string encodings;
+static *(string,string)
+FigureMime(string expanded)
+{
+  /* Figures out MIME encodings and type based on the filename.  Multiple
+   ** encodings are separated by semicolons.
+   */
+  int i, j, k, l;
+  bool got_enc;
+  
+  encodings = realloc_str(encodings, 0);
+  
+  /* Look at the extensions on hc->expnfilename from the back forwards. */
+  encodings[0] = '\000';
+  i = C_strlen(expanded);
+  while (true) {
+    j = i;
+    while (true) {
+      --i;
+      if (i <= 0) {
+	/* No extensions left. */
+	return ^(encodings,"text/plain");
+      }
+      if (expanded[i] == '.')
+	break;
+    }
+    /* Found an extension. */
+    got_enc = false;
+    for (k = 0; k < size(enc_tab); ++k) {
+      l = size(enc_tab[k].ext);
+      if (l == (j - i - 1) &&
+	  String::strncasecmp_subs(expanded, i+1, 
+				   enc_tab[k].ext, 0, l) == 0) {
+	encodings = realloc_str(encodings, size(enc_tab[k].val) + 1);
+	if (encodings[0] != '\000')
+	  C_strcat(encodings, ";");
+	C_strcat(encodings, enc_tab[k].val);
+	got_enc = true;
+      }
+    }
+    if (! got_enc) {
+      /* No encoding extension found - time to try type extensions. */
+      for (k = 0; k < size(typ_tab); ++k) {
+	l = size(typ_tab[k].ext);
+	if (l == j - i - 1 &&
+	    String::strncasecmp_subs(expanded, i+1, 
+				     typ_tab[k].ext, 0, l) == 0) {
+	  return ^(encodings,typ_tab[k].val);
+	}
+      }
+      /* No recognized type extension found - return default. */
+      return ^(encodings,"text/plain");
+    }
+  }
+  return ^(encodings,"");	/* not reached, but safe */
+}
+/* ---------------------------------------------------------------- */
+static DataEntry ce = null;
+static stat sb = ^stat(0,0,0,0,0,0,0);
+static open_flag flags[1] = { ^open_flag.O_RDONLY };
+bool ColdFileStuff(httpd_conn hc, string expanded, 
+		   int fileSize, int modTime)
+{
+  *(string,string) mimeData;
+
+  if (ce == null) {
+    ce = GetEmptyDataEntry();
+    if (ce == null) {
+      fprintf(tal_stderr, "out of memory allocating DataEntry\n");
+      HttpdSendErr(hc, 500, err500title, err500form, hc.hc_encodedurl);
+      return(true);
+    }
+  }
+
+  /* It's just a regular old file.  Send it. */
+  try {
+    ce.ce_file_fd = unix_open(expanded, flags, {: open_mode_flag});
+  } handle e {
+    switch e {
+    case Unix_error *(code,syscall):
+      switch code {
+      case ENOENT:
+	HttpdSendErr(hc, 404, err404title, err404form, hc.hc_encodedurl);
+      case EACCES:
+	HttpdSendErr(hc, 403, err403title, err403form, hc.hc_encodedurl);
+      default:
+	fprintf(tal_stderr,"%s:%s\n",syscall,unix_error_string(code));
+	HttpdSendErr(hc, 500, err500title, err500form, hc.hc_encodedurl);
+      }
+      return(true);
+    }
+  }
+  
+  if (modTime == 0) {
+    /* we need to stat it ourselves */    
+    try {
+      unix_stat(expanded, sb);
+    } handle e {
+      HttpdSendErr(hc, 500, err500title, err500form, hc.hc_encodedurl);
+      return(true);
+    }
+    fileSize = sb.st_size;
+    modTime = sb.st_mtime;
+  }
+  
+  ce.ce_size = fileSize;
+  ce.ce_modTime = modTime;
+
+  mimeData = FigureMime(expanded);
+  ce.ce_encodings = mimeData.1;
+  ce.ce_type = size(mimeData.2) > 0 ? mimeData.2 : ce.ce_type;
+  /*
+  fprint_string(tal_stderr,"after calling FigureMime\n");
+  printDataEntry(ce);
+  */
+  if (CalcRespHeader(ce, 200, ok200title))
+    return(true);
+
+  /*
+  if (accessLoggingEnabled) {
+    sprintf(tempSpace, "\" 200 %d\n", (int) fileSize);
+    if (ce.ce_200Resp) 
+      free(ce.ce_200Resp);
+    ce.ce_200Resp = strdup(tempSpace);
+    if (!ce.ce_200Resp) 
+      fprintf(stderr, "strdup failed in 200 resp\n");
+    else
+      ce.ce_200RespLen = size(ce.ce_200Resp);
+  }
+  */
+
+  ce.ce_filename = C_strdup(expanded);
+  /*  
+  if (ce.ce_filename == null) {
+    fprintf(tal_stderr, "out of memory allocating DataEntry filename\n");
+    HttpdSendErr(hc, 500, err500title, err500form, hc.hc_encodedurl);
+    return(true);
+  }
+  */
+  /*
+  if (AddEntryToDataCache(ce)) {
+    unix_close(ce.ce_file_fd);
+    fprintf(tal_stderr, "add entry failed\n");
+    return(true);
+  }
+  */
+  CompleteDataEntry(ce);
+  /*
+  fprint_string(tal_stderr,"Completed DataEntry\n");
+  printDataEntry(ce);
+  */
+  hc.hc_dataEnt = ce;
+  ce = null;
+
+  return(false);
+}
+/* ---------------------------------------------------------------- */
+/*
+static SRCode 
+CGIStuff(httpd_conn hc, HotNameEntry **hotName, CGIInfo **cgP, 
+	 int addEntry) 
+{
+  if (cgi(hc, hotName, cgP, addEntry))
+    return(^SRCode.SR_ERROR);
+  return(^SRCode.SR_CGI);
+}
+*/
+/* ---------------------------------------------------------------- */
+static string indexname;
+static string urlDecodeSpace;
+static string altDir;
+static /* Hot */NameEntry newNameSpace;
+/* static CGIInfo *cgiSpace; */
+
+static SRCode
+ProcessColdRequestBackend(httpd_conn hc)
+{
+  int len;
+  int cp_ofs;
+  string pi;
+  string stripped;
+  string expanded;
+  string temp;
+  *(string,string) sym_res;
+  stat sb = ^stat(0,0,0,0,0,0,0);
+#define TOPLEVELSTRING "./"
+
+  urlDecodeSpace = realloc_str(urlDecodeSpace, 0);
+  altDir = realloc_str(altDir, 0);
+
+  altDir[0] = '\000';
+
+  /* decode the URL */
+  urlDecodeSpace = realloc_str(urlDecodeSpace, C_strlen(hc.hc_encodedurl));
+  StrDecode(urlDecodeSpace,hc.hc_encodedurl);
+
+  /* if the request doesn't start with a slash, it's an error */
+  if (urlDecodeSpace[0] != '/') {
+    HttpdSendErr(hc, 400, err400title, err400form, hc.hc_encodedurl);
+    return(^SRCode.SR_ERROR);
+  }
+
+  /*
+  if (!cgiSpace) {
+    cgiSpace = GetEmptyCGIInfo();
+    if (cgiSpace == null ||
+	realloc_str(&cgiSpace.cgi_query, &cgiSpace.cgi_maxQuery, 0) == null ||
+	realloc_str(&cgiSpace.cgi_pathInfo, &cgiSpace.cgi_maxPathInfo, 0) == null)
+      return(SR_NOMEM);
+  }
+  cgiSpace.cgi_query[0] = '\0';
+  cgiSpace.cgi_pathInfo[0] = '\0';
+  */
+
+  /* if it's in the CGI cache, the decoded URL should differ
+     from the stripped name by just the leading slash character */
+
+  /*
+  hc.hc_hne = FindMatchInHotCGICache(cgiSpace, urlDecodeSpace+1);
+  if (hc.hc_hne) 
+    return(CGIStuff(hc, &hc.hc_hne, &cgiSpace, false));
+  */
+
+  /* at this point, it's not in a hot cache, so we should
+     construct its cache entry for handoff later */
+
+  if (newNameSpace == null)
+    newNameSpace = GetEmptyNE();
+
+  len = C_strlen(hc.hc_encodedurl);
+  newNameSpace.hne_encoded = realloc_str(newNameSpace.hne_encoded,len);
+  C_strcpy(newNameSpace.hne_encoded, hc.hc_encodedurl);
+  
+  stripped = newNameSpace.hne_stripped =
+    realloc_str(newNameSpace.hne_stripped, MAX(len,size(TOPLEVELSTRING)));
+  expanded = newNameSpace.hne_expanded =
+    realloc_str(newNameSpace.hne_expanded, len);
+
+  len = C_strlen(urlDecodeSpace)-1;
+  C_strncpy(stripped, 0, urlDecodeSpace, 1, len);
+  if (size(stripped) > len) stripped[len] = '\000';
+  
+  /* Special case for top-level URL. */
+  if (stripped[0] == '\000') {
+    C_strcpy(stripped, TOPLEVELSTRING);
+  }
+
+  /* Extract query string from encoded URL. */
+  cp_ofs = C_strchr(hc.hc_encodedurl, 0, '?');
+  if (cp_ofs != -1) {
+    ++cp_ofs;
+    /*
+    if (!realloc_str(&cgiSpace.cgi_query, &cgiSpace.cgi_maxQuery, 
+		     size(cp))) 
+      return(SR_NOMEM);
+    strcpy(cgiSpace.cgi_query, cp);
+    */
+    /* And remove query from filename. */
+    /*
+    cp = strchr(stripped, '?');
+    if (cp != (string) 0)
+      *cp = '\0';
+    */
+    raise (^Core::Failure("CGI queries not currently supported"));
+  }
+  
+  /* Copy original filename to expanded filename. */
+  C_strcpy(expanded, stripped);
+
+#ifdef notdef
+  /* XXX As far as I can tell, this name conversion doesn't do anything
+     other than pull at least part of the file (the INODE?) into the
+     file cache; convert_slave doesn't actually communicate anything
+     back to the master directly. */
+     
+  if (size(hc.hc_stripped) != 0) {
+    /* we've already done the name conversion */
+    hc.hc_stripped = "";
+  }
+  else {
+    /* copy the name to be converted,
+       schedule the conversion, and tell
+       the rest of the code to take a hands-off approach,
+       as if it were a CGI in progress */
+    hc.hc_stripped = C_strdup(stripped);
+    /* XXX do this eagerly? */
+    ScheduleNameConversion(hc);
+    return(^SRCode.SR_CGI);
+  }
+#endif
+
+  /* Tilde mapping. */
+  if (expanded[0] == '~')
+    altDir = TildeMap(hc, altDir);
+
+  /* Expand all symbolic links in the filename.  This also gives us
+   ** any trailing non-existing components, for pathinfo.
+   */
+  sym_res = ExpandSymlinks(expanded);
+  temp = sym_res.1;
+  pi = sym_res.2;
+  if (size(temp) == 0) {
+    fprintf(tal_stderr, "expanding symlinks gave back null\n");
+    HttpdSendErr(hc, 500, err500title, err500form, hc.hc_encodedurl);
+    return(^SRCode.SR_ERROR);
+  }
+
+  if (temp[0] == '\000') {
+    fprintf(tal_stderr, "expanding symlinks yielded nothing - %s\n", 
+	    hc.hc_encodedurl);
+    HttpdSendErr(hc, 404, err404title, err404form, hc.hc_encodedurl);
+    return(^SRCode.SR_ERROR);
+  }
+
+  expanded = newNameSpace.hne_expanded = 
+    realloc_str(newNameSpace.hne_expanded,C_strlen(temp));
+  C_strcpy(expanded, temp);
+  /*
+  fprint_string(tal_stderr,"expanded=");
+  C_fprint_string(tal_stderr,expanded,0);
+  fprint_char(tal_stderr,'\n');
+  */
+  /*
+  if (!realloc_str(&cgiSpace.cgi_pathInfo, &cgiSpace.cgi_maxPathInfo, 
+		   size(pi)))
+    return(SR_NOMEM);
+  strcpy(cgiSpace.cgi_pathInfo, pi);
+  */
+
+  /* Remove pathinfo stuff from the original filename too. */
+  /*
+  if (cgiSpace.cgi_pathInfo[0] != '\0') {
+    int i;
+    i = size(stripped) - size(cgiSpace.cgi_pathInfo);
+    if (i > 0 && strcmp(&stripped[i], cgiSpace.cgi_pathInfo) == 0)
+      stripped[i - 1] = '\0';
+  }
+  */
+
+  /* If the expanded filename is an absolute path, check that it's still
+   ** within the current directory or the alternate directory.
+   */
+  if (expanded[0] == '/') {
+    if (C_strncmp(expanded, 0, HS.cwd, 0, size(HS.cwd)) == 0) {
+      int len = C_strlen(expanded)-size(HS.cwd);
+      /* Elide the current directory. */
+      C_strncpy(expanded, 0, expanded, size(HS.cwd), len);
+      expanded[len] = '\000';
+    }
+    else if (altDir[0] != '\000' &&
+	     (C_strncmp(expanded, 0, altDir, 0, C_strlen(altDir)) != 0 ||
+	      (expanded[size(altDir)] != '\000' &&
+	       expanded[size(altDir)] != '/'))) {
+      HttpdSendErr(hc, 403, err403title, err403form, hc.hc_encodedurl);
+      return(^SRCode.SR_ERROR);
+    }
+  }
+
+  /* Stat the file. */
+  try {
+    unix_stat(expanded, sb);
+  } handle e {
+    switch e {
+    case Unix_error *(code,syscall):
+      fprintf(tal_stderr, "stat'ing file %s generated error %s\n", 
+	      expanded, unix_error_string(code));
+      HttpdSendErr(hc, 500, err500title, err500form, hc.hc_encodedurl);
+      return(^SRCode.SR_ERROR);
+    }
+  }
+  
+  /* Is it world-readable?  We check explicitly instead of just
+   ** trying to open it, so that no one ever gets surprised by
+   ** a file that's not set world-readable and yet somehow is
+   ** readable by the HTTP server and therefore the *whole* world.
+   */
+  if ((sb.st_mode & S_IROTH) == 0) {
+    HttpdSendErr(hc, 403, err403title, err403form, hc.hc_encodedurl);
+    return(^SRCode.SR_ERROR);
+  }
+  
+  /* Is it a directory? */
+  if ((sb.st_mode & S_IFDIR) == S_IFDIR) { /* is directory */
+    if (size(pi) != 0) {
+    /*
+    if (cgiSpace.cgi_pathInfo[0] != '\0' || 
+	cgiSpace.cgi_query[0] != '\0') {
+    */
+      HttpdSendErr(hc, 404, err404title, err404form, hc.hc_encodedurl);
+      return(^SRCode.SR_ERROR);
+    }
+
+    /* Special handling for directory URLs that don't end in a slash.
+     ** We send back an explicit redirect with the slash, because
+     ** otherwise many clients can't build relative URLs properly.
+     */
+    if (stripped[C_strlen(stripped)-1] != '/') {
+      newNameSpace.hne_type = ^NameTypes.HNT_REDIRECT;
+      hc.hc_hne = newNameSpace;
+      EnterIntoHotNameCache(&newNameSpace); /* XXX & */
+      SendDirRedirect(hc);
+      return(^SRCode.SR_ERROR);
+    }
+    
+    /* Check for an index.html file. */
+    indexname = realloc_str(indexname, 
+			    C_strlen(expanded) + 1 + size(INDEX_NAME));
+    C_strcpy(indexname, expanded);
+    len = C_strlen(indexname);
+    if (len == 0 || indexname[len - 1] != '/') {
+      C_strcat(indexname, "/");
+    }
+    C_strcat(indexname, INDEX_NAME);
+    /*
+    fprint_string(tal_stderr,"indexname =");
+    C_fprint_string(tal_stderr,indexname,0);
+    fprint_char(tal_stderr,'\n');
+    */
+    try {
+      unix_stat(indexname, sb);
+    } handle e {
+      switch e {
+      case Unix_error *(code,syscall):
+	/* Nope, no index.html, so it's an actual directory request.
+	** But if there's pathinfo, it's just a non-existent file.
+	*/
+	newNameSpace.hne_type = ^NameTypes.HNT_LS;
+	newNameSpace.hne_modTime = sb.st_mtime;
+	hc.hc_hne = newNameSpace;
+	EnterIntoHotNameCache(&newNameSpace); /* XXX & */
+	/*
+	ScheduleDirHelp(hc);
+	return(^SRCode.SR_CGI);
+	*/
+	fprintf(tal_stderr,"directory strings not supported\n");
+	HttpdSendErr(hc, 501, err501title, err501form, hc.hc_encodedurl);
+	return (^SRCode.SR_ERROR);
+      }
+    }
+    
+    /* Expand symlinks again.  More pathinfo means something went wrong. */
+    sym_res = ExpandSymlinks(indexname);
+    temp = sym_res.1;
+    pi = sym_res.2;
+    if (size(temp) == 0) {
+      fprintf(tal_stderr, "re-expanding symlinks caused error\n");
+      HttpdSendErr(hc, 500, err500title, err500form, hc.hc_encodedurl);
+      return(^SRCode.SR_ERROR);
+    }
+    if (size(pi) != 0 && pi[0] != '\000') {
+      fprintf(tal_stderr, "re-expanding symlinks caused pathinfo: %s\n",pi);
+      HttpdSendErr(hc, 404, err404title, err404form, hc.hc_encodedurl);
+      return(^SRCode.SR_ERROR);
+    }
+    
+    expanded = newNameSpace.hne_expanded = 
+      realloc_str(newNameSpace.hne_expanded,C_strlen(temp));
+    C_strcpy(expanded, temp);
+    
+    /* Now, is the index.html version world-readable? */
+    if ((sb.st_mode & S_IROTH) == 0) {
+      HttpdSendErr(hc, 403, err403title, err403form, hc.hc_encodedurl);
+      return(^SRCode.SR_ERROR);
+    }
+  }	/* is directory */
+  
+  /* Is it world-executable and in the CGI area? */
+  if (HS.cgi_pattern != null && ((sb.st_mode & S_IXOTH) != 0) &&
+      match(HS.cgi_pattern.v, 0, expanded, 0)) {
+    raise (^Core::Failure("CGI queries not currently supported"));
+    /* return(CGIStuff(hc, &newNameSpace, &cgiSpace, true)); */
+  }
+  /* It's not CGI.  If it's executable, or there's
+   * a query, someone's trying to either serve or run a non-CGI file
+   * as CGI.  Either case is prohibited.
+   */
+  
+  if ((sb.st_mode & S_IXOTH) != 0 /* || (cgiSpace.cgi_query[0] != '\0') */) {
+    HttpdSendErr(hc, 403, err403title, err403form, hc.hc_encodedurl);
+    return(^SRCode.SR_ERROR);
+  }
+
+  /* if there's pathinfo, someone mistook a file for a directory */
+  if (size(pi) != 0 && pi[0] != '\000') { /* (cgiSpace.cgi_pathInfo[0] != '\0') { */
+    HttpdSendErr(hc, 404, err404title, err404form, hc.hc_encodedurl);
+    return(^SRCode.SR_ERROR);
+  }
+
+  newNameSpace.hne_type = ^NameTypes.HNT_FILE;
+  /* XXX use of & not good for the new compiler */
+  return(RegularFileStuff(hc, &newNameSpace, true, sb.st_size, sb.st_mtime));
+}
+/* ---------------------------------------------------------------- */
+SRCode
+ProcessColdRequest(httpd_conn hc)
+{
+  SRCode srRes;
+
+  srRes = ProcessColdRequestBackend(hc);
+  /*
+  if (srRes == SR_NOMEM) {
+    fprintf(stderr, "out of memory in ProcessColdRequestBackend\n");
+    HttpdSendErr(hc, 500, err500title, err500form, hc.hc_encodedurl);
+    return(^SRCode.SR_ERROR);
+  }
+  */
+  return(srRes);
+}
+/* ---------------------------------------------------------------- */

@@ -1,0 +1,345 @@
+util/base64.cmo: util/base64.cmi 
+util/base64.cmx: util/base64.cmi 
+util/binout.cmo: util/utilities.cmi util/binout.cmi 
+util/binout.cmx: util/utilities.cmx util/binout.cmi 
+util/bitmatrix.cmo: computil/identifier.cmi util/bitmatrix.cmi 
+util/bitmatrix.cmx: computil/identifier.cmx util/bitmatrix.cmi 
+util/dict.cmo: util/splay.cmi util/utilities.cmi util/dict.cmi 
+util/dict.cmx: util/splay.cmx util/utilities.cmx util/dict.cmi 
+util/numtypes.cmo: util/numtypes.cmi 
+util/numtypes.cmx: util/numtypes.cmi 
+util/set.cmo: util/set.cmi 
+util/set.cmx: util/set.cmi 
+util/smallset.cmo: util/smallset.cmi 
+util/smallset.cmx: util/smallset.cmi 
+util/splay.cmo: util/splay.cmi 
+util/splay.cmx: util/splay.cmi 
+util/stringchan.cmo: util/stringchan.cmi 
+util/stringchan.cmx: util/stringchan.cmi 
+util/timeit.cmo: util/timeit.cmi 
+util/timeit.cmx: util/timeit.cmi 
+util/utilities.cmo: util/utilities.cmi 
+util/utilities.cmx: util/utilities.cmi 
+util/xarray.cmo: util/xarray.cmi 
+util/xarray.cmx: util/xarray.cmi 
+computil/identifier.cmo: util/dict.cmi computil/identifier.cmi 
+computil/identifier.cmx: util/dict.cmx computil/identifier.cmi 
+computil/ocamldep.cmo: util/set.cmi 
+computil/ocamldep.cmx: util/set.cmx 
+talx86/binin.cmo: util/numtypes.cmi util/utilities.cmi 
+talx86/binin.cmx: util/numtypes.cmx util/utilities.cmx 
+talx86/coff.cmo: util/binout.cmi computil/identifier.cmi util/numtypes.cmi \
+    talx86/objfile.cmi util/stringchan.cmi talx86/tal.cmi util/utilities.cmi \
+    talx86/coff.cmi 
+talx86/coff.cmx: util/binout.cmx computil/identifier.cmx util/numtypes.cmx \
+    talx86/objfile.cmx util/stringchan.cmx talx86/tal.cmx util/utilities.cmx \
+    talx86/coff.cmi 
+talx86/cyclone.cmo: computil/identifier.cmi util/numtypes.cmi talx86/tal.cmi 
+talx86/cyclone.cmx: computil/identifier.cmx util/numtypes.cmx talx86/tal.cmx 
+talx86/dasm.cmo: talx86/disasmx86.cmi talx86/discoff.cmi talx86/diself.cmo \
+    talx86/disobjfile.cmi toplevel/gcdfec.cmi computil/identifier.cmi \
+    util/numtypes.cmi util/stringchan.cmi talx86/tal.cmi talx86/talbin.cmi \
+    talx86/talbinin.cmi talx86/talpp.cmi util/utilities.cmi talx86/dasm.cmi 
+talx86/dasm.cmx: talx86/disasmx86.cmx talx86/discoff.cmx talx86/diself.cmx \
+    talx86/disobjfile.cmx toplevel/gcdfec.cmx computil/identifier.cmx \
+    util/numtypes.cmx util/stringchan.cmx talx86/tal.cmx talx86/talbin.cmx \
+    talx86/talbinin.cmx talx86/talpp.cmx util/utilities.cmx talx86/dasm.cmi 
+talx86/disasmx86.cmo: talx86/disobjfile.cmi computil/identifier.cmi \
+    util/numtypes.cmi talx86/tal.cmi util/utilities.cmi talx86/disasmx86.cmi 
+talx86/disasmx86.cmx: talx86/disobjfile.cmx computil/identifier.cmx \
+    util/numtypes.cmx talx86/tal.cmx util/utilities.cmx talx86/disasmx86.cmi 
+talx86/discoff.cmo: talx86/binin.cmo util/dict.cmi talx86/disobjfile.cmi \
+    computil/identifier.cmi util/numtypes.cmi talx86/discoff.cmi 
+talx86/discoff.cmx: talx86/binin.cmx util/dict.cmx talx86/disobjfile.cmx \
+    computil/identifier.cmx util/numtypes.cmx talx86/discoff.cmi 
+talx86/diself.cmo: talx86/binin.cmo util/dict.cmi talx86/disobjfile.cmi \
+    computil/identifier.cmi util/numtypes.cmi 
+talx86/diself.cmx: talx86/binin.cmx util/dict.cmx talx86/disobjfile.cmx \
+    computil/identifier.cmx util/numtypes.cmx 
+talx86/disobjfile.cmo: util/dict.cmi computil/identifier.cmi \
+    util/utilities.cmi talx86/disobjfile.cmi 
+talx86/disobjfile.cmx: util/dict.cmx computil/identifier.cmx \
+    util/utilities.cmx talx86/disobjfile.cmi 
+talx86/elf.cmo: util/binout.cmi computil/identifier.cmi util/numtypes.cmi \
+    talx86/objfile.cmi util/stringchan.cmi talx86/tal.cmi talx86/elf.cmi 
+talx86/elf.cmx: util/binout.cmx computil/identifier.cmx util/numtypes.cmx \
+    talx86/objfile.cmx util/stringchan.cmx talx86/tal.cmx talx86/elf.cmi 
+talx86/objfile.cmo: util/dict.cmi computil/identifier.cmi util/numtypes.cmi \
+    util/stringchan.cmi talx86/tal.cmi talx86/objfile.cmi 
+talx86/objfile.cmx: util/dict.cmx computil/identifier.cmx util/numtypes.cmx \
+    util/stringchan.cmx talx86/tal.cmx talx86/objfile.cmi 
+talx86/tal.cmo: util/dict.cmi computil/identifier.cmi util/numtypes.cmi \
+    util/set.cmi util/utilities.cmi talx86/tal.cmi 
+talx86/tal.cmx: util/dict.cmx computil/identifier.cmx util/numtypes.cmx \
+    util/set.cmx util/utilities.cmx talx86/tal.cmi 
+talx86/talasm.cmo: talx86/cyclone.cmo computil/identifier.cmi \
+    util/numtypes.cmi talx86/objfile.cmi util/stringchan.cmi talx86/tal.cmi \
+    talx86/talasmx86.cmi talx86/talpp.cmi talx86/talasm.cmi 
+talx86/talasm.cmx: talx86/cyclone.cmx computil/identifier.cmx \
+    util/numtypes.cmx talx86/objfile.cmx util/stringchan.cmx talx86/tal.cmx \
+    talx86/talasmx86.cmx talx86/talpp.cmx talx86/talasm.cmi 
+talx86/talasmx86.cmo: talx86/cyclone.cmo util/dict.cmi \
+    computil/identifier.cmi util/numtypes.cmi talx86/objfile.cmi \
+    util/stringchan.cmi talx86/tal.cmi talx86/talasmx86.cmi 
+talx86/talasmx86.cmx: talx86/cyclone.cmx util/dict.cmx \
+    computil/identifier.cmx util/numtypes.cmx talx86/objfile.cmx \
+    util/stringchan.cmx talx86/tal.cmx talx86/talasmx86.cmi 
+talx86/talbe.cmo: talx86/coff.cmi talx86/elf.cmi toplevel/gcdfe.cmi \
+    toplevel/gcdfec.cmi talx86/tal.cmi talx86/talasm.cmi talx86/talctxt.cmi \
+    talx86/tallex.cmo talx86/talout.cmi talx86/talparser.cmi talx86/talpp.cmi \
+    talx86/talverify.cmi talx86/talbe.cmi 
+talx86/talbe.cmx: talx86/coff.cmx talx86/elf.cmx toplevel/gcdfe.cmx \
+    toplevel/gcdfec.cmx talx86/tal.cmx talx86/talasm.cmx talx86/talctxt.cmx \
+    talx86/tallex.cmx talx86/talout.cmx talx86/talparser.cmx talx86/talpp.cmx \
+    talx86/talverify.cmx talx86/talbe.cmi 
+talx86/talbin.cmo: talx86/cyclone.cmo util/dict.cmi talx86/disobjfile.cmi \
+    toplevel/gcdfec.cmi computil/identifier.cmi util/numtypes.cmi \
+    talx86/objfile.cmi talx86/tal.cmi talx86/talpp.cmi util/utilities.cmi \
+    talx86/talbin.cmi 
+talx86/talbin.cmx: talx86/cyclone.cmx util/dict.cmx talx86/disobjfile.cmx \
+    toplevel/gcdfec.cmx computil/identifier.cmx util/numtypes.cmx \
+    talx86/objfile.cmx talx86/tal.cmx talx86/talpp.cmx util/utilities.cmx \
+    talx86/talbin.cmi 
+talx86/talbinin.cmo: util/dict.cmi toplevel/gcdfec.cmi \
+    computil/identifier.cmi util/numtypes.cmi talx86/tal.cmi \
+    talx86/talbin.cmi talx86/talpp.cmi util/utilities.cmi talx86/talbinin.cmi 
+talx86/talbinin.cmx: util/dict.cmx toplevel/gcdfec.cmx \
+    computil/identifier.cmx util/numtypes.cmx talx86/tal.cmx \
+    talx86/talbin.cmx talx86/talpp.cmx util/utilities.cmx talx86/talbinin.cmi 
+talx86/talbinout.cmo: util/dict.cmi toplevel/gcdfec.cmi \
+    computil/identifier.cmi util/numtypes.cmi talx86/tal.cmi \
+    talx86/talbin.cmi talx86/talbinout.cmi 
+talx86/talbinout.cmx: util/dict.cmx toplevel/gcdfec.cmx \
+    computil/identifier.cmx util/numtypes.cmx talx86/tal.cmx \
+    talx86/talbin.cmx talx86/talbinout.cmi 
+talx86/talcon.cmo: util/dict.cmi computil/identifier.cmi util/numtypes.cmi \
+    util/set.cmi talx86/tal.cmi talx86/talctxt.cmi talx86/talpp.cmi \
+    util/utilities.cmi talx86/talcon.cmi 
+talx86/talcon.cmx: util/dict.cmx computil/identifier.cmx util/numtypes.cmx \
+    util/set.cmx talx86/tal.cmx talx86/talctxt.cmx talx86/talpp.cmx \
+    util/utilities.cmx talx86/talcon.cmi 
+talx86/talctxt.cmo: util/dict.cmi computil/identifier.cmi util/numtypes.cmi \
+    util/set.cmi talx86/tal.cmi talx86/talctxt.cmi 
+talx86/talctxt.cmx: util/dict.cmx computil/identifier.cmx util/numtypes.cmx \
+    util/set.cmx talx86/tal.cmx talx86/talctxt.cmi 
+talx86/tallex.cmo: toplevel/gcdfec.cmi util/numtypes.cmi talx86/tal.cmi \
+    talx86/talparser.cmi 
+talx86/tallex.cmx: toplevel/gcdfec.cmx util/numtypes.cmx talx86/tal.cmx \
+    talx86/talparser.cmx 
+talx86/tallinkchk.cmo: computil/identifier.cmi talx86/tal.cmi \
+    talx86/talcon.cmi talx86/talctxt.cmi util/utilities.cmi \
+    talx86/tallinkchk.cmi 
+talx86/tallinkchk.cmx: computil/identifier.cmx talx86/tal.cmx \
+    talx86/talcon.cmx talx86/talctxt.cmx util/utilities.cmx \
+    talx86/tallinkchk.cmi 
+talx86/tallogic.cmo: util/dict.cmi computil/identifier.cmi util/numtypes.cmi \
+    talx86/tal.cmi talx86/talctxt.cmi talx86/tallogic.cmi 
+talx86/tallogic.cmx: util/dict.cmx computil/identifier.cmx util/numtypes.cmx \
+    talx86/tal.cmx talx86/talctxt.cmx talx86/tallogic.cmi 
+talx86/talout.cmo: talx86/talpp.cmi talx86/talout.cmi 
+talx86/talout.cmx: talx86/talpp.cmx talx86/talout.cmi 
+talx86/talparser.cmo: util/dict.cmi toplevel/gcdfec.cmi \
+    computil/identifier.cmi util/numtypes.cmi talx86/tal.cmi \
+    talx86/talcon.cmi util/utilities.cmi talx86/talparser.cmi 
+talx86/talparser.cmx: util/dict.cmx toplevel/gcdfec.cmx \
+    computil/identifier.cmx util/numtypes.cmx talx86/tal.cmx \
+    talx86/talcon.cmx util/utilities.cmx talx86/talparser.cmi 
+talx86/talpp.cmo: util/dict.cmi computil/identifier.cmi util/numtypes.cmi \
+    talx86/tal.cmi talx86/talctxt.cmi util/utilities.cmi talx86/talpp.cmi 
+talx86/talpp.cmx: util/dict.cmx computil/identifier.cmx util/numtypes.cmx \
+    talx86/tal.cmx talx86/talctxt.cmx util/utilities.cmx talx86/talpp.cmi 
+talx86/talverify.cmo: util/dict.cmi computil/identifier.cmi util/numtypes.cmi \
+    util/stringchan.cmi talx86/tal.cmi talx86/talbinin.cmi \
+    talx86/talbinout.cmi talx86/talcon.cmi talx86/talctxt.cmi \
+    talx86/tallogic.cmi talx86/talpp.cmi util/utilities.cmi \
+    talx86/talverify.cmi 
+talx86/talverify.cmx: util/dict.cmx computil/identifier.cmx util/numtypes.cmx \
+    util/stringchan.cmx talx86/tal.cmx talx86/talbinin.cmx \
+    talx86/talbinout.cmx talx86/talcon.cmx talx86/talctxt.cmx \
+    talx86/tallogic.cmx talx86/talpp.cmx util/utilities.cmx \
+    talx86/talverify.cmi 
+toplevel/dynlink.cmo: talx86/dasm.cmi computil/identifier.cmi \
+    util/stringchan.cmi talx86/tal.cmi talx86/talbe.cmi talx86/talbinin.cmi \
+    talx86/talcon.cmi talx86/talctxt.cmi talx86/tallinkchk.cmi \
+    talx86/talout.cmi talx86/talpp.cmi talx86/talverify.cmi 
+toplevel/dynlink.cmx: talx86/dasm.cmx computil/identifier.cmx \
+    util/stringchan.cmx talx86/tal.cmx talx86/talbe.cmx talx86/talbinin.cmx \
+    talx86/talcon.cmx talx86/talctxt.cmx talx86/tallinkchk.cmx \
+    talx86/talout.cmx talx86/talpp.cmx talx86/talverify.cmx 
+toplevel/gcd.cmo: toplevel/gcdfec.cmi util/set.cmi talx86/talout.cmi \
+    toplevel/gcd.cmi 
+toplevel/gcd.cmx: toplevel/gcdfec.cmx util/set.cmx talx86/talout.cmx \
+    toplevel/gcd.cmi 
+toplevel/gcdfe.cmo: toplevel/gcdfec.cmi toplevel/gcdfe.cmi 
+toplevel/gcdfe.cmx: toplevel/gcdfec.cmx toplevel/gcdfe.cmi 
+toplevel/gcdfec.cmo: toplevel/lineno.cmo toplevel/gcdfec.cmi 
+toplevel/gcdfec.cmx: toplevel/lineno.cmx toplevel/gcdfec.cmi 
+toplevel/genCinit.cmo: computil/identifier.cmi talx86/tal.cmi \
+    talx86/talbe.cmi talx86/talbinout.cmi talx86/talcon.cmi \
+    talx86/talctxt.cmi 
+toplevel/genCinit.cmx: computil/identifier.cmx talx86/tal.cmx \
+    talx86/talbe.cmx talx86/talbinout.cmx talx86/talcon.cmx \
+    talx86/talctxt.cmx 
+toplevel/tal_verify.cmo: toplevel/dynlink.cmo 
+toplevel/tal_verify.cmx: toplevel/dynlink.cmx 
+toplevel/talc.cmo: talx86/dasm.cmi toplevel/gcd.cmi toplevel/gcdfec.cmi \
+    computil/identifier.cmi talx86/tal.cmi talx86/talbe.cmi \
+    talx86/talbinout.cmi talx86/talctxt.cmi talx86/tallinkchk.cmi \
+    talx86/talout.cmi talx86/talpp.cmi talx86/talverify.cmi \
+    util/utilities.cmi 
+toplevel/talc.cmx: talx86/dasm.cmx toplevel/gcd.cmx toplevel/gcdfec.cmx \
+    computil/identifier.cmx talx86/tal.cmx talx86/talbe.cmx \
+    talx86/talbinout.cmx talx86/talctxt.cmx talx86/tallinkchk.cmx \
+    talx86/talout.cmx talx86/talpp.cmx talx86/talverify.cmx \
+    util/utilities.cmx 
+toplevel/type2to.cmo: toplevel/gcdfe.cmi util/stringchan.cmi \
+    talx86/talbinin.cmi talx86/talbinout.cmi talx86/talcon.cmi \
+    talx86/talctxt.cmi talx86/tallex.cmo talx86/talparser.cmi \
+    talx86/talpp.cmi 
+toplevel/type2to.cmx: toplevel/gcdfe.cmx util/stringchan.cmx \
+    talx86/talbinin.cmx talx86/talbinout.cmx talx86/talcon.cmx \
+    talx86/talctxt.cmx talx86/tallex.cmx talx86/talparser.cmx \
+    talx86/talpp.cmx 
+popcorn/popcompenv.cmo: util/dict.cmi computil/identifier.cmi \
+    util/numtypes.cmi popcorn/popcomptypes.cmi popcorn/popsyntax.cmi \
+    popcorn/poptype.cmi talx86/tal.cmi popcorn/popcompenv.cmi 
+popcorn/popcompenv.cmx: util/dict.cmx computil/identifier.cmx \
+    util/numtypes.cmx popcorn/popcomptypes.cmx popcorn/popsyntax.cmx \
+    popcorn/poptype.cmx talx86/tal.cmx popcorn/popcompenv.cmi 
+popcorn/popcompile.cmo: util/dict.cmi toplevel/gcdfec.cmi \
+    computil/identifier.cmi util/numtypes.cmi talx86/objfile.cmi \
+    popcorn/popcompenv.cmi popcorn/popcomptypes.cmi popcorn/poperr.cmo \
+    popcorn/poppeep.cmi popcorn/popsyntax.cmi popcorn/poptype.cmi \
+    talx86/tal.cmi talx86/talbinout.cmi talx86/talcon.cmi talx86/talctxt.cmi \
+    talx86/talpp.cmi util/utilities.cmi popcorn/popcompile.cmi 
+popcorn/popcompile.cmx: util/dict.cmx toplevel/gcdfec.cmx \
+    computil/identifier.cmx util/numtypes.cmx talx86/objfile.cmx \
+    popcorn/popcompenv.cmx popcorn/popcomptypes.cmx popcorn/poperr.cmx \
+    popcorn/poppeep.cmx popcorn/popsyntax.cmx popcorn/poptype.cmx \
+    talx86/tal.cmx talx86/talbinout.cmx talx86/talcon.cmx talx86/talctxt.cmx \
+    talx86/talpp.cmx util/utilities.cmx popcorn/popcompile.cmi 
+popcorn/popcomptypes.cmo: util/dict.cmi computil/identifier.cmi \
+    util/numtypes.cmi popcorn/poperr.cmo popcorn/poppeep.cmi \
+    popcorn/popsyntax.cmi popcorn/poptype.cmi talx86/tal.cmi \
+    talx86/talcon.cmi popcorn/popcomptypes.cmi 
+popcorn/popcomptypes.cmx: util/dict.cmx computil/identifier.cmx \
+    util/numtypes.cmx popcorn/poperr.cmx popcorn/poppeep.cmx \
+    popcorn/popsyntax.cmx popcorn/poptype.cmx talx86/tal.cmx \
+    talx86/talcon.cmx popcorn/popcomptypes.cmi 
+popcorn/popcorn.cmo: toplevel/gcd.cmi toplevel/gcdfe.cmi toplevel/gcdfec.cmi \
+    popcorn/popcompile.cmi popcorn/popdynpatch.cmo popcorn/popdyntrans.cmo \
+    popcorn/poplex.cmo popcorn/popparse.cmi popcorn/popsyntax.cmi \
+    popcorn/poptype.cmi talx86/tal.cmi talx86/talout.cmi 
+popcorn/popcorn.cmx: toplevel/gcd.cmx toplevel/gcdfe.cmx toplevel/gcdfec.cmx \
+    popcorn/popcompile.cmx popcorn/popdynpatch.cmx popcorn/popdyntrans.cmx \
+    popcorn/poplex.cmx popcorn/popparse.cmx popcorn/popsyntax.cmx \
+    popcorn/poptype.cmx talx86/tal.cmx talx86/talout.cmx 
+popcorn/popdynpatch.cmo: util/dict.cmi popcorn/popsyntax.cmi \
+    popcorn/poptype.cmi 
+popcorn/popdynpatch.cmx: util/dict.cmx popcorn/popsyntax.cmx \
+    popcorn/poptype.cmx 
+popcorn/popdyntrans.cmo: util/base64.cmi util/dict.cmi toplevel/gcdfec.cmi \
+    computil/identifier.cmi util/numtypes.cmi popcorn/popcompenv.cmi \
+    popcorn/popsyntax.cmi popcorn/poptype.cmi 
+popcorn/popdyntrans.cmx: util/base64.cmx util/dict.cmx toplevel/gcdfec.cmx \
+    computil/identifier.cmx util/numtypes.cmx popcorn/popcompenv.cmx \
+    popcorn/popsyntax.cmx popcorn/poptype.cmx 
+popcorn/poperr.cmo: toplevel/gcdfec.cmi computil/identifier.cmi 
+popcorn/poperr.cmx: toplevel/gcdfec.cmx computil/identifier.cmx 
+popcorn/popgenpatch.cmo: util/base64.cmi util/dict.cmi toplevel/gcdfe.cmi \
+    toplevel/gcdfec.cmi util/numtypes.cmi popcorn/popdynpatch.cmo \
+    popcorn/popdyntrans.cmo popcorn/poplex.cmo popcorn/popparse.cmi \
+    popcorn/popsyntax.cmi popcorn/poptype.cmi 
+popcorn/popgenpatch.cmx: util/base64.cmx util/dict.cmx toplevel/gcdfe.cmx \
+    toplevel/gcdfec.cmx util/numtypes.cmx popcorn/popdynpatch.cmx \
+    popcorn/popdyntrans.cmx popcorn/poplex.cmx popcorn/popparse.cmx \
+    popcorn/popsyntax.cmx popcorn/poptype.cmx 
+popcorn/poplex.cmo: toplevel/gcdfec.cmi util/numtypes.cmi popcorn/poperr.cmo \
+    popcorn/popparse.cmi 
+popcorn/poplex.cmx: toplevel/gcdfec.cmx util/numtypes.cmx popcorn/poperr.cmx \
+    popcorn/popparse.cmx 
+popcorn/popparse.cmo: toplevel/gcdfec.cmi util/numtypes.cmi \
+    popcorn/poperr.cmo popcorn/popsyntax.cmi util/smallset.cmi \
+    popcorn/popparse.cmi 
+popcorn/popparse.cmx: toplevel/gcdfec.cmx util/numtypes.cmx \
+    popcorn/poperr.cmx popcorn/popsyntax.cmx util/smallset.cmx \
+    popcorn/popparse.cmi 
+popcorn/poppeep.cmo: util/numtypes.cmi talx86/tal.cmi popcorn/poppeep.cmi 
+popcorn/poppeep.cmx: util/numtypes.cmx talx86/tal.cmx popcorn/poppeep.cmi 
+popcorn/popsyntax.cmo: toplevel/gcdfec.cmi util/numtypes.cmi \
+    util/smallset.cmi popcorn/popsyntax.cmi 
+popcorn/popsyntax.cmx: toplevel/gcdfec.cmx util/numtypes.cmx \
+    util/smallset.cmx popcorn/popsyntax.cmi 
+popcorn/poptype.cmo: util/dict.cmi toplevel/gcdfec.cmi util/numtypes.cmi \
+    popcorn/poperr.cmo popcorn/popsyntax.cmi popcorn/poptype.cmi 
+popcorn/poptype.cmx: util/dict.cmx toplevel/gcdfec.cmx util/numtypes.cmx \
+    popcorn/poperr.cmx popcorn/popsyntax.cmx popcorn/poptype.cmi 
+scheme/sast.cmo: util/numtypes.cmi scheme/sast.cmi 
+scheme/sast.cmx: util/numtypes.cmx scheme/sast.cmi 
+scheme/scheme.cmo: toplevel/gcd.cmi toplevel/gcdfe.cmi toplevel/gcdfec.cmi \
+    scheme/scomp.cmi scheme/sil.cmi scheme/slex.cmo scheme/sparse.cmi \
+    talx86/talout.cmi 
+scheme/scheme.cmx: toplevel/gcd.cmx toplevel/gcdfe.cmx toplevel/gcdfec.cmx \
+    scheme/scomp.cmx scheme/sil.cmx scheme/slex.cmx scheme/sparse.cmx \
+    talx86/talout.cmx 
+scheme/scomp.cmo: util/dict.cmi computil/identifier.cmi util/numtypes.cmi \
+    scheme/sast.cmi scheme/sil.cmi talx86/tal.cmi scheme/scomp.cmi 
+scheme/scomp.cmx: util/dict.cmx computil/identifier.cmx util/numtypes.cmx \
+    scheme/sast.cmx scheme/sil.cmx talx86/tal.cmx scheme/scomp.cmi 
+scheme/sil.cmo: util/numtypes.cmi scheme/sast.cmi scheme/sil.cmi 
+scheme/sil.cmx: util/numtypes.cmx scheme/sast.cmx scheme/sil.cmi 
+scheme/slex.cmo: toplevel/gcdfec.cmi util/numtypes.cmi scheme/sparse.cmi 
+scheme/slex.cmx: toplevel/gcdfec.cmx util/numtypes.cmx scheme/sparse.cmx 
+scheme/sparse.cmo: toplevel/gcdfec.cmi util/numtypes.cmi scheme/sast.cmi \
+    scheme/sparse.cmi 
+scheme/sparse.cmx: toplevel/gcdfec.cmx util/numtypes.cmx scheme/sast.cmx \
+    scheme/sparse.cmi 
+util/bitmatrix.cmi: computil/identifier.cmi 
+talx86/coff.cmi: talx86/objfile.cmi 
+talx86/dasm.cmi: talx86/tal.cmi 
+talx86/disasmx86.cmi: talx86/disobjfile.cmi talx86/tal.cmi 
+talx86/discoff.cmi: talx86/disobjfile.cmi 
+talx86/disobjfile.cmi: util/dict.cmi computil/identifier.cmi \
+    util/utilities.cmi 
+talx86/elf.cmi: talx86/objfile.cmi 
+talx86/objfile.cmi: util/dict.cmi computil/identifier.cmi util/numtypes.cmi \
+    util/stringchan.cmi talx86/tal.cmi 
+talx86/tal.cmi: util/dict.cmi computil/identifier.cmi util/numtypes.cmi \
+    util/set.cmi util/utilities.cmi 
+talx86/talasm.cmi: talx86/objfile.cmi talx86/tal.cmi 
+talx86/talasmx86.cmi: talx86/objfile.cmi util/stringchan.cmi talx86/tal.cmi 
+talx86/talbe.cmi: talx86/tal.cmi 
+talx86/talbin.cmi: talx86/disobjfile.cmi computil/identifier.cmi \
+    util/numtypes.cmi talx86/tal.cmi util/utilities.cmi 
+talx86/talbinin.cmi: computil/identifier.cmi util/numtypes.cmi \
+    util/stringchan.cmi talx86/tal.cmi talx86/talbin.cmi util/utilities.cmi 
+talx86/talbinout.cmi: computil/identifier.cmi talx86/tal.cmi 
+talx86/talcon.cmi: util/dict.cmi computil/identifier.cmi util/numtypes.cmi \
+    util/set.cmi talx86/tal.cmi talx86/talctxt.cmi 
+talx86/talctxt.cmi: util/dict.cmi computil/identifier.cmi util/numtypes.cmi \
+    talx86/tal.cmi 
+talx86/tallinkchk.cmi: talx86/tal.cmi talx86/talverify.cmi 
+talx86/tallogic.cmi: computil/identifier.cmi talx86/tal.cmi \
+    talx86/talctxt.cmi 
+talx86/talout.cmi: talx86/tal.cmi talx86/talpp.cmi 
+talx86/talparser.cmi: util/numtypes.cmi talx86/tal.cmi 
+talx86/talpp.cmi: computil/identifier.cmi talx86/tal.cmi talx86/talctxt.cmi 
+talx86/talverify.cmi: computil/identifier.cmi talx86/tal.cmi \
+    talx86/talctxt.cmi util/utilities.cmi 
+popcorn/popcompenv.cmi: computil/identifier.cmi popcorn/popcomptypes.cmi \
+    popcorn/popsyntax.cmi popcorn/poptype.cmi talx86/tal.cmi 
+popcorn/popcompile.cmi: popcorn/popsyntax.cmi popcorn/poptype.cmi \
+    talx86/tal.cmi 
+popcorn/popcompilereg.cmi: popcorn/popsyntax.cmi popcorn/poptype.cmi \
+    talx86/tal.cmi 
+popcorn/popcomptypes.cmi: computil/identifier.cmi util/numtypes.cmi \
+    popcorn/popsyntax.cmi talx86/tal.cmi 
+popcorn/popparse.cmi: util/numtypes.cmi popcorn/popsyntax.cmi 
+popcorn/poppeep.cmi: talx86/tal.cmi 
+popcorn/popsyntax.cmi: toplevel/gcdfec.cmi util/numtypes.cmi \
+    util/smallset.cmi 
+popcorn/poptype.cmi: util/dict.cmi popcorn/popsyntax.cmi 
+scheme/sast.cmi: util/numtypes.cmi 
+scheme/scomp.cmi: scheme/sast.cmi scheme/sil.cmi talx86/tal.cmi 
+scheme/sil.cmi: util/numtypes.cmi scheme/sast.cmi 
+scheme/sparse.cmi: util/numtypes.cmi scheme/sast.cmi 

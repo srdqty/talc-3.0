@@ -1,0 +1,50 @@
+#include "core.h"
+open Core;
+
+int a = 1;
+int b = 2;
+*(int) c = ^(3);
+*(int) d = &a;
+
+void f() {
+  return;
+}
+
+exception Foo;
+exception Exit;
+<void>exncon x = Foo;
+
+void pop_main() {
+  print_string("a = ");
+  print_int(a);
+  print_char('\n');
+
+  int d = 2;
+  *(int) e = &a;
+  void g() = &f;
+  *(<void>exncon) xptr = &x;
+
+  while (true) {
+    try {
+      <void>exncon x2 = xptr.1;
+      exn e = ^x2();
+      raise(e);
+    } handle e {
+      switch (e) {
+      case Foo:
+	print_string("caught Foo\n");
+	x = Exit;
+      case Exit:
+	print_string("caught Exit\n");
+	break;
+      default:
+	print_string("oops---some other exception\n");
+      }
+    }
+  }
+  e.1 = 2;
+  print_string("(&c).1.1 = ");
+  print_int((&c).1.1);
+  print_int(e.1);
+  print_char('\n');
+}

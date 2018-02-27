@@ -1,0 +1,24 @@
+// check_inst.pop
+// Check type instantiation.
+
+#include "core.h"
+open Core;
+
+a id<a>(a x) { return x; }
+
+b snd<a,b>(a x, b y) { return y; }
+
+void pop_main()
+{
+ print_int(id(5));
+
+ int f(int) = id@<int>;
+
+ print_int(f(5));
+
+ int f(bool,int) = snd@<bool,int>;
+ 
+ print_int(f(true,2));
+
+ print_newline();
+}

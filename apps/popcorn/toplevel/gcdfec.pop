@@ -1,0 +1,198 @@
+
+// ported by Dan April 1999
+
+// we reveal that loc is int unlike ocaml implementation
+
+// do some clean-up when/if we get sprintf in Popcorn
+
+// didn't port things specific to the Parsing module which we don't have,
+//  namely seg_symbol and seg_rhs.  We might get better errors if we 
+//  had access to this cleaner Parsing interface.
+
+// The caml version doesn't seem to work well with printing contexts either,
+// at least with Popcorn
+
+#include "core.h"
+#include "list.h"
+#include "string.h"
+#include "arg.h"
+
+#include "lineno.h"
+open Core;
+open List;
+open String;
+
+prefix Gcdfec;
+open   Gcdfec;
+
+exception Exit;
+
+/////////// Location tracking///////////
+
+static string source; // initialized by set_ctxt
+abstract struct seg { int s; int e; }
+seg dummy_seg = ^seg{s=0,e=0};
+
+seg seg_of_abs(int start, int end) { return ^seg(start,end); }
+seg seg_join(seg s1, seg s2) { return ^seg(s1.s,s2.e); }
+
+string string_of_loc(int loc) {
+  Lineno::pos pos = Lineno::pos_of_abs(source,loc);
+  return strconcat_l(^list(pos.logical_file, 
+		     ^list("(",
+		     ^list(string_of_int(pos.line_no), 
+		     ^list(":",
+		     ^list(string_of_int(pos.col), 
+		     ^list(")", null)))))));
+}
+
+string string_of_seg(seg segment) {
+  Lineno::pos pos_s = Lineno::pos_of_abs(source,segment.s);
+  Lineno::pos pos_e = Lineno::pos_of_abs(source,segment.e);
+  if (strcmp(pos_s.logical_file,pos_e.logical_file)==0)
+    return strconcat_l(^list(pos_s.logical_file,
+		       ^list("(",
+		       ^list(string_of_int(pos_s.line_no),
+		       ^list(":",
+		       ^list(string_of_int(pos_s.col),
+		       ^list("-",
+		       ^list(string_of_int(pos_e.line_no),
+		       ^list(":",
+		       ^list(string_of_int(pos_e.col), 
+		       ^list(")",null)))))))))));
+  else
+    return strconcat_l(^list(pos_s.logical_file,
+		       ^list("(",
+ 		       ^list(string_of_int(pos_s.line_no),
+		       ^list(":",
+ 		       ^list(string_of_int(pos_s.col),
+		       ^list(")",
+		       ^list("-",
+		       ^list(pos_e.logical_file,
+		       ^list("(",
+		       ^list(string_of_int(pos_e.line_no),
+		       ^list(":",
+		       ^list(string_of_int(pos_e.col), 
+		       ^list(")",null))))))))))))));
+}
+
+///////////// Errors ////////////
+
+union error_kind { void Lex, Parse, Elab; }
+struct error {
+  string     source;
+  seg        segment;
+  error_kind kind;
+  string     desc;
+}
+error mk_err_lex(seg l, string desc) {
+  return ^error(source, l, ^error_kind.Lex, desc);
+}
+error mk_err_parse(seg l, string desc) {
+  return ^error(source, l, ^error_kind.Parse, desc);
+}
+error mk_err_elab(seg l, string desc) {
+  return ^error(source, l, ^error_kind.Elab, desc);
+}
+
+/////////// Error Reporting ///////////
+
+// If there are errors getting stuff from the source file then raise Nocontext
+// and just don't print the source context
+
+exception Nocontext;
+
+
+static string trunc(int n, string s) {
+  int len = size(s);
+  if (len < n) 
+    return s;
+  int len_one = (n-3)/2;
+  int len_two = n-3-len_one;
+  string ans = new_string(n);
+  strncpy(ans, 0,         s,     0,           len_one);
+  strncpy(ans, len_one,   "...", 0,           3);
+  strncpy(ans, len_one+3, s,     len-len_two, len_two);
+  return ans;
+}
+
+static int line_length = 76;
+
+// Produce a one line string that shows the peice of the source file containing
+// the error; return also the column numbers the error starts and finishes at.
+static *(string,int,int) get_context(seg segment) {
+  Lineno::pos pos_s, pos_e;
+  try {
+    pos_s = Lineno::pos_of_abs(source,segment.s);
+    pos_e = Lineno::pos_of_abs(source,segment.e);
+  } handle y
+      raise Nocontext();
+  
+  string sline = pos_s.line;     string eline = pos_e.line;
+  int    sl    = pos_s.line_no;  int    el    = pos_e.line_no;
+  int    sc    = pos_s.col;      int    ec    = pos_e.col;
+  
+  if (sl == el) {
+    // Case 1: error is all on one line, 
+    // give 1/3 of line to before, error, and after
+    int n = line_length / 3;
+    string sec_one   = trunc(n, substring(sline, 0,  sc            ));
+    string sec_two   = trunc(n, substring(sline, sc, ec-sc         ));
+    string sec_three = trunc(n, substring(sline, sc, size(sline)-ec));
+    return ^(strconcat_l(^list(sec_one,
+			 ^list(sec_two,
+			 ^list(sec_three, null)))),
+	     size(sec_one),
+	     size(sec_one)+size(sec_two));
+  }
+  else {
+    // Case 2: error on multiple lines,
+    // give 1/4 to start, start line rror, end line error, and end
+    int n = (line_length-3)/4;
+    string sec_one   = trunc(n, substring(sline, 0,  sc            ));
+    string sec_two   = trunc(n, substring(sline, sc, size(sline)-sc));
+    string sec_three = trunc(n, substring(eline, 0,  ec            ));
+    string sec_four  = trunc(n, substring(eline, ec, size(eline)-ec));
+    return ^(strconcat_l(^list(sec_one,
+			 ^list(sec_two,
+			 ^list(".\\.",
+			 ^list(sec_three,
+			 ^list(sec_four, null)))))),
+	     size(sec_one),
+	     size(sec_one)+size(sec_two)+3+size(sec_three));
+  }
+}
+
+static bool error = false;
+bool error_p() { return error; }
+
+// does this even work when true in ocaml? NO!
+Arg::bool_ref print_context = ^Arg::bool_ref(false); 
+
+exception Error(error);
+
+void post_error(error e) {
+  error = true;
+  // why are we not using the source stored in e????
+  fprintf(tal_stderr, "%s: %s\n", string_of_seg(e.segment), e.desc);
+  if (print_context.v) {
+    try {
+      *(string,int,int) x = get_context(e.segment);
+      string marker_str = new_string(x.3);
+      int i = -1;
+      while (++i < x.2) marker_str[i] = ' ';
+      while (++i < x.3) marker_str[i] = '^';
+      fprintf(tal_stderr, "  %s\n  %s\n", x.1, marker_str);
+    } handle y switch y {
+    case Nocontext: ;
+    default:  raise(y);
+    }
+  }
+  fflush(tal_stderr);
+}
+
+//////////// Overall Control ///////////
+void reset_fe(string s) { source = s; error = false; }
+void set_ctxt(string s) { source = s; error = false; }
+string get_ctxt() { return source; }
+

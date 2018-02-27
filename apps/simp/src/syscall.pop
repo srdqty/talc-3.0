@@ -1,0 +1,783 @@
+
+#include "core.h"
+#include "simp.h"
+#include "sim.h"
+#include "cmisc.h"
+#include "mem.h"
+
+#define ENOMEM          12
+
+/* SIZEOF's in words */
+#define SIZEOF_SS_TIMEVAL 2
+#define SIZEOF_SS_TIMEZONE 2
+#define SIZEOF_SS_RUSAGE 18
+#define SIZEOF_SS_RLIMIT 2
+
+/* SimpleScalar SStrix (a derivative of Ultrix) system call codes, note these
+   codes reside in register $r2 at the point a `syscall' inst is executed,
+   not all of these codes are implemented, see the main switch statement in
+   syscall.c for a list of implemented system calls */
+
+#define SS_SYS_syscall		0
+#define	SS_SYS_exit		1
+#define	SS_SYS_fork		2
+#define	SS_SYS_read		3
+#define	SS_SYS_write		4
+#define	SS_SYS_open		5
+#define	SS_SYS_close		6
+						/*  7 is old: wait */
+#define	SS_SYS_creat		8
+#define	SS_SYS_link		9
+#define	SS_SYS_unlink		10
+#define	SS_SYS_execv		11
+#define	SS_SYS_chdir		12
+						/* 13 is old: time */
+#define	SS_SYS_mknod		14
+#define	SS_SYS_chmod		15
+#define	SS_SYS_chown		16
+#define	SS_SYS_brk		17		/* 17 is old: sbreak */
+						/* 18 is old: stat */
+#define	SS_SYS_lseek		19
+#define	SS_SYS_getpid		20
+#define	SS_SYS_mount		21
+#define	SS_SYS_umount		22
+						/* 23 is old: setuid */
+#define	SS_SYS_getuid		24
+						/* 25 is old: stime */
+#define	SS_SYS_ptrace		26
+						/* 27 is old: alarm */
+						/* 28 is old: fstat */
+						/* 29 is old: pause */
+						/* 30 is old: utime */
+						/* 31 is old: stty */
+						/* 32 is old: gtty */
+#define	SS_SYS_access		33
+						/* 34 is old: nice */
+						/* 35 is old: ftime */
+#define	SS_SYS_sync		36
+#define	SS_SYS_kill		37
+#define	SS_SYS_stat		38
+						/* 39 is old: setpgrp */
+#define	SS_SYS_lstat		40
+#define	SS_SYS_dup		41
+#define	SS_SYS_pipe		42
+						/* 43 is old: times */
+#define	SS_SYS_profil		44
+						/* 45 is unused */
+						/* 46 is old: setgid */
+#define	SS_SYS_getgid		47
+						/* 48 is old: sigsys */
+						/* 49 is unused */
+						/* 50 is unused */
+#define	SS_SYS_acct		51
+						/* 52 is old: phys */
+						/* 53 is old: syslock */
+#define	SS_SYS_ioctl		54
+#define	SS_SYS_reboot		55
+						/* 56 is old: mpxchan */
+#define	SS_SYS_symlink		57
+#define	SS_SYS_readlink		58
+#define	SS_SYS_execve		59
+#define	SS_SYS_umask		60
+#define	SS_SYS_chroot		61
+#define	SS_SYS_fstat		62
+						/* 63 is unused */
+#define	SS_SYS_getpagesize 	64
+#define	SS_SYS_mremap		65
+#define SS_SYS_vfork		66		/* 66 is old: vfork */
+						/* 67 is old: vread */
+						/* 68 is old: vwrite */
+#define	SS_SYS_sbrk		69
+#define	SS_SYS_sstk		70
+#define	SS_SYS_mmap		71
+#define SS_SYS_vadvise		72		/* 72 is old: vadvise */
+#define	SS_SYS_munmap		73
+#define	SS_SYS_mprotect		74
+#define	SS_SYS_madvise		75
+#define	SS_SYS_vhangup		76
+						/* 77 is old: vlimit */
+#define	SS_SYS_mincore		78
+#define	SS_SYS_getgroups	79
+#define	SS_SYS_setgroups	80
+#define	SS_SYS_getpgrp		81
+#define	SS_SYS_setpgrp		82
+#define	SS_SYS_setitimer	83
+#define	SS_SYS_wait3		84
+#define	SS_SYS_wait		SYS_wait3
+#define	SS_SYS_swapon		85
+#define	SS_SYS_getitimer	86
+#define	SS_SYS_gethostname	87
+#define	SS_SYS_sethostname	88
+#define	SS_SYS_getdtablesize	89
+#define	SS_SYS_dup2		90
+#define	SS_SYS_getdopt		91
+#define	SS_SYS_fcntl		92
+#define	SS_SYS_select		93
+#define	SS_SYS_setdopt		94
+#define	SS_SYS_fsync		95
+#define	SS_SYS_setpriority	96
+#define	SS_SYS_socket		97
+#define	SS_SYS_connect		98
+#define	SS_SYS_accept		99
+#define	SS_SYS_getpriority	100
+#define	SS_SYS_send		101
+#define	SS_SYS_recv		102
+#define SS_SYS_sigreturn	103		/* new sigreturn */
+						/* 103 was socketaddr */
+#define	SS_SYS_bind		104
+#define	SS_SYS_setsockopt	105
+#define	SS_SYS_listen		106
+						/* 107 was vtimes */
+#define	SS_SYS_sigvec		108
+#define	SS_SYS_sigblock		109
+#define	SS_SYS_sigsetmask	110
+#define	SS_SYS_sigpause		111
+#define	SS_SYS_sigstack		112
+#define	SS_SYS_recvmsg		113
+#define	SS_SYS_sendmsg		114
+						/* 115 is old vtrace */
+#define	SS_SYS_gettimeofday	116
+#define	SS_SYS_getrusage	117
+#define	SS_SYS_getsockopt	118
+						/* 119 is old resuba */
+#define	SS_SYS_readv		120
+#define	SS_SYS_writev		121
+#define	SS_SYS_settimeofday	122
+#define	SS_SYS_fchown		123
+#define	SS_SYS_fchmod		124
+#define	SS_SYS_recvfrom		125
+#define	SS_SYS_setreuid		126
+#define	SS_SYS_setregid		127
+#define	SS_SYS_rename		128
+#define	SS_SYS_truncate		129
+#define	SS_SYS_ftruncate	130
+#define	SS_SYS_flock		131
+						/* 132 is unused */
+#define	SS_SYS_sendto		133
+#define	SS_SYS_shutdown		134
+#define	SS_SYS_socketpair	135
+#define	SS_SYS_mkdir		136
+#define	SS_SYS_rmdir		137
+#define	SS_SYS_utimes		138
+#define SS_SYS_sigcleanup  	139		/* From 4.2 longjmp */
+                                                /* same as SYS_sigreturn */
+#define	SS_SYS_adjtime		140
+#define	SS_SYS_getpeername	141
+#define	SS_SYS_gethostid	142
+#define	SS_SYS_sethostid	143
+#define	SS_SYS_getrlimit	144
+#define	SS_SYS_setrlimit	145
+#define	SS_SYS_killpg		146
+						/* 147 is unused */
+#define	SS_SYS_setquota		148
+#define	SS_SYS_quota		149
+#define	SS_SYS_getsockname	150
+
+#define SS_SYS_sysmips     	151		/* floating point control */
+
+/* formerly mips local system calls */
+
+#define SS_SYS_cacheflush  	152
+#define SS_SYS_cachectl    	153
+#define SS_SYS_atomic_op   	155
+
+/* nfs releated system calls */
+#define SS_SYS_debug       	154
+
+#define SS_SYS_statfs      	160
+#define SS_SYS_fstatfs     	161
+#define SS_SYS_unmount     	162
+
+#define SS_SYS_quotactl    	168
+/* #define SS_SYS_mount       170 */
+
+#define SS_SYS_hdwconf     	171
+
+/* try to keep binary compatibility with mips */
+
+#define SS_SYS_nfs_svc		158
+#define SS_SYS_nfssvc		158 /* cruft - delete when kernel fixed */
+#define SS_SYS_nfs_biod		163
+#define SS_SYS_async_daemon	163 /* cruft - delete when kernel fixed */
+#define SS_SYS_nfs_getfh	164
+#define SS_SYS_getfh		164 /* cruft - delete when kernel fixed */
+#define SS_SYS_getdirentries	159
+#define SS_SYS_getdomainname	165
+#define SS_SYS_setdomainname	166
+#define SS_SYS_exportfs		169
+
+#define SS_SYS_msgctl		172
+#define SS_SYS_msgget		173
+#define SS_SYS_msgrcv		174
+#define SS_SYS_msgsnd		175
+#define SS_SYS_semctl		176
+#define SS_SYS_semget		177
+#define SS_SYS_semop		178
+#define SS_SYS_uname		179
+#define SS_SYS_shmsys		180
+#define SS_SYS_plock		181
+#define SS_SYS_lockf		182
+#define SS_SYS_ustat		183
+#define SS_SYS_getmnt		184
+#define	SS_SYS_sigpending	187
+#define	SS_SYS_setsid		188
+#define	SS_SYS_waitpid		189
+
+#define	SS_SYS_utc_gettime	233	 /* 233 -- same as OSF/1 */
+#define SS_SYS_utc_adjtime	234	 /* 234 -- same as OSF/1 */
+#define SS_SYS_audcntl		252
+#define SS_SYS_audgen		253
+#define SS_SYS_startcpu		254	 /* 254 -- Ultrix Private */
+#define SS_SYS_stopcpu		255	 /* 255 -- Ultrix Private */
+#define SS_SYS_getsysinfo	256	 /* 256 -- Ultrix Private */
+#define SS_SYS_setsysinfo	257	 /* 257 -- Ultrix Private */
+
+#define MAXBUFSIZE 		1024
+#define NUM_IOCTL_BYTES 128
+prefix Syscall;
+open Syscall;
+
+#define IGNORE(S) fprintf(tal_stderr,"System call ignored: %s\n",S)
+
+int call_count[];
+
+void print_call_count(FILE f) {
+  for(_ i=0; i<size(call_count); i++) {
+    if(call_count[i] != 0) {
+      fprintf(f,"Syscall(%d) called %d times.\n",i,call_count[i]);
+    }
+  }
+}
+
+void init() {
+  call_count = new_array4(512);
+}
+
+
+void call(word inst_a, word inst_b, Sim::register_file rf) {
+  _ gp = rf.gp;
+  _ syscode = gp[|2|];
+
+  // printf("system call = %x = %d\n",syscode,syscode);
+  // fflush(tal_stdout);
+
+  if(syscode < size(call_count) && syscode >= 0) 
+    call_count[syscode]++;
+
+  switch syscode {
+  case SS_SYS_exit: raise(^Simp::Exit(gp[|4|]));
+  case SS_SYS_read: 
+    _ fd = gp[|4|];
+    _ nbytes = gp[|6|];
+  
+    _ buf = Core::new_string(nbytes);
+    
+    _ result = pop_read(fd,buf,nbytes);
+
+    if(result != -1) {
+      gp[|2|] = result; 
+      gp[|7|] = 0;
+    }
+    else {
+      gp[|2|] = errno;
+      gp[|7|] = 1;
+    }
+
+    Mem::bcopy_in(gp[|5|],buf,nbytes);
+
+    case SS_SYS_write: 
+      _ nbytes = gp[|6|];
+      _ buf = Core::new_string(nbytes);
+      _ ss_buf = gp[|5|];
+      Mem::bcopy_out(ss_buf,buf,nbytes);
+
+      _ fd = gp[|4|];
+      _ result = pop_write(fd, buf, nbytes);
+
+      if(result == nbytes) {
+	gp[|2|] = result;
+	gp[|7|] = 0;
+      }
+      else {
+	gp[|2|] = errno;
+	gp[|7|] = 1;
+      }
+  case SS_SYS_open:
+    _ fname = Core::new_string(MAXBUFSIZE);
+    _ ss_flags = gp[|5|];
+    
+    _ num_read = Mem::strcpy_out(gp[|4|],fname);
+
+    _ mode = gp[|6|];
+    _ result = pop_open(fname,ss_flags,mode);
+
+    if(result != -1) {
+      gp[|2|] = result;
+      gp[|7|] = 0;
+    }
+    else {
+      gp[|2|] = errno;
+      gp[|7|] = 1;
+    }
+
+  case SS_SYS_close:
+    _ fd = gp[|4|];
+    
+    if(fd == 0 || fd == 1 || fd == 2) {
+      gp[|7|] = 0;
+      return;
+    }
+    
+    _ result = pop_close(gp[|4|]);
+    
+    if(result != -1) {
+      gp[|2|] = result;
+      gp[|7|] = 0;
+    }
+    else {
+      gp[|2|] = errno;
+      gp[|7|] = 1;
+    }
+    
+    case SS_SYS_creat: 
+      _ fname = Core::new_string(MAXBUFSIZE);
+      
+      Mem::strcpy_out(gp[|4|],fname);
+
+      _ mode = gp[|5|];
+      _ result = pop_creat(fname,mode);
+
+      if(result != -1) {
+	gp[|2|] = result;
+	gp[|7|] = 0;
+      }
+      else {
+	gp[|2|] = errno;
+	gp[|7|] = 1;
+      }
+
+    case SS_SYS_unlink: 
+      _ fname = Core::new_string(MAXBUFSIZE);
+      Mem::strcpy_out(gp[|4|],fname);
+
+      _ result = pop_unlink(fname);
+
+      if(result != -1) {
+	gp[|2|] = result;
+	gp[|7|] = 0;
+      }
+      else {
+	gp[|2|] = errno;
+	gp[|7|] =  1;
+      }
+    case SS_SYS_chdir: 
+      _ fname = Core::new_string(MAXBUFSIZE);
+      
+      Mem::strcpy_out(gp[|4|],fname);
+
+      _ result = pop_chdir(fname);
+      if(result != -1) {
+	gp[|2|] = result;
+	gp[|7|] = 0;
+      }
+      else {
+	gp[|2|] = errno;
+	gp[|7|] = 1;
+      }
+    case SS_SYS_chmod:
+      _ fname = Core::new_string(MAXBUFSIZE);
+      Mem::strcpy_out(gp[|4|],fname);
+
+      _ mode = gp[|5|];
+      _ result = pop_chmod(fname,mode);
+
+      if(result != -1) {
+	gp[|2|] = result;
+	gp[|7|] = 0;
+      }
+      else {
+	gp[|2|] = errno;
+	gp[|7|] = 1;
+      }
+
+  case SS_SYS_chown: 
+    _ fname = Core::new_string(MAXBUFSIZE);
+    Mem::strcpy_out(gp[|4|],fname);
+    
+    _ owner = gp[|5|];
+    _ grp = gp[|6|];
+
+    _ result = pop_chown(fname,owner,grp);
+
+    if(result != -1) {
+      gp[|2|] = result;
+      gp[|7|] = 1;
+    }
+    else {
+      gp[|2|] = errno;
+      gp[|7|] = 1;
+    }
+
+  case SS_SYS_brk: 
+    _ addr = ROUND_UP(gp[|4|],PAGE_SIZE);
+    
+    if(addr >= Mem::mem_break_point && addr < (:unsigned int)gp[|R_SP|]) {
+      gp[|2|] = 0;
+      gp[|7|] = 0;
+      Mem::mem_break_point = addr;
+    }
+    else {
+      // Out of address space.
+      // fprintf(tal_stderr,"Out of memory.\n");
+
+      gp[|2|] = ENOMEM;
+      gp[|7|] = 1;
+    }
+
+    case SS_SYS_lseek: 
+      _ fd = gp[|4|];
+      _ off = gp[|5|];
+      _ dir = gp[|6|];
+
+      _ result = pop_lseek(fd,off,dir);
+      if(result != -1) {
+	gp[|2|] = result;
+	gp[|7|] = 0;
+      }
+      else {
+	gp[|2|] = errno;
+	gp[|7|] = 1;
+      }
+
+    case SS_SYS_getpid: 
+      _ pid = pop_getpid();
+      
+      if(pid != -1) {
+	gp[|2|] = pid;
+	gp[|7|] = 0;
+      }
+      else {
+	gp[|2|] = errno;
+	gp[|7|] = 1;
+      }
+    case SS_SYS_getuid:
+      _ uid = pop_getuid();
+      gp[|3|] = pop_geteuid();
+      
+      if(uid != -1) {
+	gp[|2|] = uid;
+	gp[|7|] = 0;
+      }
+      else {
+	gp[|2|] = errno;
+	gp[|7|] = 1;
+      }
+
+  case SS_SYS_access: 
+    _ fname = Core::new_string(MAXBUFSIZE);
+    Mem::strcpy_out(gp[|4|],fname);
+    
+    _ mode = gp[|5|];
+    _ result = pop_access(fname,mode);
+    if(result != -1) {
+      gp[|2|] = result;
+      gp[|7|] = 0;
+    } 
+    else {
+      gp[|2|] = errno;
+      gp[|7|] = 1;
+    }
+
+  case SS_SYS_stat: ;
+    _ buf = ^({:unsigned int});
+    _ fname = Core::new_string(MAXBUFSIZE);
+
+    Mem::strcpy_out(gp[|4|],fname);
+
+    _ result = pop_stat(fname,buf);
+    
+    if(result != -1) {
+      gp[|2|] = result;
+      gp[|7|] = 0;
+    }
+    else {
+      gp[|2|] = errno;
+      gp[|7|] = 1;
+    }
+    
+    Mem::wcopy_in(gp[|5|],buf.1,size(buf.1));
+
+  case SS_SYS_lstat: ;
+    _ buf = ^({:unsigned int});
+    _ fname = Core::new_string(MAXBUFSIZE);
+    
+    Mem::strcpy_out(gp[|4|],fname);
+    
+    _ result = pop_lstat(fname,buf);
+    
+    if(result != -1) {
+      gp[|2|] = result;
+      gp[|7|] = 0;
+    }
+    else {
+      gp[|2|] = errno;
+      gp[|7|] = 1;
+    }
+    
+    Mem::wcopy_in(gp[|5|],buf.1,size(buf.1));
+
+    case SS_SYS_dup:
+      _ fd = gp[|4|];
+      _ result = pop_dup(fd);
+
+      if(result != -1) {
+	gp[|2|] = result;
+	gp[|7|] = 0;
+      }
+      else {
+	gp[|2|] = errno;
+	gp[|7|] = 1;
+      }
+  case SS_SYS_pipe:
+    _ fd = { (:word) 0, 0 };
+    
+    Mem::wcopy_out(gp[|4|],fd,size(fd));
+
+    _ new_pipe = pop_pipe(fd);
+    
+    gp[|2|] = fd[0];
+    gp[|3|] = fd[1];
+    
+    if(new_pipe != -1) {
+      gp[|7|] = new_pipe;
+    }
+    else {
+      gp[|2|] = errno;
+      gp[|7|] = 1;
+    }
+
+  case SS_SYS_getgid: 
+    _ result = pop_getgid();
+    gp[|3|] = pop_getegid();
+
+    if(result != -1) {
+      gp[|2|] = result;
+      gp[|7|] = 0;
+    }
+    else {
+      gp[|2|] = errno;
+      gp[|7|] = 1;
+    }
+
+  case SS_SYS_ioctl: 
+    _ ss_ioctl = gp[|5|];
+    // Copy NUM_IOCTL_BYTES out of the simulator.
+
+    if(NUM_IOCTL_BYTES % 4 != 0) {
+      FAIL("NUM_IOCTL_BYTES not a multiple of four!");
+    }
+
+    _ buf_addr = gp[|6|];
+    _ buf = new_array(NUM_IOCTL_BYTES/4,(:word)0);
+    
+    if(buf_addr != 0) 
+      Mem::wcopy_out(buf_addr,buf,NUM_IOCTL_BYTES/4);
+    
+    _ result = pop_ioctl(ss_ioctl,gp[|4|],buf);
+
+    if(buf_addr != 0) {
+      Mem::wcopy_in(buf_addr,buf,NUM_IOCTL_BYTES/4);
+    }
+
+    if(result != -1) {
+      gp[|2|] = result;
+      gp[|7|] = 0;
+    }
+    else {
+      gp[|2|] = errno;
+      gp[|7|] = 1;
+    }
+
+  case SS_SYS_fstat: 
+    _ buf = ^({:unsigned int});
+    _ result = pop_fstat(gp[|4|],buf);
+    
+    if(result != -1) {
+      gp[|2|] = result;
+      gp[|7|] = 0;
+    }
+    else {
+      gp[|2|] = errno;
+      gp[|7|] = 1;
+    }
+			 
+    Mem::wcopy_in(gp[|5|],buf.1,size(buf.1));
+
+   case SS_SYS_getpagesize: ;
+     gp[|2|] = PAGE_SIZE;
+     gp[|7|] = 0;
+
+  case SS_SYS_setitimer: // Ignored.
+    IGNORE("setitimer");
+    gp[|2|] = 0; gp[|7|] = 0;
+  case SS_SYS_getdtablesize: // Ignored.
+    IGNORE("getdtablesize");
+    gp[|2|] = 16; gp[|7|] = 0;
+  case SS_SYS_dup2: 
+    _ fd1 = gp[|4|];
+    _ fd2 = gp[|5|];
+
+    _ result = pop_dup2(fd1,fd2);
+
+    if(result != -1) {
+      gp[|2|] = result;
+      gp[|7|] = 0;
+    }
+    else {
+      gp[|2|] = errno;
+      gp[|7|] = 1;
+    }
+  case SS_SYS_fcntl: 
+    _ fd = gp[|4|];
+    _ cmd = gp[|5|];
+    _ arg = gp[|6|];
+
+    _ result = pop_fcntl(fd,cmd,arg);
+    
+    if(result != -1) {
+      gp[|2|] = result;
+      gp[|7|] = 0;
+    }
+    else {
+      gp[|2|] = errno;
+      gp[|7|] = 1;
+    }
+
+  case SS_SYS_sigvec: // Ignored.
+    IGNORE("sigvec");
+    gp[|2|] = 0; gp[|7|] = 0;
+  case SS_SYS_sigblock: // Ignored.
+    IGNORE("sigblock");
+    gp[|2|] = 0; gp[|7|] = 0;
+  case SS_SYS_sigsetmask: // Ignored.
+    IGNORE("sigsetmask");
+    gp[|2|] = 0; gp[|7|] = 0;
+    case SS_SYS_gettimeofday: 
+
+      _ ss_timeval_ptr = gp[|4|];
+      _ ss_timezone_ptr = gp[|5|];
+
+      _ ss_timeval;
+      if(ss_timeval_ptr == 0) ss_timeval = {: word };
+      else {
+	ss_timeval = new_array4u(SIZEOF_SS_TIMEVAL);
+	Mem::wcopy_out(ss_timeval_ptr,ss_timeval,SIZEOF_SS_TIMEVAL);
+      }
+
+      _ ss_timezone;
+      if(ss_timezone_ptr == 0) ss_timezone = {: word};
+      else {
+	ss_timezone = new_array4u(SIZEOF_SS_TIMEZONE);
+	Mem::wcopy_out(ss_timezone_ptr,ss_timezone,SIZEOF_SS_TIMEZONE);
+      }
+
+      _ result = pop_gettimeofday(ss_timeval,ss_timezone);
+
+      if(ss_timeval_ptr != 0) 
+	Mem::wcopy_in(ss_timeval_ptr,ss_timeval,SIZEOF_SS_TIMEVAL);
+      if(ss_timezone_ptr != 0) 
+	Mem::wcopy_in(ss_timezone_ptr,ss_timezone,SIZEOF_SS_TIMEZONE);
+
+      if(result != -1) {
+	gp[|2|] = result;
+	gp[|7|] = 0;
+      }
+      else {
+	gp[|2|] = errno;
+	gp[|7|] = 1;
+      }
+    case SS_SYS_getrusage:
+      
+      _ rusage = new_array4u(SIZEOF_SS_RUSAGE);
+
+      _ who = gp[|4|];
+      _ rusage_p = gp[|5|];
+      
+      _ result = pop_getrusage(who,rusage);
+
+      Mem::wcopy_in(rusage_p,rusage,SIZEOF_SS_RUSAGE);
+
+      if(result != -1) {
+	gp[|2|] = result;
+	gp[|7|] = 0;
+      }
+      else {
+	gp[|2|] = errno;
+	gp[|7|] = 1;
+      }
+
+    //case SS_SYS_writev: ;
+      // XXX writev is a total pain to implement.  Let's hope we don't need it.
+    case SS_SYS_utimes:
+      _ fname = Core::new_string(MAXBUFSIZE);
+      Mem::strcpy_out(gp[|4|],fname);
+
+      _ timeout = gp[|5|];
+      _ timevals = new_array4u(2 * SIZEOF_SS_TIMEVAL);
+
+      Mem::wcopy_out(timeout,timevals,2 * SIZEOF_SS_TIMEVAL);
+
+      _ result = pop_utimes(fname,timevals);
+
+      if(result != -1) {
+	gp[|2|] = result;
+	gp[|7|] = 0;
+      } 
+      else {
+	gp[|2|] = errno;
+	gp[|7|] = 1;
+      }
+
+    case SS_SYS_getrlimit: 
+      _ rlimit_buf = new_array4u(SIZEOF_SS_RLIMIT);
+      _ rlimit = gp[|5|];
+
+      Mem::wcopy_out(rlimit,rlimit_buf,SIZEOF_SS_RLIMIT);
+
+      _ result = pop_getrlimit(gp[|4|],rlimit_buf);
+
+      Mem::wcopy_in(rlimit,rlimit_buf,SIZEOF_SS_RLIMIT);
+
+      if(result != -1) {
+	gp[|2|] = result;
+	gp[|7|] = 0;
+      }
+      else {
+	gp[|2|] = errno;
+	gp[|7|] = 1;
+      }
+      
+    case SS_SYS_setrlimit:
+      _ rlimit_buf = new_array4u(SIZEOF_SS_RLIMIT);
+      _ rlimit = gp[|5|];
+
+      Mem::wcopy_out(rlimit,rlimit_buf,SIZEOF_SS_RLIMIT);
+
+      _ result = pop_setrlimit(gp[|4|],rlimit_buf);
+
+      Mem::wcopy_in(rlimit,rlimit_buf,SIZEOF_SS_RLIMIT);
+
+      if(result != -1) {
+	gp[|2|] = result;
+	gp[|7|] = 0;
+      }
+      else {
+	gp[|2|] = errno;
+	gp[|7|] = 1;
+      }
+    //case SS_SYS_getdirentries: ;
+  default:
+    fprintf(tal_stderr,"Encountered unimplemented system call %d.\n",syscode);
+    FAIL("Unimplemented system call.");
+  }
+}

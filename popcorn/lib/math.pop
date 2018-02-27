@@ -1,0 +1,82 @@
+
+prefix Math;
+open Math;
+
+/* These values will never be used.  Unlike regular global variables
+   their address cannot be taken. */
+double pi = 0.0lf;
+double log2_e = 0.0lf;
+double log2_10 = 0.0lf;
+double loge_2 = 0.0lf;
+double log10_2 = 0.0lf;
+
+// These are regular constants.  Once we support constant expressions at the
+// top level they can be appropriately defined.
+double pos_inf = 0.0lf;
+double neg_inf = 0.0lf;
+
+/* Trignometric arguments in radians. */
+/* These definitions don't look right but they are!  The compiler replaces calls
+   to these functions with builtin operators when they occur in a function call
+   position.  So these magically get expanded to the right thing. */
+double cos(double a) {
+  return cos(a);
+}
+
+double sin(double a) {
+  return sin(a);
+}
+
+double atan(double x, double y) {
+  return atan(x,y);
+}
+
+double tan(double a) {
+  return tan(a);
+}
+
+double sqrt(double x) {
+  return sqrt(x);
+}
+
+/* I don't know what these are for but the processor has them native. */
+/* log ( y * log_2 x) */
+double fyl2x(double y, double x) {
+  return fyl2x(y,x);
+}
+
+/* log epsilon (y * log_2 (x + 1)) */
+double fyl2xp1(double y, double x) {
+  return fyl2xp1(y,x);
+}
+
+/* x should be in the range -1.0 to 1.0 */
+/* Returns 2^x - 1 */
+double f2xm1(double x) {
+  return f2xm1(x);
+}
+
+double fabs(double f) {
+  return fabs(f);
+} 
+
+double frem(double x, double y) {
+  return frem(x,y);
+}
+
+double fround(double x) {
+  return fround(x);
+}
+
+double floor(double x) {
+  double z = fround(x);
+  if(z>x) z = z - 1.0;
+
+  return z;
+}
+
+double frac(double x) {
+  double y = frem(x,1.0);
+  if(y < 0.0) return (y + 1.0);
+  else return (y);
+}

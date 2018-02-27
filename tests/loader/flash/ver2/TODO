@@ -1,0 +1,40 @@
+Popgenpatch:
+- Not dealing with global data correctly, static or otherwise.  Just like
+  static functions, the routines within the file that global variables are
+  declared in refer to that data directly, but the new version of the
+  file will not.  The same goes with all sharing constraints, which breaks
+  our invariant.  Options:
+
+  - Eliminate sharing statements.  New versions of unchanged functions,
+    data, etc., will nonetheless be changed in the symbol table.  These
+    will override the old values with
+    - equivalent functions
+    - different data.  The new data will have to be set, perhaps in the
+      init function, with the old value.  This could be generated
+      automatically in popgenpatch, in the case that the type of 
+      the data didn't change.
+    As an optimization, we can include sharing statements for those
+    functions that are not referred to by other functions in the
+    new version of the file.
+
+    In popgenpatch, we look at each element F of the sharing list.  If
+    it has function type, just remove it.  Otherwise, remove it, and
+    add the statement New::F = F; to the init function, in the case that
+    it's global, otherwise generate the proper massaging of the local
+    names F' and G and add the statement New::G = F'. (F' doesn't always
+    equal G, since the filenames being compared may be different.)
+    Also need to include proper extern statements for each of the
+    old variables.
+
+  - Add an extra indirection for values in the current module that are
+    exported.  Thus, we can use sharing for these global variables.  For
+    static variables, we cannot share, to preserve the invariant.  The
+    solution above then applies.
+
+    The advantage here would appear to be less memory consumed.  IN
+    principle, though, the old version should be immediately removed
+    from the symbol table, making it unreachable, and therefore it
+    should be collected.
+
+- Don't bother with the asynchronous file stat for now---add that in
+  as the next optimization.

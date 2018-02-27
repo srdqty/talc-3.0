@@ -1,0 +1,116 @@
+Doing the first update: name translation cache
+
+Testing-
+- make sure the connection is properly discarded, the file descriptor
+  for reading the data is closed, etc.  Will have to stick in prints
+  for this.
+- try reading in files from directories
+  X valid subdirectory
+  - pathnames with ..
+    XXX this doesn't seem to work properly with flash (check 
+    Penn server): dir/../file.  Seems to just truncate the ..'s.  This
+    would make sense to prevent nastiness with symlinked directories
+- try reading in symlinked files
+  X file in the local directory
+  X directory in the local directory
+  X file within the accessible file structure
+  X that have absolute path into the flash directory
+  X absolute path outside the current directory
+X try automatic decoding of index.html
+- try some error conditions
+  - symlinked files 
+    X below the current directory (uses ..)
+  X non-existant files
+  X inaccessible files (bad permissions)
+
+----------
+
+List of files I'ved ported
+ - main.c
+   - missing a lot of command-line parameters
+ - libhttp.c
+   - DiffTime
+ - loop.c
+   - printMainStats
+   - flushAccessLog
+   - DoAccessLogging
+ - common.c
+   - GetField
+   - GetWord
+   - ScanOptions
+   - ReadSummaryFile
+   - OpenAnyFileBackend
+   - OpenAnyFile
+   - CloseAnyFile
+   - OpenTraceFile
+   - CloseTraceFile
+   - StripSuffix
+   - DoesSuffixMatch
+ - timer.c
+ - cold.c
+   - CGIStuff
+   - in general, CGI calls are commented out, and truncated
+     version of "HotNames" are used.  Also don't do any logging.
+ - nameconvert.c
+   - TildeMap stuff is not really implemented, but it doesn't
+     appear to work in the actual Flash stuff either
+ - match.c
+ - accept.c
+   - again, minus some CGI stuff
+ - tdate_parse.c
+ - readreq.c
+   - MakeContentDataIOV (part of CGI?)
+ - datacache.c
+   - replaced with data.c.  Eliminated stuff relating to caching.
+ - hotfile.c
+   - replaced with file.c  Eliminated name caching stuff
+ - hotname.c
+   - replaced with name.c.  Again, missing some stuff.
+
+Left to do:
+ - cgi.c
+ - convert_master.c
+ - convert_slave.c
+ - dir_master.c
+ - dir_slave.c
+ - dummycgi.c
+ - gscgi.c
+ - read_master.c
+ - read_slave.c
+
+---
+
+Come up with a non-allocation version of sprintf.  Possible versions:
+
+1) function that takes a format string with only %s's, and a single
+   argument which is a list of strings.  Will construct a string
+   using a Buffer object that is passed in.  The user must therefore
+   convert non-string arguments to strings (like by using int_to_string).
+
+   The drawbacks here are:
+   - allocation of the list in the argument list
+   - allocation in functions like int_to_string
+   - having to do a "substring" to grab the contents from a buffer.
+   - parsing of the arguments occurs at runtime
+
+2) Do everything by hand, like the expansion of sprintf in the parser
+   but with less allocation.  In particular, don't do a strconcat; instead
+   use a buffer type and incrementally add the strings to the buffer.
+
+   This improves on 1) in that we don't have to allocate the argument
+   list, and the parsing of the arguments occurs at compile time, so
+   we construct the correctly-sized static strings.
+
+--
+
+Make a print function for buffers.  This way we can print less than
+we need to.  Consider adding unixlib functions on buffers as well.
+   
+--
+
+In cases where we construct a single, large buffer and then do a unix_write,
+consider instead:
+
+1) a writev, stringing all of the strings together
+2) a series of individuals writes.  Since TCP is a stream protocol, there
+   shouldn't be any need for packet boundaries.

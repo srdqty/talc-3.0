@@ -1,0 +1,24 @@
+fun ack(count:int, where:host) : unit = 
+  (print ("--> ACK ");
+   print (where);
+   print (" (");
+   print (count);
+   print(", ");
+   print (getRB());
+   print(") "))
+
+fun traceroute (source:host, destination:host, count:int) : unit =
+  (OnRemote(|ack|(count, thisHost()),
+           source, count, defaultRoute);
+  if (thisHostIs (destination)) then ()
+  else
+    let val nextdev:host * dev = defaultRoute(destination) in
+      OnNeighbor (|traceroute|(source, destination, count),
+                  fst nextdev, getRB(), snd nextdev)
+    end)
+
+val entry_fun  : unit = "traceroute"
+val entry_args : unit = ["cyclone:4001"; "cyclone:4009"; 4]
+val entry_src  : unit = "cyclone:4001"
+val entry_eval : unit = "cyclone:4001"
+val entry_rb   : unit = 20

@@ -1,0 +1,38 @@
+#include "core.h"
+open Core;
+
+void pop_main()
+{
+  int i = 0;
+  int len = 6;
+
+  int f() =
+      codegen(int spec()
+	    {
+	      int res = 1;
+	      
+	      /* dump */
+	      cut
+                while(i < len) {
+	      /* */
+		  splice (res = res + 10);
+	      /* dump */
+		  splice {res = res + 100;
+	      /* dump */
+			  cut i++;
+	      /* */
+                          res = res + 1000;
+                         }
+	      /* dump */
+		  i++;
+	        }
+	      /* */
+	      return res;
+	      /* dump */
+	    });
+
+  print_int(f());
+  print_newline();
+  return;
+}
+

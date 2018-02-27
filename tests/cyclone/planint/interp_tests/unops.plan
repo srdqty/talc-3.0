@@ -1,0 +1,10 @@
+(* tests some unary operators *)
+(* output: ( -1, ( 1, ( [ 2; 3 ], ( 4, false ) ) ) ) *)
+fun test1() : unit = 
+  let val x : unit = ((1,2),4)
+      val m : unit = [1;2;3]
+  in
+      (~(fst (fst x)),(hd m,(tl m,(snd x,not true))))
+  end 
+
+val entry_fun       : unit = "test1"

@@ -1,0 +1,58 @@
+(* this program tests delivery of large data to an application *)
+
+(* ('a list,'a list) -> 'a list *)
+fun append(i,i2) =
+  let fun cons (i, l) =
+    i::l
+  in
+  foldr(cons,i,i2)
+  end  
+
+(* 'a list -> 'a list *)
+fun doubleList(i) =
+  (print("Doubling list length "); print(length(i));
+  append (i, i))
+
+(* () -> int list *)
+fun bigList() =
+  let val i = [ 100323; 98024; 3091423; 982034 ]
+      val i = doubleList(i)
+      val i = doubleList(i)
+      val i = doubleList(i)
+      val i = doubleList(i)
+      val i = doubleList(i)
+      val i = doubleList(i)
+      val i = doubleList(i)
+      val j = doubleList(i)
+      val i = doubleList(j)
+      val i = doubleList(i)
+      val foo = print("Adding 1024 to list") 
+      val i = append (j, i) (* 5020 *)
+      val foo = print("Adding 1024 to list") 
+      val i = append (j, i) (* 6044 *)
+      val foo = print("Adding 1024 to list") 
+      val i = append (j, i) (* 7068 *)
+  in i end
+
+svc openPort : int -> port
+svc deliver : (port,'a) -> unit
+svc closePort : port -> unit
+svc OpenFailed : exn
+
+fun toApp(num,i) =
+  (* try *)
+    let val m = openPort(num)
+    in
+      (deliver(m,i); closePort(m))
+    end
+
+fun stuff(num) =
+  toApp(num,bigList())
+
+(* defined in udp_deliver.plan *)
+svc udp_deliver : (host,'a chunk) -> unit
+
+fun sendIt(dest,num) =
+  let val i = bigList() in
+    udp_deliver(dest,|toApp|(num,i))
+  end

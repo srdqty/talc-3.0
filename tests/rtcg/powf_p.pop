@@ -1,0 +1,31 @@
+#include "poptiming.h"
+#include "core.h"
+open Core;
+
+double simple_pow(int n, double x) {
+  double result = 1;
+  while(n!=0) {
+    result *=x;
+    --n;
+  }
+
+  return result;
+}
+
+void pop_main() {
+  string args[] = std_args();
+  if(size(args)!=2) {
+    printf("%s: usage <exponent>\n",args[0]);
+    return;
+  }
+
+  int exp = int_of_string(args[1]);
+  double result = 0;
+  double x = 0.8;
+
+  MAIN_TEST("powf",COMPILER,PLAIN_KIND,args[1],0,simple_pow(exp,x));
+
+  result = simple_pow(exp,x);
+  printf("exponent = %d, result = %g\n",exp,result);
+  output_timers(string_to_Cstring("pow.log"));
+}

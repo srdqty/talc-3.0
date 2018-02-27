@@ -1,0 +1,85 @@
+- file updated: 10/14/99
+- timings represent 1,000,000 runs
+
+-------------------------------------------------------------------------------
+Interpret1
+-------------------------------------------------------------------------------
+
+(LINUX) 233MHz P2, 64MB -------------------------------------------------------
+
+Program #1 (60 instructions, mostly load/store)
+
+  [Popcorn]             Time: 12080 msec
+  [gcc -O3]             Time:  4010 msec   (-O0:  7180 msec)
+  [Tempo CT -O3]        Time:       msec   (-O0:   msec)
+
+Program #2 (63 instructions, mostly arithmetic)
+
+  [Popcorn]             Time:  11610 msec
+  [gcc -O3]             Time:   3540 msec  (-O0:  7070 msec)
+  [Tempo CT -O3]        Time:        msec  (-O0:   msec)
+
+Program #3 (54 instructions, triple nested loop)
+
+  [Popcorn]             Time:  67940 msec
+  [gcc -O3]             Time:  25910 msec  (-O0: 42180 msec)
+  [Tempo CT -O3]        Time:        msec  (-O0: )
+
+Program #4 (66 instructions, three sequential loops)
+
+  [Popcorn]             Time:  69920 msec
+  [gcc -O3]             Time:  26180 msec  (-O0: 42430 msec)
+  [Tempo CT -O3]        Time:        msec  (-O0: )
+
+Program #5 (22 instructions, factorial)
+
+  [Popcorn]             Time: 1950 msec
+  [gcc -O3]             Time:  800 msec    (-O0: 1240 msec)
+  [Tempo CT -O3]        Time:      msec    (-O0: )
+
+-------------------------------------------------------------------------------
+Interpret3
+-------------------------------------------------------------------------------
+
+(LINUX) 233MHz P2, 64MB -------------------------------------------------------
+
+Program #1 (60 instructions, mostly load/store)
+
+  [Popcorn]         Time: 15580 msec
+  [Cyclone]         DNW
+  [gcc]             Time:  8110 msec (-O0:  11980 msec)
+  [Tempo CT]        Time:   310 msec (-O0:    600 msec)
+  [Tempo RT]        Time:   DNW msec (-O0:  15320 msec)
+
+Program #2 (63 instructions, mostly arithmetic)
+
+  [Popcorn]         Time:  15910 msec
+  [Cyclone]         DNW
+  [gcc]             Time:   8250 msec  (-O0:  12920 msec)
+  [Tempo CT]        Time:    410 msec  (-O0:   1100 msec)
+  [Tempo RT]        Time:    DNW msec  (-O0:  16450 msec)
+
+Program #3 (54 instructions, triple nested loop)
+
+  [Popcorn]         Time:  90950 msec
+  [Cyclone]         DNW
+  [gcc]             Time:  45850 msec  (-O0: 72590 msec)
+  [Tempo CT]        Time:   2070 msec  (-O0:  2990 msec)
+  [Tempo RT]        DNW
+
+
+Program #4 (66 instructions, three sequential loops)
+
+  [Popcorn]         Time:  95180 msec
+  [Cyclone]         DNW
+  [gcc]             Time:  47330 msec  (-O0: 76890 msec)
+  [Tempo CT]        Time:   2170 msec  (-O0:  3380 msec)
+  [Tempo RT]        DNW
+
+Program #5 (22 instructions, factorial)
+
+  [Popcorn]         Time:   2390 msec
+  [Cyclone]         DNW
+  [gcc]             Time:   1440 msec  (-O0: 1790 msec)
+  [Tempo CT]        Time:    120 msec  (-O0:  170 msec)
+  [Tempo RT]        DNW

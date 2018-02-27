@@ -1,0 +1,111 @@
+#include "core.h"		/* printf(), file_open(), etc. */
+#include "string.h"		/* Cyclone strings */
+#include "tal_sockets.h"	/* Cyclone sockets */
+#include "arg.h"
+
+#define list List::list
+
+<FILE> list wait_fds;  /* File descriptors waited on (by select) */
+<FILE> list ready_fds; /* File descriptors (read) ready to process */
+FILE cli_sock;
+
+/*
+ *  STREAM
+ */
+void stream_sr(FILE sockfd, sockaddr cli_addr_un, string print_str)
+{
+  /* connect */
+  tal_connect(sockfd, cli_addr_un);
+
+  /* send */
+  sock_send(sockfd, print_str);
+
+  /* read */
+  printf("proc_ready_fds: %s\n", sock_read(sockfd));
+}
+
+void unix_stream_cli()
+{
+  printf("PF_UNIX, SOCK_STREAM\n");
+
+  /* socket */
+  cli_sock = tal_socket(^socket_domain.PF_UNIX,^socket_type.SOCK_STREAM, 0);
+
+  stream_sr(cli_sock, 
+	    ^sockaddr.ADDR_UNIX("/tmp/serversockpath"), 
+	    "unix_stream\n");
+}
+
+void inet_stream_cli()
+{
+  printf("PF_INET, SOCK_STREAM\n");
+
+  /* socket */
+  cli_sock = tal_socket(^socket_domain.PF_INET,^socket_type.SOCK_STREAM, 0);
+
+  stream_sr(cli_sock, 
+	    ^sockaddr.ADDR_INET(^(tal_gethostbyname("cyclone"), 4000)),
+	    "inet_stream\n");
+}
+
+/*
+ * DATAGRAM
+ */
+
+void dgram_sr(FILE sock_fd, sockaddr serv_addr, string print_str)
+{
+  *(int, sockaddr) recv_pair;
+  string str = Core::new_string(100);
+
+  tal_sendto(sock_fd, print_str, serv_addr);
+
+  recv_pair = tal_recvfrom(sock_fd, str, ^sockaddr.ADDR_NULL);
+  printf("dgram_sr: %s\n", str);
+}
+
+void unix_dgram_cli()
+{
+  string tmp_filename;
+
+  printf("PF_UNIX, SOCK_DGRAM\n");
+
+  /* socket */
+  cli_sock = tal_socket(^socket_domain.PF_UNIX,^socket_type.SOCK_DGRAM, 0);
+
+  /* bind */
+  tmp_filename = tal_tmpnam();
+  tal_bind(cli_sock, ^sockaddr.ADDR_UNIX(tmp_filename));
+
+  dgram_sr(cli_sock,
+	   ^sockaddr.ADDR_UNIX("/tmp/serversockpath"),
+	   "unix_dgram\n");
+
+  tal_unlink(tmp_filename);
+  return;
+}
+
+void inet_dgram_cli()
+{
+  printf("PF_INET, SOCK_DGRAM\n");
+
+  dgram_sr(tal_socket(^socket_domain.PF_INET,^socket_type.SOCK_DGRAM, 0),
+	   ^sockaddr.ADDR_INET(^(tal_gethostbyname("cyclone"), 4000)),
+	   "inet_dgram\n");   
+}
+
+void pop_main()
+{
+  string argv[] = std_args();	/* command line arguments */
+  
+  if (size(argv) == 2)  {
+    if (Core::strcmp(argv[1], "1") == 0)
+      unix_stream_cli();
+    else if (Core::strcmp(argv[1], "2") == 0)
+      inet_stream_cli();
+    else if (Core::strcmp(argv[1], "3") == 0)
+      unix_dgram_cli();
+    else if (Core::strcmp(argv[1], "4") == 0)
+      inet_dgram_cli();
+  } else
+    printf("ERROR main\n");
+}

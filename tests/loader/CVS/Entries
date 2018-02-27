@@ -1,0 +1,36 @@
+/Makefile/1.29/Tue Nov 21 02:16:06 2000//
+/TODO/1.18/Sun Jan  7 17:05:24 2001//
+/bootstrap_test.pop/1.2/Sat Oct 13 17:18:54 2001//
+/bootstrapped.pop/1.1/Fri May 26 22:04:10 2000//
+/call.pop/1.1/Mon Nov 15 15:49:20 1999//
+/cc.h/1.1/Mon Nov 15 15:49:20 1999//
+/dyncall.pop/1.4/Sat Oct 13 17:18:54 2001//
+/even.pop/1.2/Wed Sep 27 18:53:52 2000//
+/foo.pop/1.3/Mon Apr 10 15:43:30 2000//
+/gen.pop/1.1/Tue Nov 30 22:55:34 1999//
+/gen_add1.pop/1.4/Mon Mar  6 17:33:52 2000//
+/gen_add2.pop/1.2/Thu Feb 10 19:29:36 2000//
+/gen_add_call.pop/1.7/Sat Oct 13 17:18:54 2001//
+/gen_call.pop/1.5/Sat Oct 13 17:18:54 2001//
+/lr.pop/1.1/Mon Mar 20 22:26:18 2000//
+/mutual_call.pop/1.2/Sat Oct 13 17:18:54 2001//
+/odd.pop/1.2/Wed Sep 27 18:53:52 2000//
+/pentium_cc_stub.c/1.1/Mon Nov 15 15:49:20 1999//
+/poploader_test.pop/1.2/Sun Jan  7 17:05:24 2001//
+/rdtsr.S/1.1/Mon Nov 15 15:49:20 1999//
+/s.pop/1.6/Sun Nov  7 01:38:40 1999//
+/s2.pop/1.6/Sun Nov  7 23:55:10 1999//
+/sample.out/1.15/Wed Sep 27 18:53:52 2000//
+/simp.pop/1.10/Mon Apr 10 15:43:30 2000//
+/simphand.pop/1.7/Sat Oct 13 17:18:54 2001//
+/simple.pop/1.3/Fri Dec  3 22:59:22 1999//
+/simple2.pop/1.2/Mon Oct 25 15:39:50 1999//
+/simple3.pop/1.1/Mon Oct 25 15:39:50 1999//
+/simple_call.pop/1.10/Sat Oct 13 17:18:54 2001//
+/simple_callhand.pop/1.3/Sat Oct 13 17:18:54 2001//
+/test.pop/1.4/Tue Oct 26 19:08:24 1999//
+/test2.pop/1.2/Tue Oct 26 19:08:24 1999//
+D/flash////
+D/pop_load////
+D/saved_objfiles////
+D/updating////

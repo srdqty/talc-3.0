@@ -1,0 +1,83 @@
+// hashtest.pop
+// tests the basic hashtable operations
+
+#include "core.h"
+#include "hashtable.h"
+open Hashtable;
+open Core;
+
+#define ELEM1 "hello"
+#define ELEM2 "hello1"
+#define ELEM3 "bob"
+
+void add_elems(<string,int>table t) {
+  insert(t,ELEM1,1);
+  insert(t,ELEM2,2);
+  insert(t,ELEM3,3);
+}
+
+void lookup_elems(<string,int>table t) {
+  int v = lookup(t,ELEM1);
+  printf("%s --> %d\n",ELEM1,v);
+  v = lookup(t,ELEM2);
+  printf("%s --> %d\n",ELEM2,v);
+  v = lookup(t,ELEM3);
+  printf("%s --> %d\n",ELEM3,v);
+}
+
+void pop_main()
+{
+  <string,int>table t = create(4,strcmp,hash_string);
+
+  // add some elements and look them up
+  add_elems(t);
+  lookup_elems(t);
+  print_table_map(t,print_string,print_int);
+  print_newline();
+
+  remove(t,ELEM1);
+  print_table_map(t,print_string,print_int);
+  print_newline();
+  insert(t,ELEM1,1);
+
+  // try to overfill the table
+  insert(t,ELEM1,2);
+  insert(t,ELEM1,3);
+  insert(t,ELEM1,4);
+  print_table_map(t,print_string,print_int);
+
+  // see if everything still there
+  lookup_elems(t);
+
+  // blow away extra hello's
+  remove(t,ELEM1);
+  remove(t,ELEM1);
+  remove(t,ELEM1);
+  print_table_map(t,print_string,print_int);
+  print_newline();
+
+  // remove and re-add last hello
+  remove(t,ELEM1);
+  print_table_map(t,print_string,print_int);
+
+  // make sure not there
+  try {
+    lookup(t,ELEM1);
+    printf("%s is still present: BAD!\n",ELEM1);
+  } handle e { switch e {
+    case Not_found: {
+      printf("%s is missing: OK\n",ELEM1);
+    }
+    default:
+      print_string ("Unknown exception raised\n");
+    }
+  }
+
+  insert(t,ELEM1,2);
+  print_table_map(t,print_string,print_int);
+  print_newline();
+
+  // see if everything still there
+  lookup_elems(t);
+}
+

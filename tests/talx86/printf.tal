@@ -1,0 +1,127 @@
+; TAL IMPLEMENTATION printf
+	INCLUDE	TAL.INC
+	_begin_TAL
+	
+
+	TAL_IMPORT	tal.tali
+	TAL_IMPORT	printf_i.tali
+
+	TAL_EXPORT	printf_e.tali
+
+	KIND 	<unit = *[] >
+
+	;  int, double, string
+	KIND	<P = +[unit, unit, unit]> 	; Printable
+	RECKIND	<Pl = +[unit, *[P, Pl] ]>	; List of printables	
+
+	TYPE	<?str = Exist[?sz:Sint].^*[S(?sz)^r,array(?sz,B1^rw)]> ; type of strings
+	TYPE 	<?dou = ^*[B4^rw,B4^rw]> ; type of doubles
+	
+	TYPE 	<rint  = inj 0 [] [P]>		; constructor representations
+	TYPE 	<rdouble  = inj 1 [] [P]>	
+	TYPE	<rstring = inj 2 [] [P]>
+
+	TYPE 	<rnull = roll[Pl] (inj 0 [] [+[unit, *[P, Pl]] ])>
+	TYPE 	<rcons = fn hd:P. fn tl:Pl . roll[Pl] (inj 1 [hd,tl] [+[unit, *[P, Pl] ]])>
+
+	; The following constructor function converts a constructor representation,
+	; such as rint, into the corresponding TAL type 
+	TYPE 	<interpP = fn a:P . case (a) b [B4, ?dou, ?str]>
+
+	; Likewise, this primitive recursive function converts the representation
+	; of a list of types into a stack type 
+	PRIMREC <interpPl : pl -!> Ts = fn a: +[unit, *[P, pl]] . \
+				case (a) b [ se, (interpP b.0):: (interpPl b.1)] >
+
+	; unroll is not primitive in this language as it can be defined so 
+	; easily. But it must be defined for each recursive kind.
+	PRIMREC <unrol : p -!>  +[unit, *[P, p]]  = fn a: +[unit, *[P, p]]. a>
+
+	; Types of term representations of Printables 
+	TYPE 	<typeP  = fn a:P. \
+		^+[ *[S(0)^r,(case (a) b [ B4, void[T4],void[T4]])^r], \
+		    *[S(1)^r,(case (a) b [ void[T4], B4,void[T4]])^r], \
+           	    *[S(2)^r,(case (a) b [ void[T4],void[T4], B4])^r]]>
+
+	; Types of term representations of Printable lists 
+	TYPE <typePl = rec ( 							\
+		f : Pl -!> T4 . fn a : Pl.					\
+		   ^+[ *[S(0)^r, (case (unrol a) b [ B4, void[T4] ])^r],	\
+		       *[S(1)^r, (case (unrol a) b [ void[T4], 			\
+			                             ^*[(typeP b.0)^rw,(f b.1)^rw]])^rw]]).0>
+
+	CODE	
+;  printf expects a return address, followed by the representation of the rest of the stack,
+;  and then the rest of the stack.	
+_printf:
+LABELTYPE <All[rep:Pl s1:Ts]. code { ESP: sptr (code { ESP: sptr s1}) :: (typePl rep) \
+	  :: (interpPl rep) @ s1 }>
+	MOV	EAX,[ESP+4]		; get representation of stack	
+	; unroll (typePl rep) is a pointer to a sum. If it is null, we're done
+	COERCE	unroll(EAX)
+	NAMEOBJ n$74, EAX
+	CMP	DWORD PTR [EAX+0], 0
+	JE	done 
+;	BTAGVAR	E,[EAX+0],0,done
+	COERCE	forgetname(EAX)
+	REMOVENAME	n$74
+	; otherwise let's look at the top of the list
+	COERCE	rec(EAX)
+	LETROLL	alpha,rep		; subst (fold a) for rep
+	VCASE 	1,beta,alpha,[EAX+4]	; subst (inj1 b) for a 
+
+	LETPROD	[gamma1,gamma2],beta	; subst (<g1,g2>) for b 
+	MOV 	EBX, [EAX+4]		
+	PUSH 	DWORD PTR [EBX+4]	; save representation of rest of stack
+	MOV	EAX, [EBX+0]		; representation of top of stack
+
+	NAMEOBJ n$76, EAX
+	CMP     DWORD PTR [EAX+0],2
+	JB 	zeroone
+	COERCE	forgetname(EAX)
+	REMOVENAME	n$76	
+
+	COERCE 	rec(EAX)
+	VCASE  	2,delta,gamma1,[EAX+4]	; subst (inj2 d) for g1 -know that top of stack is a B4
+	PUSH	DWORD PTR [ESP+12]	; push argument
+	CALL 	tapp(_print_string,<(typePl gamma2)::(code {ESP: sptr s1})::(typePl rep)::(interpPl rep) @s1>)
+	JMP 	together
+		
+zeroone:
+	CMP 	DWORD PTR [EAX+0], 1
+	JB	zero
+	COERCE	forgetname(EAX)
+	REMOVENAME	n$76
+
+	COERCE 	rec(EAX)
+	VCASE	1,delta,gamma1,[EAX+4]
+	PUSH	DWORD PTR [ESP+12]	; push argument
+	CALL 	tapp(_print_double,<(typePl gamma2)::(code {ESP:sptr s1})::(typePl rep)::(interpPl rep)@s1>)
+	JMP	together
+
+zero:	COERCE  forgetname(EAX)
+	REMOVENAME n$76
+	COERCE	rec(EAX)		; tag is zero
+	VCASE	0,delta,gamma1,[EAX+4]
+	PUSH	DWORD PTR [ESP+12]	; push argument
+	CALL 	tapp(_print_int, <(typePl gamma2)::(code {ESP:sptr s1})::(typePl rep)::(interpPl rep)@s1>)
+	JMP	together
+
+together:
+	POP	EAX			; get rep of rest
+	POP 	EBX			; get retn address
+	ADD	ESP,8			; forget int & rep of whole stack
+	PUSH	EAX			; push rep of rest
+	PUSH	EBX			; push retn address
+	JMP 	tapp(_printf,<gamma2,s1>) ; loop to print the next one	
+
+done:	COERCE  forgetname(EAX)
+	REMOVENAME n$74
+	COERCE	rec(EAX)
+	LETROLL	alpha,rep
+	VCASE 	0,beta,alpha,[EAX+4]	; subst (inj1 b) for a, proving the rest of the stack
+					; is empty	
+	RETN	4
+
+	_end_TAL
+	END

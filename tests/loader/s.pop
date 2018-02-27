@@ -1,0 +1,10 @@
+extern int bar(int);
+extern int Baz::baz;
+
+int foo(int a) {
+  Baz::baz = 4;
+//  bar = foo;
+  if (a == 0) return a;
+  else
+    return Baz::baz + bar(a);
+}

@@ -1,0 +1,52 @@
+
+#include "core.h"
+open Core;
+
+prefix Ppm;
+open Ppm;
+
+struct pixmap {
+  string pixels;
+  int width;
+}
+
+pixmap init(int width, int height) {
+  _ s = new_string(width * height * 3);
+  return ^pixmap(s,width);
+}
+
+void dump(string filename, pixmap p) {
+  _ sz = size(p.pixels);
+  _ height = sz / 3 / p.width;
+  
+  _ f = file_open(filename,"wb");
+  fprintf(f,"P6\n# PL Club (modified for Popcorn)\n");
+  fprintf(f,"%d %d\n255\n",p.width,height);
+  fprint_string(f,p.pixels);
+  file_close(f);
+}
+
+void f_readline(FILE f) {
+  _ c = fgetc(f);
+  while(c != '\n' && c != EOF)
+    c = fgetc(f);
+}
+
+void load(string filename, pixmap p) {
+  raise(^Failure("Load ppm unimplemented."));
+}
+
+int width(pixmap p) {
+  return p.width;
+}
+int height(pixmap p) {
+  return size(p.pixels) / 3 / p.width;
+}
+
+void setp(pixmap pmap, int i, int j, int r, int g, int b) {
+  _ p = ((j * pmap.width) + i) * 3;
+  _ img = pmap.pixels;
+  img[p]   = chr(r);
+  img[p+1] = chr(g);
+  img[p+2] = chr(b);
+}

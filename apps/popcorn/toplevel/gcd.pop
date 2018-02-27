@@ -1,0 +1,198 @@
+
+// gcd.pop
+
+// lots of things Popcorn doesn't use are excluded for the time being
+
+#include "core.h"
+#include "list.h"
+#include "filename.h"
+#include "arg.h"
+
+#include "gcdfec.h"
+#include "talout.h"
+open Core;
+open List;
+
+prefix Gcd;
+open   Gcd;
+
+bool errors = false;
+
+static union comp_phase { void FE, TAL, OBJ, EXE; }
+
+static comp_phase comp_phase = ^comp_phase.EXE; 
+
+void set_elab_only        () { comp_phase = ^comp_phase.FE; }
+void set_generate_tal_only() { comp_phase = ^comp_phase.TAL; }
+void set_assemble_only    () { comp_phase = ^comp_phase.OBJ; }
+void set_do_link          () { comp_phase = ^comp_phase.EXE; }
+void set_no_link () {
+  switch comp_phase { 
+  case EXE: comp_phase = ^comp_phase.OBJ;
+  default:  ;
+  }
+}
+bool code_generate_p() {
+  switch comp_phase {
+  case FE: return false;
+  default: return true;
+  }
+}
+bool assemble_p() {
+  switch comp_phase {
+  case FE:  return false;
+  case TAL: return false;
+  default:  return true;
+  }
+}
+bool link_p() {
+  switch comp_phase {
+  case EXE: return true;
+  default:  return false;
+  }
+}
+
+                  // filename basename modulename -> success?
+static <*(string, bool f(string,string,string))>list file_types = null;
+void set_file_types(<*(string, bool f(string,string,string))>list l) { 
+  file_types = l; 
+}
+
+void compile_file(string filename) {
+  string basename = Filename::chop_extension(filename);
+  string dirname  = Filename::dirname(filename);
+  if(size(dirname)>0) 
+    Talout::add_include(dirname);
+  string modname  = Filename::basename(basename);
+  bool compiler(string,string,string) = compile_object_file;
+  try {
+    //using assoc_cmp requires it compares the arguments in the right order!
+    compiler = assoc_cmp(suffix_f, file_types, filename);
+  } handle y switch y {
+  case Not_found: 
+    fprintf(tal_stderr, "%s: unknown file type\n", filename);
+  }
+  bool suc = compiler(filename,basename,modname);
+  if (!suc) {
+    errors = true;
+    set_no_link();
+  }
+}
+static int suffix_f(string fname, string suff) {
+  return (Filename::check_suffix(fname,suff)) ? 0 : 1;
+}
+
+static <string>list object_files = null;
+void add_object_file(string s) { object_files = ^list(s,object_files); }
+<string>list get_object_files() { return rev(object_files); }
+
+static <string>list libraries = null;
+void add_library(string s) { libraries = ^list(s,libraries); }
+<string>list get_libraries() { return rev(libraries); }
+
+<string>Opt outputname = null; 
+void set_output_name(string on) { outputname = ^Opt(on); }
+
+bool compile_object_file(string fname, string x, string y) {
+  add_object_file(fname);
+  return true;
+}
+bool compile_library(string fname, string x, string y) {
+  add_library(fname);
+  return true;
+}
+
+static < <*(string,bool f(string,string,string))>list>Opt std_ftypes = null;
+<*(string,bool f(string,string,string))>list std_file_types() {
+  if (std_ftypes == null) {
+    std_ftypes = ^Opt(^list(^(Talout::object_file_suffix, compile_object_file),
+                      ^list(^(Talout::library_suffix,     compile_library), 
+                      null)));
+  }
+  return std_ftypes.v; // this is "dangerous" since list is mutable
+}
+
+static string tooldesc = "";
+void set_tooldesc(string s) { tooldesc = s; }
+
+// NG: this must be keep up to date.
+// Use x.x for the official release and x.x+ to indicate modifications since
+// the last official release.
+static string release = "1.6+";
+
+static string copyright =   
+ "Copyright\n   Greg Morrisett, Neal Glew, David Walker, Stephanie Weirich,\n    Steve Zdancewic, Frederich Smith, Richard Samuels, and Dan Grossman\n    July, September 1998, and January 1999, all rights reserved.";
+
+static void version() {
+  printf("%s\nRelease %s\n%s\n\nRuntime directory: %s\n",
+	 tooldesc, release, copyright, Talout::runtime());
+  // caml version called exit.  Why?
+}
+
+// unlike caml implementation we have only one options list
+// omitted options: print-at, type-check-at,
+
+// can't print out default executable b/c must be constant initializer. Grr.
+#define OPTION(flag,act,desc) ^(flag,^Arg::spec.act,desc)
+static <*(string,Arg::spec,string)>list std_options_v = null;
+
+<*(string,Arg::spec,string)>list std_options() {
+if (std_options_v == null) std_options_v = 
+^list(OPTION("-v",Unit(version),"output version and copyright information"),
+^list(OPTION("-T",Unit(set_generate_tal_only),"generate TAL, do not assemble"),
+^list(OPTION("-c",Unit(set_assemble_only),    "assemble, do not link"),
+^list(OPTION("-I",String(Talout::add_include),"add directory to search list"),
+^list(OPTION("-o",String(set_output_name),    "output name"),
+^list(OPTION("--runtime",String(Talout::set_runtime),"set runtime directory"),
+^list(OPTION("--TALC",   Unit(set_talc),             "use TALC assembler"),
+^list(OPTION("--MS",     Unit(set_ms),               "use Microsoft assembler"),
+^list(OPTION("--coff",   Unit(set_coff),             "use coff object format"),
+^list(OPTION("--elf",    Unit(set_elf),              "use elf object format"),
+^list(OPTION("--noisy-sys", Clear(Talout::verbose_sys_commands), 
+	                    "show system commands"),
+^list(OPTION("--quiet-sys", Set(Talout::verbose_sys_commands),
+	                    "do not show system comands"),
+^list(OPTION("--version",          Unit(version),
+                            "output version and copyright information"),
+^list(OPTION("--elaborate-only",   Unit(set_elab_only),
+	                     "read and type check only"),
+^list(OPTION("--generate-tal-only",Unit(set_generate_tal_only),
+	                    "generate TAL, do not assemble"),
+^list(OPTION("--error-context",    Set(Gcdfec::print_context),
+	                    "print error context"),
+^list(OPTION("--no-error-context", Clear(Gcdfec::print_context),
+	                    "do not print error context"),
+      null)))))))))))))))));
+return std_options_v; // dangerous since lists are mutable
+}
+
+static void set_talc() { Talout::asm_bintool = ^Talout::bintool.TALC;   }
+static void set_ms  () { Talout::asm_bintool = ^Talout::bintool.MS;     }
+static void set_coff() { Talout::objformat   = ^Talout::binformat.COFF; }
+static void set_elf () { Talout::objformat   = ^Talout::binformat.ELF;  }
+
+int driver(string toolname, <*(string,Arg::spec,string)>list options,
+	   <*(string, bool f(string,string,string))>list file_types,
+	   bool middle(), bool do_link(<string>list,<string>list,string)) {
+
+  if (outputname==null) 
+    set_output_name(Talout::default_executable);
+  set_file_types(file_types);
+  
+  try 
+    Arg::parse(options, compile_file,
+	       strconcat(toolname,": usage: <options> file ..."));
+  handle y switch y {
+  case Arg::Error: return 255;
+  }
+  
+  if (!middle()) {
+    errors = true;
+    set_no_link();
+  }
+  if (link_p())
+    if (!do_link(get_object_files(), get_libraries(), outputname.v))
+      errors = true;
+
+  return errors ? 255 : 0;
+}

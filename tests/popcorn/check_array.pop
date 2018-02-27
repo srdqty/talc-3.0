@@ -1,0 +1,27 @@
+// check_array.pop
+// Test array routines.
+
+#include "core.h"
+
+void print_array(int a[])
+{
+ Core::print_string("array = {");
+ for(int i=0;i<size(a);i++)
+   {
+    Core::print_int(a[i]);
+    if (i<size(a)-1) Core::print_string(", ");
+   }
+ Core::print_string("}\n");
+}
+
+void pop_main()
+{
+  int a[] = {1,2,3,4,5}; 
+  int i = 5;
+
+  print_array(a);
+  a[1]=a[2]=20;
+  a[1*1]*=i;
+  print_array(a);
+  
+}

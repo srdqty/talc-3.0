@@ -1,0 +1,9 @@
+(* packet to control a load service we use for benchmarking. *)
+
+svc startSender : (host,int,int,int,bool,int,bool) -> unit
+svc closePort : port -> unit
+svc getImplicitPort : void -> port
+
+fun foo(d,i,s,de,f,n,c) =
+  (startSender(d,i,s,de,f,n,c);
+   OnRemote(|closePort|(getImplicitPort()),getSource(),getRB(),defaultRoute))

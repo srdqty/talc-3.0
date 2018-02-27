@@ -1,0 +1,157 @@
+// check_big_fact.pop
+// Computes factorial in a variety of ways to stress the compiler.
+// fact_spill is in check_spill.pop because it generates too much output.
+
+#include "core.h"
+open Core;
+
+?struct Fact { int zero; bool oid; int orials[]; }
+
+struct Facts { int i; int fact; }
+union UFact { void start; Facts f; int fact10; }
+
+
+int fact_constarray(int i)
+{
+  int factorials[] = {fact_rec(0),fact_rec(1),2,6,24,120,720,5040,40320,362880,3628800};
+  
+  if((i <=10) && (i>=0)) 
+    return factorials[i];
+  else 	
+    return 0;
+}
+
+int fact_union(UFact u)
+{
+  switch u
+    {
+    case start : 
+      { 
+	UFact w = new .f(new Facts(0,1));
+	return fact_union(w);
+      }
+    case f(fs) : 
+      { 
+	if(fs.i != 10)
+	  { 
+	    UFact w = new .f(new Facts(fs.i+1,fs.fact*((fs.i)+1)));
+	    return fact_union(w);
+	  } 
+	else 
+	  { 
+	    UFact w = new UFact.fact10(fs.fact);
+	    return fact_union(w);
+	  }
+      }
+    case fact10(x): return(x);
+    }
+}
+
+int fact_struct(int i)
+{
+  Fact fact = null;
+
+  fact = new Fact(1,true,new_array(11,0));
+  
+  fact.zero = 1;
+  fact.oid = false;
+  int j=0;
+  fact.orials[0] = fact.zero;
+  for(j = 1; j < 11;j++)
+    {
+      fact.orials[j] = fact.orials[j-1]*j;
+    }
+  
+  if(i <=10)
+    return fact.orials[i];
+  else
+    return fact.zero;
+}
+
+int fact_switch(int i)
+{
+  switch i
+    {
+    case 0: return 1;
+    case 1: return 1;
+    case 10: return (fact_switch(9) * 10);
+    default: return (fact_switch(i-1));
+    }
+
+  return(i);
+}
+
+int fact_arr (int i)
+{
+  int table[] = new_array(11,0);
+  
+  int j = 0;
+  table[j] = 1;
+  for(j=1;j <11;j++)
+    {
+      table[j]=table[j-1] * j;
+    }
+  print_string("{");
+
+  for(j=0;j <11;j++)
+    {
+      print_int(table[j]);
+      if(j!=10) print_string(", ");
+    }
+  print_string("}[10] \n             = ");
+  if (( i<=10) && (i>0)) 
+    return (table[i]);
+  else 
+    return 1;
+}
+
+int fact_rec (int i)
+{
+  if(i==0)  return 1;
+  else      return (i*fact_rec(i-1));
+}
+
+int fact_while (int i)
+{
+  int j = 1 ;
+  while(i>0) { j*=i; i--; }
+  return j;
+}
+
+int fact_for (int i)
+{
+  int j=1;
+  for (j=1; i>0;i--) 
+    j*=i;
+  return j;
+}
+
+int fact_cond (int i) { return ( i==0 ? 1 : i*fact_cond(i-1)); }
+
+int pop_main()
+{
+  string whoopee = "Theorem: Code generator is correct.\nProof:";
+  int i = 5;
+  
+  print_string(whoopee);
+  print_string("\nfact_rec(10) = ");
+  print_int(fact_rec(10));
+  print_string("\nfact_while(10) = ");
+  print_int(fact_while(10));
+  print_string("\nfact_for(10) = ");
+  print_int(fact_for(10));
+  print_string("\nfact_cond(10) =  ");
+  print_int(fact_cond(10));
+  print_string("\nfact_arr(10) = ");
+  print_int(fact_arr(10));
+  print_string("\nfact_struct(10) = ");
+  print_int(fact_struct(10));
+  print_string("\nfact_union(10) = ");
+  print_int(fact_union(new UFact.start));
+  print_string("\nfact_constarray(10) = ");
+  print_int(fact_constarray(10));
+  print_string("\nQED.\n");
+  return 0;
+}
+
+

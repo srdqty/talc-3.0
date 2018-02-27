@@ -1,0 +1,89 @@
+/*
+#include "bench.h"
+*/
+#include "core.h"
+#include "string.h"
+extern string std_args()[];
+
+#define TEST      0
+#define BENCHMARK 1
+
+extern void test_pop(float func(float));
+extern void test_c(float func(float));
+
+/*
+extern void test_pop(int, inst [], int), test_cyclone(int, inst [], int), 
+  test_cts(int, void f(), int), test_rts(int, void f(), void f(), int);
+extern void test_pop(int, inst [], int), test_cyclone(int, inst [], int);
+extern void test_c(int, int, int);
+extern inst pprog0[], pprog1[], pprog2[], pprog3[], pprog4[], pprog5[];
+extern void           cprog1(), cprog2(), cprog3(), cprog4(), cprog5();
+extern void interpret_cts_1(), interpret_cts_2(), interpret_cts_3(),
+  interpret_cts_4(), interpret_cts_5(); 
+extern void interpret_opt_cts_1(), interpret_opt_cts_2(),
+  interpret_opt_cts_3(), interpret_opt_cts_4(), interpret_opt_cts_5(); 
+*/
+
+/* DEBUG: Tempo object files corrupted again */
+
+float func(float x)
+{
+  return 2*x*x + x + 3;
+}
+
+void pop_main()
+{
+  string argv[] = std_args();
+  int mode, iterations;
+
+  if (size(argv) != 2)
+    printf("%s: usage: <TEST | # of iterations>\n", argv[0]);
+  else {
+    if (String::strncmp(argv[1], "TEST", 10) == 0) {
+      iterations = 1;
+      mode = TEST;
+    } else {
+      mode = BENCHMARK;
+      iterations = Core::int_of_string(argv[1]);
+      printf("%d iterations\n", iterations);
+    }
+    
+    printf("Function #1\n");
+    test_pop(func);
+    test_c(func);
+    /*
+    test_cyclone(mode, pprog1, iterations);
+    test_c(mode, 1, iterations);
+    test_cts(mode, interpret_cts_1, iterations);
+    test_cts(mode, interpret_opt_cts_1, iterations);
+    
+    printf("\nProgram #2\n");
+    test_pop(mode, pprog2, iterations);
+    test_cyclone(mode, pprog2, iterations);
+    test_c(mode, 2, iterations);
+    test_cts(mode, interpret_cts_2, iterations);
+    test_cts(mode, interpret_opt_cts_2, iterations);
+    
+    printf("Program #3\n");
+    test_pop(mode, pprog3, iterations);
+    test_cyclone(mode, pprog3, iterations);
+    test_c(mode, 3, iterations);
+    test_cts(mode, interpret_cts_3, iterations);
+    test_cts(mode, interpret_opt_cts_3, iterations);
+    
+    printf("Program #4\n");
+    test_pop(mode, pprog4, iterations);
+    test_cyclone(mode, pprog4, iterations);
+    test_c(mode, 4, iterations);
+    test_cts(mode, interpret_cts_4, iterations);
+    test_cts(mode, interpret_opt_cts_4, iterations);
+    
+    printf("Program #5\n");
+    test_pop(mode, pprog5, iterations);
+    test_cyclone(mode, pprog5, iterations);
+    test_c(mode, 5, iterations);
+    test_cts(mode, interpret_cts_5, iterations);
+    test_cts(mode, interpret_opt_cts_5, iterations);
+*/
+  }
+}

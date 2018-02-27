@@ -1,0 +1,27 @@
+(* get information about a linklayer device on a router *)
+
+fun iter (d,x) =
+  (print ("Device ");
+   print (d);
+   print (" has network address ");
+   print (thisHostOf(d));
+   print (" and MTU ");
+   print (getMTU(d));
+   print ("\n"))
+
+svc fragment_overhead : int
+svc checksum_overhead : int
+svc reliable_overhead : int
+
+fun devinfo() =
+  (print ("frag chunk overhead = ");
+   print (fragment_overhead);
+   print ("\n");
+   print ("checksum chunk overhead = ");
+   print (checksum_overhead);
+   print ("\n");
+   print ("reliable chunk overhead = ");
+   print (reliable_overhead);
+   print ("\n");
+   foldr(iter,getDevs(),());
+   ())

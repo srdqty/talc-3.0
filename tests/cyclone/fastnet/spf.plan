@@ -1,0 +1,35 @@
+val out_devs  : unit = getDevs()
+val out_len   : unit = length(out_devs)
+val each_rb   : unit = if (out_len > 0) then (getRB() / out_len) else 0
+
+fun send_packs(src : unit, dummy: unit) : unit=
+   (	
+   (*
+   print(spf_get_edges());
+   print("...\n");
+   print("out_devs"); print(out_devs);  print("\n");
+   print("out_len");  print(out_len);   print("\n");
+   print("each_rb");  print(each_rb);   print("\n");
+   print("if ...");   print(if (out_len > 0) then (getRB()/out_len) else 0);
+   print("\n");
+   print("getRB()"); print(getRB());   print("\n");
+   *)
+    OnNeighbor(|flood|(spf_get_edges()), src, each_rb, "foo")
+   )
+
+fun flood(edges : (string * string) list) : unit =
+  if (spf_update_edges(edges)) then
+    foldr(send_packs, out_devs, "")
+  else
+    ()
+
+(* broadcasts packets on an interface which prints 'hello' on all neighbors *)
+fun startup() : unit =
+  (* print(out_devs); *)
+   foldr(send_packs, out_devs, "")
+
+val entry_fun  : unit = "startup"
+val entry_args : unit = []
+val entry_src  : unit = "blah"
+val entry_eval : unit = "cyclone:4001"
+val entry_rb   : unit = 200

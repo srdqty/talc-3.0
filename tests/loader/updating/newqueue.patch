@@ -1,0 +1,10 @@
+implementation: newqueue.pop
+sharing:
+  Queue::queue
+  Queue::Queue_empty
+  Queue::Queue_full
+  Queue::create
+  Queue::enqueue
+  Queue::dequeue
+  Queue::length
+  Queue::max_size

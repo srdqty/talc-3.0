@@ -1,0 +1,45 @@
+#include "poptiming.h"
+#include "core.h"
+open Core;
+
+// We represent a polynomial as an array where the element at position i
+// is the coefficient for exponent i.
+
+int poly_gen(int p[])(int) {
+  unsigned int len = size(p);
+  return codegen (int poly(int x) {
+    int x_i = 1;
+    int result = 0;
+    cut {
+      for(unsigned int i=0; i<len; ++i) {
+	_ ai = p[i];
+	if(ai != 0) splice { result += fill(ai) * x_i; };
+	splice{ x_i *= x; };
+      }
+    }
+    return result;
+  });
+}
+
+void pop_main() {
+  string args[] = std_args();
+  if(size(args)!=2) {
+    printf("%s: usage <exponent>\n",args[0]);
+    return;
+  }
+  int exp = int_of_string(args[1]);
+  int result = 0;
+  int x = 15;
+  int p[] = new_array(exp+1,0);
+
+  for(int i = 0; i < (exp + 1); i++) {
+    p[i] = i+1;
+  }
+
+
+  MAIN_TEST("poly",COMPILER,RTCG_KIND,args[1],_ poly = poly_gen(p) ,poly(x));
+
+  _ result = poly(x);
+  printf("exponent = %d, result = %d\n",exp,result);
+}
+

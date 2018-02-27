@@ -1,0 +1,272 @@
+#include "core.h"
+#include "buffer.h"
+#include "c_string.h"
+
+/* #include "data.h" */
+#include "version.h"
+#include "libhttpd.h"		/* just for globaltimeofday */
+#include "handy.h"
+#include "config.h"
+#include "common.h"
+
+open Core;
+
+?struct DataEntry {
+  string ce_filename;		
+  /* CacheEntry ce_nextInHash; */
+  /* struct CacheEntry **ce_prevInHash; */
+  /* CacheEntry ce_nextInLRU; *//* not impl */
+  int ce_size;
+  /* int ce_numRefs; */
+  /* int ce_isInvalid; */
+  int ce_file_fd;
+  int ce_numChunks;		/* <= size(ce_datachunks) */
+  /* int ce_numChunksInMem; */
+  string ce_dataChunks[];
+  /* int ce_lastValidation; */
+  string ce_encodings;		/* from figure_mime call */
+  string ce_type;		/* from figure_mime call */
+  int ce_modTime;
+  string ce_respHeader;		/* memory allocated for mime */
+  int ce_respHeaderLen;
+  int ce_respHeaderTime;	/* date field in resp header */
+  /* string ce_200Resp; */	/* cached response for log */
+  /* int ce_200RespLen;	*/	/* length of 200 response */
+}
+
+/* we have to calculate the string length each time here, but
+   it should prevent us from having to reuse strings */
+#define ADDS(s) Buffer::add_substring(buf,s,0,C_strlen(s))
+/* when we are darn SURE that this is a popcorn-style string */
+#define ADDFS(s) Buffer::add_string(buf,s)
+#define ADDI(i) Buffer::add_string(buf,string_of_int(i))
+#define ADDC(c) Buffer::add_char(buf,c)
+#define ADDB(b) Buffer::add_buffer(buf,b)
+#define CONTENTS() Buffer::contents(buf)
+
+#define MAXMIMESIZE 256             /* make a multiple of 32 to speed
+				       checksumming */
+
+/* ------------------------------------------------------------------*/
+void printDataEntry(DataEntry ce)
+{
+  fprint_string(tal_stderr,"DataEntry=\n  ce_filename=");
+  C_fprint_string(tal_stderr,ce.ce_filename,0);
+  fprint_char(tal_stderr,'\n');
+  fprintf(tal_stderr,"  ce_size=%d\n",ce.ce_size);
+  fprintf(tal_stderr,"  ce_file_fd=%d\n",ce.ce_file_fd);
+  fprintf(tal_stderr,"  ce_numChunks=%d\n",ce.ce_numChunks);
+  fprint_string(tal_stderr,"  ce_encodings=");
+  C_fprint_string(tal_stderr,ce.ce_encodings,0);
+  fprint_char(tal_stderr,'\n');
+  fprint_string(tal_stderr,"  ce_type=");
+  C_fprint_string(tal_stderr,ce.ce_type,0);
+  fprint_char(tal_stderr,'\n');
+  fprintf(tal_stderr,"  ce_modTime=%d\n",ce.ce_modTime);
+  fprint_string(tal_stderr,"  ce_respHeader=");
+  C_fprint_string(tal_stderr,ce.ce_respHeader,0);
+  fprint_char(tal_stderr,'\n');
+  fprintf(tal_stderr,"  ce_respHeaderLen=%d\n",ce.ce_respHeaderLen);
+  fprintf(tal_stderr,"  ce_respHeaderTime=%d\n",ce.ce_respHeaderTime);
+}
+  
+/* ------------------------------------------------------------------*/
+static string padBuf = "                                 "; /* 33 chars */
+bool
+CalcRespHeader(DataEntry ce, int status, string title)
+{
+  /* this function is basically a variant of send_mime, but we
+     don't send anything - we just calculate what we would send,
+     and then we hold that info */
+  string encHead;
+  string encParams;
+  bool doPadding = false;
+  Buffer::t buf;
+
+  /* XXX extra allocation; could store in the cache entry */
+  buf = Buffer::create(MAXMIMESIZE);
+
+  if (ce.ce_size > 3000)
+    doPadding = true;
+
+  /* encoding information may or may not exist -
+     this hack is used to conditionally create the encoding line */
+  if (size(ce.ce_encodings) == 0 || ce.ce_encodings[0] == '\000') 
+    encHead = encParams = "";
+  else {
+    encHead = "\nContent-Encoding: ";
+    encParams = ce.ce_encodings;
+  }
+
+  padBuf[0] = '\000';
+  do {
+    /* on first pass, use an empty padding buffer, and on the
+       second pass, add in necessary spaces */
+    Buffer::clear(buf);
+    ADDFS("HTTP/1.0 ");
+    ADDI(status);
+    ADDC(' ');
+    ADDS(title);
+    ADDFS("\nDate: ");
+    ADDS(globalTimeOfDayStr);
+    ADDFS("\nServer: ");
+    ADDFS(SERVER_SOFTWARE);
+    ADDS(padBuf);
+    ADDS(encHead);
+    ADDS(encParams);
+    ADDFS("\nContent-Type: ");
+    ADDS(ce.ce_type);
+    if (ce.ce_size >= 0) {
+      ADDS("\nContent-Length: ");
+      ADDI(ce.ce_size);
+    }
+    ADDFS("\nLast-Modified: ");
+    MakeHTTPDate(buf, ce.ce_modTime);
+    ADDFS("\n\n");
+
+    ce.ce_respHeaderLen = Buffer::length(buf);
+    if (ce.ce_respHeaderLen >= MAXMIMESIZE) {
+      fprintf(tal_stderr, "panic - MAXMIMESIZE is %d, line was %d\n", 
+	      MAXMIMESIZE, ce.ce_respHeaderLen);
+      exit(-1);
+    }
+    if (doPadding && ((ce.ce_respHeaderLen % 32) != 0)) {
+      int i;
+      int needed;
+      needed = 32 - (ce.ce_respHeaderLen % 32);
+      for (i = 0; i < needed; i++)
+	padBuf[i] = ' ';
+      padBuf[needed] = '\000';
+    }
+  } while (doPadding && ((ce.ce_respHeaderLen % 32) != 0));
+  ce.ce_respHeader = Buffer::contents(buf);
+  return(false);
+}
+/* ------------------------------------------------------------------*/
+DataEntry
+GetEmptyDataEntry()
+{
+  return ^DataEntry{
+    ce_filename = "",
+    ce_size = 0,
+    ce_file_fd = -1,
+    ce_numChunks = 0,
+    ce_dataChunks = new_array(0,""),
+    ce_encodings = "",
+    ce_type = "",
+    ce_modTime = 0,
+    ce_respHeader = "",
+    ce_respHeaderLen = 0,
+    ce_respHeaderTime = 0
+  };    
+}
+/* ------------------------------------------------------------------*/
+void
+CompleteDataEntry(DataEntry ce)
+{
+  int hashBin;
+  int numChunks;
+
+  numChunks = (ce.ce_size + READBLOCKSIZE-1) / READBLOCKSIZE;
+  ce.ce_numChunks = (numChunks == 0) ? 1 : numChunks;
+  ce.ce_dataChunks = new_array(numChunks, "");
+}
+/* ------------------------------------------------------------------*/
+*(string,int,int)
+GetDataToSend(DataEntry ent, int position, int desiredSize, int maxSize)
+{
+  int chunkNum;
+  int bytesLeft;
+  int posMod;
+
+  if (ent.ce_size == 0) {
+    return ^("",0,0);
+  }
+
+  chunkNum = position / READBLOCKSIZE;
+  posMod = position % READBLOCKSIZE;
+
+  if (chunkNum == ent.ce_numChunks-1)
+    bytesLeft = ent.ce_size - position;
+  else
+    bytesLeft = READBLOCKSIZE - posMod;
+
+  /* if we don't have the data, quit early */
+  /* MWH: if we don't have the data, we go get it right away
+  if (!ent.ce_dataChunks[chunkNum].rir_data) {
+    *actualSize = bytesLeft;
+    return(NULL);
+  }
+  */
+  if (ReadChunkIfNeeded(ent, position))
+    /* failed to read */
+    return ^("",bytesLeft,0);
+ 
+  if (bytesLeft > maxSize) {
+    if (bytesLeft >= desiredSize*2)
+      bytesLeft = desiredSize;
+    else
+      while (bytesLeft > desiredSize)
+        bytesLeft >>=1;
+  }
+
+  return ^(ent.ce_dataChunks[chunkNum], bytesLeft, posMod);
+}
+/* ------------------------------------------------------------------*/
+static open_flag flags[1] = { ^open_flag.O_RDONLY };
+static bool
+DoChunkRead(DataEntry ent, int chunk)
+{
+  int chunkStart, chunkEnd;
+  int chunkSize;
+  string res;
+
+  chunkStart = chunk * READBLOCKSIZE;
+  chunkEnd = MIN(chunkStart + READBLOCKSIZE, ent.ce_size);
+  chunkSize = chunkEnd - chunkStart;
+
+  if (ent.ce_file_fd < 0) {
+    ent.ce_file_fd = 
+      unix_open(ent.ce_filename, flags, {: open_mode_flag});
+    if (ent.ce_file_fd < 0)
+      return(true);
+  }
+
+  try {
+    res = unix_mmap(ent.ce_file_fd, chunkStart, chunkSize);
+  } handle e {
+    switch e {
+    case Unix_error *(code,syscall):
+      fprintf(tal_stderr,"%s:%s\n",syscall,unix_error_string(code));
+      return(true);
+    }
+  }
+
+  ent.ce_dataChunks[chunk] = res;
+  /* ent.ce_numChunksInMem++; 
+     bytesInAllChunks += GetRoundedChunkSize(ent, chunk);
+     ReduceCacheIfNeeded(); */
+  return(false);
+}
+/* ------------------------------------------------------------------*/
+bool
+ReadChunkIfNeeded(DataEntry ent, int position)
+{
+  int chunkNum;
+
+  if (ent.ce_size == 0)		/* nothing needs to be read */
+    return(false);
+
+  chunkNum = position / READBLOCKSIZE;
+
+  if (size(ent.ce_dataChunks[chunkNum]) != 0) {
+    return(false);
+  }
+
+  /* check again before doing read, to handle case of
+     someone else doing read while we lost mutex in MT case */
+  /* MWH: there is no MT case, so don't bother XXX */
+  /* if (size(ent.ce_dataChunks[chunkNum].rir_data) == 0) */
+  return DoChunkRead(ent, chunkNum);
+}
+/* ------------------------------------------------------------------*/

@@ -1,0 +1,34 @@
+#include "core.h"
+open Core;
+
+int cg_test(int w)
+{
+  int i = 3 + 4;
+
+  int f(int) = 
+      codegen(int spec(int a)
+	    {
+	      int res = a;
+	      
+              cut 3;
+
+              res += 1;
+
+              cut 13;
+
+	      return res;
+	    });
+  i += f(w);
+
+  return i;
+}
+
+void pop_main()
+{
+  print_string("This tests empty suspends\n");
+  print_string("The result of the invocation should be 12\n");
+  print_string("The result of the invocation is ");
+  print_int(cg_test(4));
+  print_string("\n");
+}
+

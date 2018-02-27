@@ -1,0 +1,73 @@
+#include "core.h"
+#include "dlpop.h"
+
+open Core;
+
+static <handle_t>Opt h;
+
+int foo(int a) {
+  return a+1;
+}
+
+extern void start_cc_time(int i);
+extern void end_cc_time(int i);
+extern void print_cc_time(int i,int num);
+
+void pop_main () {
+  try {
+    start_cc_time(0);
+    h = ^Opt(dlopen("foo"));
+    end_cc_time(0);
+    print_cc_time(0,1);
+    int bar(int) = dlsym(h.v,"bar",repterm@<int (int)>);
+    print_int(bar(2));
+    print_string("\n");
+/*
+    void f() = dlsym(h.v,"call_func");
+    void g() = dlsym(h.v,"change_c");
+    int i;
+
+    printf("cost per-call:\n");
+    start_cc_time(0);
+    for (i=0; i<100000; i++) {
+      f();
+    }
+    end_cc_time(0);
+    print_cc_time(0,i);
+    
+    printf("cost per-update:\n");
+    start_cc_time(0);
+    for (i=0; i<100000; i++) {
+      g();
+    }
+    end_cc_time(0);
+    print_cc_time(0,i);
+*/    
+  } handle y {
+    switch y {
+    case WrongType(s): {
+      print_string ("Wrong type for symbol : ");
+      print_string (s);
+    }
+    case SymbolNotFound(s): {
+      print_string ("Can't find symbol : ");
+      print_string (s);
+    }
+    case FailsTypeCheck: {
+      print_string ("File doesn't type-check");
+    }
+    case Core::FileOpenError(s): {
+      print_string ("Can't open file : ");
+      print_string (s);
+    }
+    default:
+      print_string ("Exception Raised");
+    }
+    print_string ("\n");
+  }
+}
+
+
+
+
+

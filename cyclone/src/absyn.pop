@@ -1,0 +1,753 @@
+#include "core.h"
+#include "list.h"
+#include "string.h"
+#include "gcdfec.h"
+
+prefix Absyn;
+open Absyn;
+
+open Core;
+open List;
+open String;
+open Gcdfec;
+open Core;
+open List;
+open String;
+open Gcdfec;
+
+#define var          string
+#define qvar         *(<string>list,string)
+#define tvar         string
+#define typedef_name qvar
+#define field_name   string
+#define types        <typ>list
+#define opt_types    <<typ>list>Opt
+#define exps         <exp>list
+
+union scope      { void Static, Public, Extern, Abstract; }
+struct tqual {
+  bool q_const;
+  bool q_volatile;
+  bool q_restrict;
+}
+union size_of    { void B1, B2, B4, B8; }
+union kind       { void BoxKind, RegKind, MemKind; }
+union array_kind { void UntaggedArray, TaggedArray; exp FixedArray; }
+union sign       { void Signed, Unsigned; }
+union boxed      { void Boxed, Unboxed; }
+
+// Conrefs are used to specify equality constraints.  When unifying,
+// we can equate two conrefs (through forwarding) or constrain a conref
+// to be equal to a particular value.  For instance, whether a pointer
+// type is nullable or not (* vs @) is specified as a <bool>conref.
+// When we see a "&" pattern, we generate a PointerType with an unconstrained
+// <bool>conref.  During unification, the conref is constrained by the
+// type of the expression we are matching on.  We could probably use
+// conref's elsewhere (e.g., the boxed qualifier on Int, Bool, Float,
+// and Double types, the sign and size_of for the Int type, etc.)  We
+// could also treat Evar's as <typ>conrefs but the constraints on Evars
+// aren't just equality (i.e., we can constrain a MemKind Evar to be equal
+// to a BoxKind Evar...)
+struct <a>conref { <a>constraint v; }
+union <a>constraint {
+  a         Eq;
+  <a>conref Forward;
+  void      None;
+}
+<a>conref new_conref<a>(a x) {
+  return ^conref{v = ^constraint.Eq(x)};
+}
+<a>conref empty_conref<a>() {
+  <a>constraint c = ^constraint.None;
+  return ^conref{v = c};
+}
+
+union typ {
+  // BoxKind types
+  void                       VoidType;
+  *(kind,<typ>Opt,int)       Evar;         // int is unique id
+  tvar                       VarType;      // `a
+  *(<typedef_name>Opt,types) EnumType;     // enum Foo<t1,...,tn>
+  typedef_name               XenumType;    // xenum Foo
+  *(typ,<bool>conref,tqual)  PointerType;  // typ:MemKind, true -> nullable
+  // RegKind types unless boxed
+  *(sign, size_of, boxed)    IntType;      // (B4:BoxKind), rest are RegKind
+  boxed                      BoolType;     // Reg
+  boxed                      FloatType;    // Reg
+  boxed                      DoubleType;   // Reg
+  // MemKind types
+  *(typ,tqual,array_kind)    ArrayType;    // typ:Mem
+  *(<tvar>list,typ,<*(<var>Opt,tqual,typ)>list,bool) FnType; // bool indicates varargs
+  <*(tqual,typ)>list         TupleType;    // typs:Mem
+  *(<typedef_name>Opt,types) StructType;   // Mem
+  // initially, the <typ>Opt is null.  the elaborator fills it in with the
+  // typedef definition, subsituting the parameters.  always call compress
+  // to avoid this level of indirection before comparing types.  
+  *(typedef_name,types,<typ>Opt) TypedefType;  // Mem
+  void                       UnionType;    // temporary so we can test parser
+}
+
+// funcparams and type_modifier are useful alternate
+// forms for parsing and printing typ's
+union funcparams {
+  <string>list                        NoTypes;
+  *(<*(<var>Opt,tqual,typ)>list,bool) WithTypes;
+}
+union type_modifier {
+  void           Carray;
+  void           Array;
+  exp            ConstArray;
+  *(bool,tqual)  Pointer;
+  funcparams     Function;
+  <tvar>list     TypeParams;
+}
+
+union cnst {
+  char        Char; // Fix: needs sign
+  *(sign,int) Int;
+  short       Short; // Fix: needs sign
+//  long long Long;
+  string      Float; // Left in string form for now
+  void        Null;
+  bool        Bool;
+  string      String;
+}
+
+union primop {
+  void Plus, Times, Minus, Div, Mod,
+    Eq, Neq, Gt, Lt, Gte, Lte, Not,
+    Bitnot, Bitand, Bitor, Bitxor, Bitlshift, Bitlrshift, Bitarshift,
+    Size, Printf, Fprintf, Xprintf;
+}
+
+union incrementor {
+  void PreInc, PostInc, PreDec, PostDec;
+}
+
+union raw_exp {
+  cnst                   Const;
+  qvar                   Var;
+  qvar                   UnknownId;
+  *(primop, exps)        Primop;
+  *(exp,<primop>Opt,exp) AssignOp;     // e.g., x += e
+  *(exp,incrementor)     Increment;    // e.g., e++, e--, --e, ++e
+  *(exp,exp,exp)         Conditional;
+  *(exp,exp)             SeqExp;
+  *(exp,exps)            UnknownCall;  // fun-call, struct, or enum expression
+  *(exp,exps)            FnCall;
+  exp                    Throw;
+  // expressions of polymorphic type are implicitly instantiated by the
+  // elaborator unless explicitly blocked by NoInstantiate
+  exp                    NoInstantiate;
+  *(exp,opt_types)       Instantiate;
+  *(typ,exp)             Cast;
+  exp                    Address;      // &e
+  typ                    Sizeof;
+  // various elim forms -- also left-hand-sides for assignments
+  exp                    Deref;        // *e
+  *(exp, field_name)     StructMember; // e.f
+  *(exp, field_name)     StructArrow;  // e->f
+  *(exp, exp)            Subscript;
+  // raw, unboxed memory values
+  exps                   Tuple;
+  *(*(<string>Opt,tqual,typ),
+    <*(<designator>list,exp)>list) CompoundLit;
+  <*(<designator>list,exp)>list Array;
+  *(var,exp,exp)         Comprehension;
+  *(typedef_name,opt_types,<*(<designator>list,exp)>list,<structdecl>Opt) Struct;
+  *(qvar, opt_types, opt_types, <exp>list, enumdecl, enumfield) Enum;
+  *(qvar,opt_types,<exp>list, xenumdecl,enumfield) Xenum;
+  *(<typedef_name>Opt,<*(<designator>list,exp)>list) UnresolvedMem;
+  stmt                   StmtExp;
+  fndecl                 Codegen;
+  exp                    Fill;
+}
+struct exp {
+  <typ>Opt    topt;
+  raw_exp     raw_exp;
+  <var>list   assigned_to; // made during type checking, used in Poptranslate
+  Gcdfec::seg loc;
+}
+union raw_stmt {
+  void                        Skip;
+  exp                         Exp;
+  *(stmt,stmt)                Seq;
+  <exp>Opt                    Return;
+  *(exp,stmt,stmt)            IfThenElse;
+  *(exp,stmt)                 While;
+  void                        Break;
+  void                        Continue;
+  var                         Goto;
+  *(exp,exp,exp,stmt)         For;
+  *(exp,<switch_clause>list)  Switch;
+  void                        Fallthru;
+  *(decl,stmt)                Decl;
+  stmt                        Cut;
+  stmt                        Splice;
+  *(var,stmt)                 Label;
+  *(stmt,exp)                 Do;
+  *(stmt,<switch_clause>list) TryCatch;
+}
+union raw_pat {
+  void                            Wild;
+  void                            Null;
+  *(sign,int)                     Int;
+  char                            Char;
+  string                          Float; // Left in string form for now
+  bool                            Bool;
+  <pat>list                       Tuple;
+  // use to read-through a pattern (eliminates the */@)
+  pat                             Pointer;
+  // use to create a pointer value (introduces the @)
+  var                             Reference;
+  // UnknownId, UnknownCall, and UnknownFields produced by parser
+  qvar                            UnknownId;
+  *(qvar,<tvar>list,<pat>list)    UnknownCall;
+  *(qvar,<tvar>list,<*(<designator>list,pat)>list) UnknownFields;
+  // Typechecker resolves Unknown* to Var,Struct,Enum,Xenum
+  var                             Var;
+  *(structdecl,opt_types,<tvar>list,<*(<designator>list,pat)>list) Struct;
+  *(qvar,opt_types,<tvar>list,<pat>list,enumdecl,enumfield) Enum;
+  *(qvar,<tvar>list,<pat>list,xenumdecl,enumfield) Xenum;
+}
+struct pat {
+  raw_pat     raw_pat;
+  <typ>Opt    topt;
+  Gcdfec::seg loc;
+}
+struct switch_clause {
+  pat         pat;
+  <exp>Opt    where_clause;
+  stmt        body;
+  Gcdfec::seg loc;
+}
+struct stmt {
+  raw_stmt    raw_stmt;
+  Gcdfec::seg loc;
+}
+struct fndecl {
+  scope                  scope;
+  bool                   is_inline;
+  qvar                   name;
+  <tvar>list             tvs;
+  typ                    ret_type;
+  <*(var,tqual,typ)>list args;
+  bool                   varargs;
+  stmt                   body;
+}
+struct structdecl {
+  scope                              scope;
+  <typedef_name>Opt                  name;
+  <tvar>list                         tvs;
+  <<*(field_name,tqual,typ)>list>Opt fields; // when null, abstract
+}
+struct enumfield {
+  qvar               name;      // constructor name
+  <exp>Opt           tag;       // value of the constructor
+  <tvar>list         tvs;       // existentially-bound type variables
+  <*(tqual,typ)>list typs;      // types carried by constructor
+  Gcdfec::seg        loc;
+}
+struct enumdecl {
+  scope                scope;
+  <typedef_name>Opt    name;
+  <tvar>list           tvs;
+  <<enumfield>list>Opt fields; // when null, abstract
+}
+struct xenumdecl {
+  // If fields == null this defines a new xenum, else new fields
+  scope           scope;
+  typedef_name    name;
+  <enumfield>list fields;
+}
+struct typedefdecl {
+  typedef_name name;
+  <var>list    tvs;
+  typ          defn;
+}
+struct vardecl {
+  scope    scope;
+  qvar     name;
+  tqual    tqual;
+  typ      typ;
+  <exp>Opt initializer;
+}
+union raw_decl {
+  vardecl                 VarDecl;
+  fndecl                  FnDecl;
+  *(pat,<typ>Opt,exp)     LetDecl;
+  structdecl              StructDecl;
+  void                    UnionDecl; // void because unimplemented
+  enumdecl                EnumDecl;
+  xenumdecl               XenumDecl;
+  typedefdecl             TypedefDecl;
+  *(var,<decl>list)       NamespaceDecl;
+  *(qvar,<decl>list)      UsingDecl;
+}
+struct decl {
+  raw_decl raw_decl;
+  Gcdfec::seg  loc;
+}
+
+union designator {
+  exp ArrayElement;
+  var FieldName;
+}
+
+/* return a negative, zero, or positive int according to whether the
+   first string list is less than, equal to, or greater than the
+   second */
+static int strlist_cmp(<string>list ss1,<string>list ss2) 
+{
+  if (ss1 == null) return (ss2 == null) ? 0 : -1;
+  if (ss2 == null) return 1;
+  int i = strcmp(ss1.hd,ss2.hd);
+  if (i != 0) return i;
+  else return strlist_cmp(ss1.tl,ss2.tl);
+}
+int varlist_cmp(<var>list vs1, <var>list vs2) {
+  return strlist_cmp(vs1,vs2);
+}
+int qvar_cmp(qvar q1, qvar q2) {
+  int i = strlist_cmp(q1.1,q2.1);
+  if (i != 0) return i;
+  else return strcmp(q1.2,q2.2);
+}
+
+static int new_type_counter = 0;
+
+typ new_evar(kind k) {
+  return ^typ.Evar(^(k,null,new_type_counter++));
+}
+typ wildtyp() {
+  return new_evar(^kind.MemKind);
+}
+
+tqual combine_tqual(tqual x,tqual y) {
+  return ^tqual(x.q_const || y.q_const,
+                x.q_volatile || y.q_volatile,
+                x.q_restrict || y.q_restrict);
+}
+
+tqual empty_tqual() { return ^tqual(false,false,false); }
+
+bool is_format_prim(primop p) {
+  bool ans;
+  switch (p) {
+  case Printf: ans = true;
+  case Fprintf: ans = true;
+  case Xprintf: ans = true;
+  default: return false;
+  }
+  return ans;
+}
+
+// Various constructors
+
+//////////////////////////// Kinds ///////////////////////////////
+kind box_k = ^kind.BoxKind;
+kind reg_k = ^kind.RegKind;
+kind mem_k = ^kind.MemKind;
+
+
+//////////////////////////// Types ///////////////////////////////
+// unboxed, unsigned types
+typ uchar_t = ^typ.IntType(^(^sign.Unsigned,^size_of.B1,^boxed.Unboxed));
+typ ushort_t = ^typ.IntType(^(^sign.Unsigned,^size_of.B2,^boxed.Unboxed));
+typ uint_t = ^typ.IntType(^(^sign.Unsigned,^size_of.B4,^boxed.Unboxed));
+typ ulong_t = ^typ.IntType(^(^sign.Unsigned,^size_of.B8,^boxed.Unboxed));
+// unboxed, signed types
+typ schar_t = ^typ.IntType(^(^sign.Signed,^size_of.B1,^boxed.Unboxed));
+typ sshort_t = ^typ.IntType(^(^sign.Signed,^size_of.B2,^boxed.Unboxed));
+typ sint_t = ^typ.IntType(^(^sign.Signed,^size_of.B4,^boxed.Unboxed));
+typ slong_t = ^typ.IntType(^(^sign.Signed,^size_of.B8,^boxed.Unboxed));
+// unboxed float, double, bool
+typ float_t = ^typ.FloatType(^boxed.Unboxed);
+typ double_t = ^typ.DoubleType(^boxed.Unboxed);
+typ bool_t = ^typ.BoolType(^boxed.Unboxed);
+// boxed, unsigned types
+typ uChar_t = ^typ.IntType(^(^sign.Unsigned,^size_of.B1,^boxed.Boxed));
+typ uShort_t = ^typ.IntType(^(^sign.Unsigned,^size_of.B2,^boxed.Boxed));
+typ uInt_t = ^typ.IntType(^(^sign.Unsigned,^size_of.B4,^boxed.Boxed));
+typ uLong_t = ^typ.IntType(^(^sign.Unsigned,^size_of.B8,^boxed.Boxed));
+// boxed, signed types
+typ sChar_t = ^typ.IntType(^(^sign.Signed,^size_of.B1,^boxed.Boxed));
+typ sShort_t = ^typ.IntType(^(^sign.Signed,^size_of.B2,^boxed.Boxed));
+typ sInt_t = ^typ.IntType(^(^sign.Signed,^size_of.B4,^boxed.Boxed));
+typ sLong_t = ^typ.IntType(^(^sign.Signed,^size_of.B8,^boxed.Boxed));
+// boxed float, double, bool
+typ Float_t = ^typ.FloatType(^boxed.Boxed);
+typ Double_t = ^typ.DoubleType(^boxed.Boxed);
+typ Bool_t = ^typ.BoolType(^boxed.Boxed);
+// exceptions
+typ exn_t = ^typ.XenumType(^(null,"exn"));
+// void
+typ void_t = ^typ.VoidType;
+// string
+static <typ>Opt string_t_opt = null;
+typ string_t() {
+  if (string_t_opt == null) {
+    typ t = ^typ.ArrayType(^(uchar_t,^tqual(false,false,false),
+			     ^array_kind.TaggedArray));
+    string_t_opt = ^Opt(t);
+    return t;
+
+  } else
+    return string_t_opt.v;
+}
+// FILE
+static <typ>Opt file_t_opt = null;
+typ file_t() {
+  if (file_t_opt == null) {
+    typedef_name file_t_name = ^(null,"__sFILE");
+    typ file_struct_t = ^typ.StructType(^(^Opt(file_t_name),null));
+    file_t_opt = ^Opt(^typ.PointerType(^(file_struct_t,
+					 new_conref(false),
+					 ^tqual(false,false,false))));
+  }
+  return file_t_opt.v;
+}
+// pointers
+typ nullableptr_t(typ t, tqual tq) {
+  return ^typ.PointerType(^(t,new_conref(true),tq));
+}
+static <typ>Opt void_star_t_opt = null;
+typ void_star_t() {
+  if (void_star_t_opt == null) {
+    void_star_t_opt = ^Opt(nullableptr_t(void_t, empty_tqual()));
+  }
+  return void_star_t_opt.v;
+}
+typ pureptr_t(typ t, tqual tq) {
+  return ^typ.PointerType(^(t,new_conref(false),tq));
+}
+
+// structs
+typ strct(var name) {
+  return ^typ.StructType(^(^Opt(^(null,name)),null));
+}
+
+///////////////////////// Expressions //////////////////////////////
+exp new_exp(raw_exp r, seg loc) {
+  return ^exp{topt=null, raw_exp=r, assigned_to=null, loc=loc};
+}
+exp const_exp(cnst c, seg loc) { return new_exp(^raw_exp.Const(c), loc); }
+exp null_exp(seg loc) { return new_exp(^raw_exp.Const(^cnst.Null), loc); }
+exp bool_exp(bool b, seg loc) { return const_exp(^cnst.Bool(b), loc); }
+exp true_exp(seg loc) { return bool_exp(true, loc); }
+exp false_exp(seg loc) { return bool_exp(false, loc); }
+exp int_exp(*(sign,int) i,seg seg) { 
+  return const_exp(^cnst.Int(i),seg);
+}
+exp signed_int_exp(int i,seg loc) { 
+  return int_exp(^(^sign.Signed,i),loc);
+}
+exp uint_exp(unsigned int i,seg loc) { 
+  return int_exp(^(^sign.Unsigned,(:int)i),loc);
+}
+exp char_exp(char c,seg loc) {
+  return const_exp(^cnst.Char(c),loc);
+}
+exp float_exp(string f,seg loc) {
+  return const_exp(^cnst.Float(f),loc);
+}
+exp string_exp(string s,seg loc) {
+  return const_exp(^cnst.String(s),loc);
+}
+exp var_exp(qvar q, seg loc) { return new_exp(^raw_exp.Var(q), loc); }
+exp unknownid_exp(qvar q, seg loc) { 
+  return new_exp(^raw_exp.UnknownId(q), loc); 
+}
+exp primop_exp(primop p, <exp>list es, seg loc) {
+  return new_exp(^raw_exp.Primop(^(p,es)),loc);
+}
+exp prim1_exp(primop p, exp e, seg loc) {
+  return primop_exp(p, ^list(e,null), loc);
+}
+exp prim2_exp(primop p, exp e1, exp e2, seg loc) {
+  return primop_exp(p, ^list(e1,^list(e2,null)), loc);
+}
+exp times_exp(exp e1, exp e2, seg loc) {
+  return prim2_exp(^primop.Times, e1, e2, loc);
+}
+exp eq_exp(exp e1, exp e2, seg loc) {
+  return prim2_exp(^primop.Eq, e1, e2, loc);
+}
+exp neq_exp(exp e1, exp e2, seg loc) {
+  return prim2_exp(^primop.Neq, e1, e2, loc);
+}
+exp gt_exp(exp e1, exp e2, seg loc) {
+  return prim2_exp(^primop.Gt, e1, e2, loc);
+}
+exp lt_exp(exp e1, exp e2, seg loc) {
+  return prim2_exp(^primop.Lt, e1, e2, loc);
+}
+exp gte_exp(exp e1, exp e2, seg loc) {
+  return prim2_exp(^primop.Gte, e1, e2, loc);
+}
+exp lte_exp(exp e1, exp e2, seg loc) {
+  return prim2_exp(^primop.Lte, e1, e2, loc);
+}
+exp assignop_exp(exp e1, <primop>Opt popt, exp e2, seg loc) {
+  return new_exp(^raw_exp.AssignOp(^(e1,popt,e2)),loc);
+}
+exp assign_exp(exp e1, exp e2, seg loc) {
+  return assignop_exp(e1,null,e2,loc);
+}
+exp post_inc_exp(exp e, seg loc) {
+  return new_exp(^raw_exp.Increment(^(e,^incrementor.PostInc)),loc);
+}
+exp pre_inc_exp(exp e, seg loc) {
+  return new_exp(^raw_exp.Increment(^(e,^incrementor.PreInc)),loc);
+}
+exp pre_dec_exp(exp e, seg loc) {
+  return new_exp(^raw_exp.Increment(^(e,^incrementor.PreDec)),loc);
+}
+exp post_dec_exp(exp e, seg loc) {
+  return new_exp(^raw_exp.Increment(^(e,^incrementor.PostDec)),loc);
+}
+exp conditional_exp(exp e1,exp e2,exp e3,seg loc) {
+  return new_exp(^raw_exp.Conditional(^(e1,e2,e3)), loc);
+}
+exp and_exp(exp e1, exp e2, seg loc) {
+  return conditional_exp(e1,e2,false_exp(loc), loc);
+}
+exp or_exp(exp e1, exp e2, seg loc) {
+  return conditional_exp(e1,true_exp(loc),e2, loc);
+}
+exp seq_exp(exp e1, exp e2, seg loc) {
+  return new_exp(^raw_exp.SeqExp(^(e1,e2)), loc);
+}
+exp unknowncall_exp(exp e, <exp>list es, seg loc) {
+  return new_exp(^raw_exp.UnknownCall(^(e,es)), loc);
+}
+exp fncall_exp(exp e, <exp>list es, seg loc) {
+  return new_exp(^raw_exp.FnCall(^(e,es)), loc);
+}
+exp throw_exp(exp e, seg loc) {
+  return new_exp(^raw_exp.Throw(e), loc);
+}
+exp noinstantiate_exp(exp e, seg loc) {
+  return new_exp(^raw_exp.NoInstantiate(e), loc);
+}
+exp instantiate_exp(exp e, <<typ>list>Opt ts, seg loc) {
+  return new_exp(^raw_exp.Instantiate(^(e,ts)), loc);
+}
+exp cast_exp(typ t, exp e, seg loc) { 
+  return new_exp(^raw_exp.Cast(^(t,e)), loc);
+}
+exp address_exp(exp e, seg loc) { return new_exp(^raw_exp.Address(e), loc); }
+exp sizeof_exp(typ t, seg loc) { return new_exp(^raw_exp.Sizeof(t), loc); }
+exp deref_exp(exp e, seg loc) { return new_exp(^raw_exp.Deref(e), loc); }
+exp structmember_exp(exp e, field_name n, seg loc) {
+  return new_exp(^raw_exp.StructMember(^(e,n)), loc); 
+}
+exp structarrow_exp(exp e, field_name n, seg loc) {
+  return new_exp(^raw_exp.StructArrow(^(e,n)), loc); 
+}
+exp arrow_exp(exp e, field_name n, seg loc) {
+  return deref_exp(structmember_exp(e, n, loc), loc);
+}
+exp subscript_exp(exp e1, exp e2, seg loc) {
+  return new_exp(^raw_exp.Subscript(^(e1,e2)), loc); 
+}
+exp tuple_exp(<exp>list es, seg loc) {
+  return new_exp(^raw_exp.Tuple(es), loc); 
+}
+exp stmt_exp(stmt s,seg loc) { return new_exp(^raw_exp.StmtExp(s), loc); }
+exp null_pointer_exn_exp(seg loc) { 
+  return var_exp(^(null,"Null_Exception"), loc); 
+}
+exp array_exp(<exp>list es, seg loc) {
+  _ dles = null;
+  for (; es != null; es = es.tl) {
+    dles = ^list(^(null,es.hd),dles);
+  }
+  dles = List::imp_rev(dles);
+  return new_exp(^raw_exp.Array(dles),loc);
+}
+exp unresolvedmem_exp(<typedef_name>Opt n,
+                      <*(<designator>list,exp)>list dles,Gcdfec::seg loc) {
+  return new_exp(^raw_exp.UnresolvedMem(^(n,dles)),loc);
+}
+///////////////////////// Statements ///////////////////////////////
+stmt new_stmt(raw_stmt s, seg loc) { return ^stmt{raw_stmt=s, loc=loc}; }
+stmt skip_stmt(seg loc) { return new_stmt(^raw_stmt.Skip, loc); }
+stmt exp_stmt(exp e,seg loc) { return new_stmt(^raw_stmt.Exp(e),loc); }
+stmt seq_stmt(stmt s1, stmt s2, seg loc) { 
+  switch (s1.raw_stmt) {
+  case Skip: return s2;
+  default: 
+    return new_stmt(^raw_stmt.Seq(^(s1,s2)), loc); 
+  }
+}
+stmt seq_stmts(<stmt>list ss, seg loc) {
+  if (ss == null) return skip_stmt(loc);
+  else return seq_stmt(ss.hd,seq_stmts(ss.tl,loc),loc);
+}
+stmt return_stmt(<exp>Opt e,seg loc) { 
+  return new_stmt(^raw_stmt.Return(e),loc); 
+}
+stmt ifthenelse_stmt(exp e,stmt s1,stmt s2,seg loc) {
+  return new_stmt(^raw_stmt.IfThenElse(^(e,s1,s2)),loc);
+}
+stmt while_stmt(exp e,stmt s,seg loc) { 
+  return new_stmt(^raw_stmt.While(^(e,s)), loc); 
+}
+stmt break_stmt(seg loc) { return new_stmt(^raw_stmt.Break, loc); }
+stmt continue_stmt(seg loc) { return new_stmt(^raw_stmt.Continue, loc); }
+stmt for_stmt(exp e1,exp e2,exp e3,stmt s, seg loc) {
+  return new_stmt(^raw_stmt.For(^(e1,e2,e3,s)), loc);
+}
+stmt switch_stmt(exp e, <switch_clause>list scs, seg loc) {
+  return new_stmt(^raw_stmt.Switch(^(e,scs)), loc);
+}
+stmt fallthru_stmt(seg loc) { return new_stmt(^raw_stmt.Fallthru, loc); }
+stmt decl_stmt(decl d, stmt s, seg loc) {
+  return new_stmt(^raw_stmt.Decl(^(d,s)), loc);
+}
+stmt declare_stmt(qvar x, typ t, <exp>Opt init, stmt s, seg loc) {
+  decl d = new_decl(^raw_decl.VarDecl(new_vardecl(x,t,init)),loc);
+  return new_stmt(^raw_stmt.Decl(^(d,s)),loc);
+}
+stmt cut_stmt(stmt s, seg loc) { return new_stmt(^raw_stmt.Cut(s), loc); }
+stmt splice_stmt(stmt s, seg loc) { return new_stmt(^raw_stmt.Splice(s), loc);}
+stmt label_stmt(var v, stmt s, seg loc) {
+  return new_stmt(^raw_stmt.Label(^(v,s)), loc);
+}
+stmt do_stmt(stmt s, exp e, seg loc) {
+  return new_stmt(^raw_stmt.Do(^(s,e)), loc);
+}
+stmt trycatch_stmt(stmt s, <switch_clause>list scs, seg loc) {
+  return new_stmt(^raw_stmt.TryCatch(^(s,scs)), loc);
+}
+stmt goto_stmt(var lab, seg loc) {
+  return new_stmt(^raw_stmt.Goto(lab), loc);
+}
+stmt assign_stmt(exp e1, exp e2, seg loc) {
+  return exp_stmt(assign_exp(e1,e2,loc),loc);
+}
+/////////////////////////// Patterns //////////////////////////////
+pat new_pat(raw_pat p, seg s) { return ^pat(p,null,s); }
+
+
+////////////////////////// Declarations ///////////////////////////
+decl new_decl(raw_decl r, seg loc) { return ^decl{raw_decl=r, loc=loc}; }
+decl let_decl(pat p, <typ>Opt t_opt, exp e, seg loc) {
+  return new_decl(^raw_decl.LetDecl(^(p,t_opt,e)),loc);
+}
+vardecl new_vardecl(qvar x, typ t, <exp>Opt init) {
+  return ^vardecl{scope=^scope.Public, name=x, tqual=empty_tqual(),
+		    typ=t, initializer=init};
+}
+vardecl static_vardecl(qvar x, typ t, <exp>Opt init) {
+  return ^vardecl{scope=^scope.Static, name=x, tqual=empty_tqual(),
+		    typ=t, initializer=init};
+}
+decl struct_decl(scope s,<typedef_name>Opt n,<var>list ts,
+                            <<*(field_name,tqual,typ)>list>Opt fs,seg loc) {
+ return new_decl(^raw_decl.StructDecl(^structdecl {scope = s,
+                                                       name = n,
+                                                       tvs = ts,
+                                                       fields = fs}),loc);
+}
+decl enum_decl(scope s,<typedef_name>Opt n,<var>list ts,
+                          <<enumfield>list>Opt fs,seg loc) {
+ return new_decl(^raw_decl.EnumDecl(^enumdecl {scope = s, name = n,
+                                                   tvs = ts,
+                                                   fields = fs}),loc);
+}
+decl xenum_decl(scope s,typedef_name n,<enumfield>list fs,seg loc) {
+ return new_decl(^raw_decl.XenumDecl(^xenumdecl{scope = s,
+                                                name = n,
+                                                fields = fs}),loc);
+}
+
+// We treat function types in argument or return position as an
+// abbreviation for a non-nullable pointer to a function, that is,
+//   int f(void g())(float)
+// is the same as
+//   int (@f(void (@g)()))(float)
+// We do this by constructing every function type using function_t,
+// rather than mucking with the typechecker/unifier/etc.
+typ function_t(<tvar>list tvs, typ t, <*(<var>Opt,tqual,typ)>list args,
+               bool varargs) {
+  return
+    ^typ.FnType(^(tvs,
+                  pointer_expand(t),
+                  List::map(fun *(<var>Opt,tqual,typ)
+                                   f(*(<var>Opt,tqual,typ) x) {
+                                     return ^(x.1, x.2,
+                                              pointer_expand(x.3)); },
+                                   args),
+                  varargs));
+}
+typ pointer_expand(typ t) {
+  //  switch (compress(t)) {
+  switch (t) {
+  case FnType(_):
+    return pureptr_t(t,empty_tqual());
+// Disabled for now because it is incompatible with C
+//  case ArrayType*(_,_,ak): 
+//    return
+//      (ak == ^array_kind.TaggedArray) ? t : pureptr_t(t,empty_tqual());
+//  case TypedefType*(n,_,_): 
+//    return impos(sprintf("pointer_expand: typedef %s", qvar2string(n)));
+  default:
+    return t;
+  }
+}
+//// Inverse of pointer_expand, used in pretty-printer
+//typ pointer_abbrev(typ t) { 
+//  switch (compress(t)) {
+//  case PointerType*(t2,b,tq): // FIX:  what about tq?
+//    switch (compress_conref(b).v) {
+//    case Eq(b):
+//      if (b) return t; // pointer is *
+//      // otherwise, @
+//      switch (t2) {
+//      case FnType(_):
+//        // t (@)(argtyps) -->  t (argtyps)
+//        return t2;
+//// Disabled for now because it is incompatible with C
+////      case ArrayType*(_,_,ak):
+////        // t (@)[]   --> t[]
+////        // t (@)[sz] --> t[sz]
+////        // t (@)[?]  --> t (@)[?]
+////        return (ak == ^array_kind.TaggedArray) ? t : t2;
+//      case TypedefType*(n,_,_): 
+//        return impos(sprintf("pointer_abbrev: typedef %s", qvar2string(n)));
+//      default: return t;
+//      }
+//    default: return t;
+//    }
+//  default: return t;
+//  }
+//}
+
+
+// According to Harbison and Steele these are the lvalues of C:
+//
+//    exp      where
+//    ---------------------------
+//    name     name is a variable
+//    e[k]
+//    (e)      e is an lvalue
+//    e.name   e is an lvalue
+//    e->name
+//    *e
+//
+// (We may have more in Cyclone...)
+//
+bool is_lvalue(exp e) {
+  switch (e.raw_exp) {
+  case Var(q): return true;
+  case Subscript*(e1,e2): return true;
+  case StructMember*(e1,f): return is_lvalue(e1);
+  case StructArrow*(e1,f): return true;
+  case Deref(e1): return true;
+    //  case Instantiate*(e1,_): return is_lvalue(e1);
+    //  case NoInstantiate(e1): return is_lvalue(e1);
+  default: return false;
+  }
+}

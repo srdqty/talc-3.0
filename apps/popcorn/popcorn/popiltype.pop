@@ -1,0 +1,222 @@
+// Recompute per-block type information. (Assumes the cfg is correct.)
+//
+// Right now only computes the template information, in future extend to
+// compute type variable scopes, partial inits information, refined types, and ltes.
+//
+// The advantage of recomputing is that we don't have to maintain the information.
+
+#include "core.h"
+#include "xarray.h"
+#include "dict.h"
+#include "set.h"
+#include "id.h"
+#include "bitvec.h"
+#include "popil.h"
+#include "popilprint.h"
+#include "poptalenv.h"
+#include "poprtcg.h"
+#include "worklist.h"
+
+open Core;
+open Popil;
+open Poptalenv;
+
+#define list   List::list
+#define dict   Dict::dict
+#define xarray Xarray::xarray
+
+prefix Popiltype;
+open Popiltype;
+
+int tptr_to_int(cf_function f, cf_operand o) {
+  switch o {
+  case Local(i): 
+    _ info = Xarray::get(f.all_operands,i);
+    _ typ = info.typ;
+    switch typ {
+    case TemplPtr(j): return j;
+    default: BUG("Expected template pointer.");
+    }
+  default: BUG("Expected local operand");
+  }
+}
+
+int rgn_to_int(cf_function f, cf_operand o) {
+ switch o {
+  case Local(i): 
+    _ info = Xarray::get(f.all_operands,i);
+    _ typ = info.typ;
+    switch typ {
+    case CodeRgn(j): return j;
+    default: BUG("Expected code region.");
+    }
+  default: BUG("Expected local operand");
+  }
+}
+
+static cf_template int_to_templ(cf_function f, int tp) {
+  return Xarray::get(f.template_pointers,tp); 
+}
+
+// Is this operand a code region generating f?
+// The operand should at very least be a code_region for some function
+// otherwise an exception may be raised.
+static bool rgn_of_fun(cf_operand r, cf_function parent, cf_function f) {
+  _ rp = rgn_to_int(parent,r);
+
+  _ fr = Xarray::get(parent.code_regions,rp).2;
+
+  return (fr == f);
+}
+
+// Computes from instruction i-1 to the beginning of the block the
+// last dump instruction relevant to f.
+static <int>Opt last(cf_function parent, int rgn_int, cf_block b) {
+    _ insts = b.insts;
+    _ num_insts = Xarray::length(b.insts);
+    for(_ j = num_insts-1; j >=0; --j) {
+      _ inst = Xarray::get(insts,j);
+      switch inst {
+      case Dump *(rgn,tptr,t):
+	if(rgn_to_int(parent,rgn) == rgn_int) {
+	  int tp = tptr_to_int(parent,tptr);
+	  return ^Opt(tp);
+	}
+      default:;
+      }
+    }
+    return null;
+}
+
+// Compute the preceding template information and plug it into
+// b.regions.
+static void compute_template (cf_function parent, int rgn) {
+  // The analysis works completely over the parent.
+  // We compute with respect to template_pointers -- from which we can recover
+  // the templates later.
+
+  <cf_block>xarray     blks = parent.blocks;
+  int              num_blks = Xarray::length(blks);
+  
+  // For each block in the parent compute the last dumped template if any.
+  <int>Opt last_dumped[] = new_array(num_blks, null);
+  for(_ i = 0; i < num_blks; i++ ) {
+    _ b = Xarray::get(blks,i);
+    last_dumped[i]=last(parent,rgn,b);
+  }
+
+  // For each block we record a bit-vector of the templates that might have
+  // been dumped immediately before entering this block.
+  int  ins [][] = new_array(num_blks,{:int});
+  int outs [][] = new_array(num_blks,{:int});
+
+  // This is too conservative.  We don't care about template pointers
+  // that don't refer to f.
+  int num_tptrs = Xarray::length(parent.template_pointers);
+
+  for(_ i=0; i < num_blks; i++) {
+     ins[i] = Bitvec::new_empty(num_tptrs);
+    outs[i] = Bitvec::new_empty(num_tptrs);
+  }
+
+  _ df_order = get_df_order(parent);
+  _ df_sz    = size(df_order);
+  _ wl       = Worklist::create(num_blks);
+
+  for(int i = 0;i < df_sz;++i) {
+    Worklist::add(wl,df_order[i]);
+  }
+  for(int i = 0; i < num_blks;i++) {
+    Worklist::add(wl,i); // Make sure all blocks are in the original worklist.
+    // Adding twice to a worklist doesn't hurt! That's the point. 
+  }
+  
+  while(!Worklist::is_empty(wl)) {
+    _ blk_num = Worklist::remove(wl);
+    _ blk = Xarray::get(parent.blocks,blk_num);
+
+    /* Debugging.
+    printf("%s ", Id::id_to_string(blk.label));
+    printf("(in: ");
+    pr_bvec(ins[blk_num]);
+    printf(") (out: ");
+    pr_bvec(outs[blk_num]);
+    printf(")\n");
+    */
+
+    _ out;
+    _ is_out_new = false;
+    _ last_d = last_dumped[blk_num];
+    if(last_d == null) {
+      // XXX - Could be smarter here to avoid allocation.
+      // printf("no dump ");
+      _ old_out = outs[blk_num];
+      out = Bitvec::new_copy(ins[blk_num]);
+      is_out_new = !Bitvec::compare_two(out,old_out);
+      if(is_out_new) outs[blk_num] = out;
+    } else {
+      // printf("  dump ");
+      _ tp = last_d.v;
+      out = outs[blk_num];
+      is_out_new = !Bitvec::get_and_set(out,tp);
+    }
+
+    // printf("\n");
+
+    if(!is_out_new) continue;
+    
+    _ succ = blk.succ;
+    _ num_succ = Xarray::length(succ);
+    for(_ j = 0; j < num_succ; j++) {
+      _ s = Xarray::get(succ,j);
+      _ s_num = s.num;
+
+      _ old_in = ins[s_num];
+      _ in = Bitvec::new_empty(num_tptrs);
+      Bitvec::union_two(in,old_in,out);
+      // XXX - work to eliminate this allocation.
+      // Shouldn't be too hard.
+
+      if(!Bitvec::compare_two(in,old_in)) {
+	ins[s_num] = in;
+	Worklist::add(wl,s_num);
+      }
+    }    
+  }
+
+  // outs and ins reached fixpoint.
+  // Using ins we now update the region info for each block.
+
+  for(int i =0; i< num_blks; i++) {
+    _ b = Xarray::get(parent.blocks,i);
+    _ b_in = ins[b.num];
+
+    if(!Dict::member(b.regions,rgn)) continue;
+
+    // if(Bitvec::to_sorted_list(b_in,size(b_in)) == null) b_in = {:int};
+
+    b.regions = Dict::insert(b.regions,rgn,b_in); 
+  }
+}
+
+void type_fun(cf_function f) {
+
+  /* For each region compute which templates were last dumped on entry
+     to each block where that region is live. */
+  int num_rgns = Xarray::length(f.code_regions);
+  for(int i =0; i<num_rgns; ++i) {
+    compute_template(f,i);
+  }
+
+  // Debugging
+  // if(num_rgns!=0) Popilprint::prn_fun(f);
+}
+
+static void pr_bvec(int x[]) {
+  for(_ tps= Bitvec::to_sorted_list(x,size(x) * 32);tps!=null;tps = tps.tl) {
+    _ tp = tps.hd;
+
+    printf("tp%d ",tp);
+  }
+
+}

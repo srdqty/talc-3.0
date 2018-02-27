@@ -1,0 +1,112 @@
+Program #1
+Program size: 60
+[Popcorn]
+Memory: 0 Memory: 10 Memory: 20 Memory: 30 
+Memory: 333 Memory: 111 Memory: 222 Memory: 333 
+
+Program size: 60
+[Cyclone]
+Memory: 0 Memory: 10 Memory: 20 Memory: 30 
+Memory: 333 Memory: 111 Memory: 222 Memory: 333 
+
+Program size: 60
+[cl (or gcc)]
+Memory: 0 Memory: 10 Memory: 20 Memory: 30 
+Memory: 333 Memory: 111 Memory: 222 Memory: 333 
+
+[cl /02 (or gcc -O3)]
+Memory: 0 Memory: 10 Memory: 20 Memory: 30 
+Memory: 333 Memory: 111 Memory: 222 Memory: 333 
+
+[Tempo CTS]
+Memory: 0 Memory: 10 Memory: 20 Memory: 30 
+Memory: 333 Memory: 111 Memory: 222 Memory: 333 
+
+[Tempo CTS]
+Memory: 0 Memory: 10 Memory: 20 Memory: 30 
+Memory: 333 Memory: 111 Memory: 222 Memory: 333 
+
+Program size: 60
+[Tempo RTS]
+Memory: 0 Memory: 10 Memory: 20 Memory: 30 
+Memory: 333 Memory: 111 Memory: 222 Memory: 333 
+
+
+Program #2
+Program size: 63
+[Popcorn]
+Memory: 0 Memory: 10 Memory: 20 Memory: 30 
+Memory: 0 Memory: 10 Memory: 20 Memory: 1234 
+
+Program size: 63
+[Cyclone]
+Memory: 0 Memory: 10 Memory: 20 Memory: 30 
+Memory: 0 Memory: 10 Memory: 20 Memory: 1234 
+
+Program size: 63
+[cl (or gcc)]
+Memory: 0 Memory: 10 Memory: 20 Memory: 30 
+Memory: 0 Memory: 10 Memory: 20 Memory: 1234 
+
+[cl /02 (or gcc -O3)]
+Memory: 0 Memory: 10 Memory: 20 Memory: 30 
+Memory: 0 Memory: 10 Memory: 20 Memory: 1234 
+
+[Tempo CTS]
+Memory: 0 Memory: 10 Memory: 20 Memory: 30 
+Memory: 0 Memory: 10 Memory: 20 Memory: 1234 
+
+[Tempo CTS]
+Memory: 0 Memory: 10 Memory: 20 Memory: 30 
+Memory: 0 Memory: 10 Memory: 20 Memory: 1234 
+
+Program size: 63
+[Tempo RTS]
+Memory: 0 Memory: 10 Memory: 20 Memory: 30 
+Memory: 0 Memory: 10 Memory: 20 Memory: 1234 
+
+Program #3
+Program size: 54
+[Popcorn]
+Memory: 0 Memory: 10 Memory: 20 Memory: 30 
+Memory: 8 Memory: 0 Memory: 0 Memory: 0 
+
+Program size: 54
+[cl (or gcc)]
+Memory: 0 Memory: 10 Memory: 20 Memory: 30 
+Memory: 8 Memory: 0 Memory: 0 Memory: 0 
+
+[cl /02 (or gcc -O3)]
+Memory: 0 Memory: 10 Memory: 20 Memory: 30 
+Memory: 8 Memory: 0 Memory: 0 Memory: 0 
+
+Program #4
+Program size: 66
+[Popcorn]
+Memory: 0 Memory: 10 Memory: 20 Memory: 30 
+Memory: 15 Memory: 0 Memory: 0 Memory: 0 
+
+Program size: 66
+[cl (or gcc)]
+Memory: 0 Memory: 10 Memory: 20 Memory: 30 
+Memory: 15 Memory: 0 Memory: 0 Memory: 0 
+
+[cl /02 (or gcc -O3)]
+Memory: 0 Memory: 10 Memory: 20 Memory: 30 
+Memory: 15 Memory: 0 Memory: 0 Memory: 0 
+
+Program #5
+Program size: 22
+[Popcorn]
+Memory: 0 Memory: 10 Memory: 20 Memory: 30 
+Memory: 3628800 Memory: 0 Memory: 20 Memory: 30 
+
+Program size: 22
+[cl (or gcc)]
+Memory: 0 Memory: 10 Memory: 20 Memory: 30 
+Memory: 3628800 Memory: 0 Memory: 20 Memory: 30 
+
+[cl /02 (or gcc -O3)]
+Memory: 0 Memory: 10 Memory: 20 Memory: 30 
+Memory: 3628800 Memory: 0 Memory: 20 Memory: 30 
+

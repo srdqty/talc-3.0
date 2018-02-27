@@ -1,0 +1,882 @@
+// Popunify:  provides unification, coercion, and type-well-formedness
+// checks for Poptype.
+#include "core.h"
+#include "list.h"
+#include "dict.h"
+#include "popsyntax.h"
+#include "poperr.h"
+#include "poptypeenv.h"
+#define location Gcdfec::seg
+
+#define POPUNIFY_H
+
+open Core;
+open Popsyntax;
+open List;
+open Poptypeenv;
+
+prefix Popunify;
+open Popunify;
+
+static type_name full_type_name(location loc,global_env g,type_name n) {
+  bool is_struct   = false;
+  bool is_union    = false;
+  bool is_abstract = false;
+  bool is_abstype  = false;
+  if(Dict::member(g.structs,n))        is_struct   = true;
+  else if(Dict::member(g.unions,n))    is_union    = true;
+  else if(Dict::member(g.abstracts,n)) is_abstract = true;
+  else if(Dict::member(g.abstypes,n))  is_abstype  = true;
+  else { 
+    try 
+      n = Dict::lookup(g.open_typs,n);
+    handle exc switch exc {
+    case Dict::Absent: 
+      terr2(loc,"unbound type constructor ",n);
+      return("bogus");
+    }
+    if(Dict::member(g.structs,n))        is_struct   = true;
+    else if(Dict::member(g.unions,n))    is_union    = true;
+    else if(Dict::member(g.abstracts,n)) is_abstract = true;
+    else if(Dict::member(g.abstypes,n))  is_abstype  = true;
+  }
+  if(is_struct) {
+    _ pr = Dict::lookup(g.structs,n);
+    switch pr.2 {
+    case Destructed: ;
+    default:         pr.2 = ^type_use.Mentioned;
+    }
+  } else if(is_union) {
+    _ pr = Dict::lookup(g.unions,n);
+    switch pr.2 {
+    case Destructed: ;
+    default:         pr.2 = ^type_use.Mentioned;
+    }
+  } else if(is_abstract) 
+    Dict::lookup(g.abstracts,n).3 = ^type_use.Mentioned;
+  else if(is_abstype) {
+    _ pr = Dict::lookup(g.abstypes,n);
+    switch pr.2 {
+    case Destructed: ;
+    default:         pr.2 = ^type_use.Mentioned;
+    }
+  }
+  return n;
+}
+
+// Given a type constructor, returns the argument type variables
+static <var>list type_constructor_args(location loc,global_env g,type_name n) {
+  _ pr = Dict::lookup_opt(g.structs,n);
+  if(pr != null) return pr.v.1.tyvars;
+  _ pr = Dict::lookup_opt(g.unions,n);
+  if(pr != null) return pr.v.1.tyvars;
+  _ ab = Dict::lookup_opt(g.abstracts,n);
+  if(ab != null) return ab.v.1;
+  _ pr = Dict::lookup_opt(g.abstypes,n);
+  if(pr != null) return pr.v.1.all_tyvars;
+  terr2(loc,"unbound type constructor ",n);
+  return null;
+}
+  
+// name should already be completed
+void destruct_struct(global_env g, type_name n) {
+  _ pr = Dict::lookup(g.structs, n);
+  switch pr.2 {
+  case Destructed: ;
+  default:
+    pr.2 = ^type_use.Destructed;
+    _ fields = pr.1.fields;
+    for(; fields != null; fields = fields.tl)
+      mention_types(g,fields.hd.3);
+  }
+}
+void destruct_union(global_env g, type_name n) {
+  _ pr = Dict::lookup(g.unions, n);
+  switch pr.2 {
+  case Destructed: ;
+  default:
+    pr.2 = ^type_use.Destructed;
+    _ fields = pr.1.fields;
+    for(; fields != null; fields = fields.tl)
+      mention_types(g,fields.hd.2);
+  }
+} 
+void destruct_abstype(global_env g, type_name n) {
+  _ pr = Dict::lookup(g.abstypes, n);
+  switch pr.2 {
+  case Destructed: ;
+  default:
+    pr.2 = ^type_use.Destructed;
+    mention_types(g,pr.1.defn);
+  }
+}
+void destruct_exn(global_env g, string n) {
+  _ trip = Dict::lookup(g.exceptions, n);
+  if(!trip.3) {
+    trip.3 = true;
+    mention_types(g,trip.1);
+  }
+}
+
+static <location>Opt dummy_loc_opt = null;
+void mention_types(global_env g, typ t) {
+  if(dummy_loc_opt == null)
+    dummy_loc_opt = ^Opt(Gcdfec::seg_of_abs(0,0));
+  switch t {
+  case Evar*(_,to,_):   if(to!=null) mention_types(g,to.v);
+  case ArrayType*(t,_): mention_types(g,t);
+  case CArrayType*(t,_,_): mention_types(g,t);
+  case FnType*(_,_,t,ts): mention_types(g,t); List::iter_c(mention_types,g,ts);
+  case TupleType(ts):   List::iter_c(mention_types,g,ts);
+  case NamedType*(n,tl):  
+    List::iter_c(mention_types,g,tl);
+    full_type_name(dummy_loc_opt.v, g, n); // side effect is mention
+  case MutableTyp*(t):     mention_types(g,t);
+  case UnresolvedTyId(_): impossible("UnresolvedTyId in mention_types");
+  default: ;
+  }
+}
+
+static int type_constructor_arity(location loc,global_env g,type_name n) {
+  return List::length(type_constructor_args(loc,g,n));
+}
+      
+bool possibly_null(global_env genv,var n) {
+  try 
+    return Dict::lookup(genv.structs,n).1.possibly_null;
+  handle exc switch exc {
+  case Dict::Absent: 
+    try 
+      return Dict::lookup(genv.abstracts,n).2;
+    handle exc switch exc {
+    case Dict::Absent: return(false);
+    }
+  }
+}
+
+// compute the size in bytes of a type 
+static int size_of_typ(global_env genv,typ t) {
+  switch t {
+  case VoidType: return 0;
+  case Evar*(c,tor,_):
+    switch c {
+    case Any:
+      if (tor == null) return -1;
+      else return size_of_typ(genv,tor.v);
+    case Byte4:  return 4;
+    case Option: return 4;
+    }
+  case DoubleType: return 8;
+  case FloatType: return 4;
+  default: return 4;
+  }
+}
+
+// Check that an array size expression is a "constant" integer
+static void check_arraysize_expression(location loc,exp e) {
+  switch (e.raw_exp) {
+  case Const(c):
+    switch c {
+    case Int(_): return;
+    default: ; // skip
+    }
+  case Primop*(p,es):
+    if (es != null && 
+	es.tl != null &&
+	es.tl.tl == null) {
+      check_arraysize_expression(loc,es.hd);
+      check_arraysize_expression(loc,(es.tl).hd);
+      switch (p) {
+      case Plus: return;
+      case Times: return;
+      case Minus: return;
+      case Div: return;
+      case Mod: return;
+      case Bitand: return;
+      case Bitor: return;
+      case Bitxor: return;
+      case Bitlshift: return;
+      case Bitarshift: return;
+      default: ; // skip
+      }
+    }
+  default: ; // skip
+  }
+  terr(loc,"non-constant-expression in type");
+}
+
+// Check that a type is well-formed with respect to a global environment
+// and a list of potentially free type variables.
+// Resolve UnresolvedTyId via destructive update of MutableTyp
+void check_valid_type(location loc, global_env g,<var>list tyvars,typ t) {
+  switch t {
+  case MutableTyp(r):
+    switch r.1 {
+    case UnresolvedTyId(p):
+      _ n  = p.1;
+      _ ts = p.2;
+      if(List::mem(strcmp,tyvars,n))
+	if(ts == null)
+	  r.1 = ^typ.VarType(n);
+	else
+	  terr(loc,"type variable cannot take type parameters");
+      else {
+	_ nt = ^typ.NamedType(p);
+	r.1 = nt;
+	check_valid_type(loc,g,tyvars,nt);
+      }
+    default: check_valid_type(loc,g,tyvars,r.1);
+    }
+  case ArrayType*(t,eopt):
+    check_valid_type(loc,g,tyvars,t);
+    if (eopt != null)
+      check_arraysize_expression(loc,eopt.v);
+  case CArrayType*(t,sz,opt):
+    check_valid_type(loc,g,tyvars,t);
+    if(sz<=0) terr(loc,"illegal constant-array size.");
+  case FnType*(c,vs,t,ts):
+    check_valid_types(loc,g,append(vs,tyvars),^list(t,ts));
+  case NamedType(p):
+    type_name old_name = p.1;
+    type_name n = full_type_name(loc,g,old_name);
+    p.1 = n; // update the abstract syntax with the full name
+    <typ>list ts = p.2;
+    check_valid_types(loc,g,tyvars,ts);
+    if (List::length(ts) != type_constructor_arity(loc,g,n)) 
+      terr2(loc,"wrong number of type arguments for ",old_name);
+  case Evar*(_,r,_): if (r != null) check_valid_type(loc,g,tyvars,r.v);
+  case VarType(v):
+    if (!List::mem(strcmp,tyvars,v))
+      terr2(loc,"free type variable ",v);
+  case TupleType(ts): check_valid_types(loc,g,tyvars,ts);
+  default: ; // skip
+  }
+}
+// check a list of types
+void check_valid_types(location loc, global_env g,<var>list tyvars,<typ>list ts)
+{ 
+  while (ts != null) {
+    check_valid_type(loc,g,tyvars,ts.hd);
+    ts = ts.tl;
+  }
+}
+// check that the types in a function declaration are well-formed
+typ check_fundecl_valid_type(global_env g,location loc,fndecl fd) {
+  check_valid_type(loc,g,fd.tyvars,fd.ret_type);
+  for (_ x = fd.args; x != null; x = x.tl) 
+    check_valid_type(loc,g,fd.tyvars,x.hd.2);
+  return(fd_type(fd));
+}
+
+// instantiate a type t to yield a new type -- the instantiation is
+// an association list mapping type variables to types.
+typ subst(<*(var,typ)>list inst,typ t) {
+  switch t {
+  case VarType(v):
+    try 
+      return List::assoc_cmp(strcmp,inst,v);
+    handle exc switch exc {
+    case Not_found: return t;
+    }
+  case ArrayType*(t,eopt):
+    return ^typ.ArrayType(^(subst(inst,t),eopt));
+  case CArrayType*(t,sz,opt):
+    return ^.CArrayType(^(subst(inst,t),sz,opt));
+  case FnType*(c,vs,ret_type,arg_types):
+    for (_ p = vs; p != null; p = p.tl) 
+      inst = ^list(^(p.hd,^typ.VarType(p.hd)),inst);
+    return ^typ.FnType(^(c,vs,subst(inst,ret_type),substs(inst,arg_types)));
+  case TupleType(ts): return ^typ.TupleType(substs(inst,ts));
+  case NamedType(p):  return ^typ.NamedType(^(p.1,substs(inst,p.2)));
+  case Evar*(_,r,_):
+    if (r != null) return(subst(inst,r.v));
+    else return t;
+  case MutableTyp*(t): return subst(inst,t);
+  default: return t;
+  }
+}
+static <typ>list substs(<*(var,typ)>list inst,<typ>list ts) {
+  return List::map_c(subst,inst,ts);
+}
+
+// used to generate a fresh instantiation of polymorphic things.
+*(var,typ) gen_type_var(var v) {
+  return(^(v,new_evar(^var_class.Byte4)));
+}
+/////////////////////////////////////////////////////////////////////////////
+// Unification of types and coercions
+/////////////////////////////////////////////////////////////////////////////
+// compresses out any Evars that have been constrained 
+// also crawls under any MutableTyp constructors
+typ compress(typ t) {
+  switch t {
+  case Evar(p):
+    if (p.2 == null)
+      return(t);
+    else {
+      typ t2 = compress(p.2.v);
+      p.2 = ^Opt(t2);
+      return t2;
+    }
+  case MutableTyp*(t): return compress(t);
+  default: return(t);
+  }
+}
+static exception Unify;
+bool unify(global_env g,typ t1,typ t2) {
+  try {
+    unify_it(g,t1,t2);
+    return true;
+  } handle excep switch excep {
+  case Unify: return false;
+  }
+}
+// check to see if an Evar occurs in a type, raising Unify if so
+static void occurs(typ evar, typ t) {
+
+  void occurslist(typ evar,<typ>list ts) {
+    for(; ts != null; ts = ts.tl)
+      occurs(evar,ts.hd);
+  };
+
+  switch t {
+  case Evar*(_,r,_): 
+    if (t == evar) raise Unify();
+    else if (r != null) occurs(evar,r.v);
+  case ArrayType*(t,_):  occurs(evar,t);
+  case CArrayType*(t,_,_): occurs(evar,t);
+  case FnType*(_,_,t,ts):  occurslist(evar,^list(t,ts));
+  case TupleType(ts):    occurslist(evar,ts);
+  case NamedType*(_,ts): occurslist(evar,ts);
+  case MutableTyp*(t):   occurs(evar,t); 
+  default: ; // skip
+  }
+}
+
+static void unify_it(global_env g,typ t1,typ t2) {
+
+  void unify_list(global_env g,<typ>list t1,<typ>list t2) {
+    try 
+      List::iter2_c(unify_it,g,t1,t2);
+    handle excep switch excep {
+    case List_mismatch: raise Unify();
+    }
+  };
+
+  t1 = compress(t1);
+  t2 = compress(t2);
+
+  // this should cover VoidType, BooleanType, StringType, CharType, and
+  // ExnType as well as Evar's that happen to be the same or two types
+  // that happen to be physically (pointer) equal.
+  if (t1 == t2) return;  
+
+  // check for the case when t1 is an Evar
+  switch t1 {
+  case Evar(p1):
+    _ c1 = p1.1;
+    _ r1 = p1.2;
+    // if r1 is not null then the Evar has already been constrained to
+    // be equal to some type -- unify t2 with that type.
+    if (r1 != null) {
+      unify_it(g,r1.v,t2);
+      return;
+    }
+    // otherwise, make sure t1 doesn't occur in t2 -- note that if t2 == t1
+    // we will have caught it above since we've compressed the types and
+    // checked for physical equality.  Hence the occurs check can only
+    // be done when t2 is not equal to t1.
+    occurs(t1,t2);
+    // constrain t1 to be equal to t2 according to the class of Evar of t1.
+    switch c1 {
+    case Any: p1.2 = ^Opt(t2); // t2 can be anything
+    case Byte4: // t2 must be a 4-byte type
+      switch t2 {
+      case Evar(p2):
+	_ c2 = p2.1;
+	_ r2 = p2.2;
+
+	switch c2 {
+	case Any:    
+	  if(r2==null) p2.2 = ^Opt(t1);
+	  else { 
+	    unify_it(g,t1,r2.v); 
+	    return; }
+	case Byte4:  p1.2 = ^Opt(t2);
+	case Option: p1.2 = ^Opt(t2);
+	}
+      default:
+	if (size_of_typ(g,t2) != 4) {
+	  printf("size of %s is %d\n",typ2string(t2),size_of_typ(g,t2));
+	  raise Unify();
+	}
+	p1.2 = ^Opt(t2);
+      }
+    case Option: // t2 must be a ?-struct type
+      switch t2 {
+      case Evar(p2):  // t2 is an Evar -- check that it's a ?-struct var
+	_ c2 = p2.1;
+	if(p2.2==null) {
+	  switch c2 {
+	  case Any:    p2.2 = ^Opt(t1);
+	  case Byte4:  p2.2 = ^Opt(t1);
+	  case Option: p1.2 = ^Opt(t2);
+	  }
+	} else { // Should never happen as t1 and t2 are compressed.
+	  unify_it(g,t1,p2.2.v);
+	  return;
+	}
+      case NamedType*(n,_): // t2 is a struct type -- check that it's ?
+	if (possibly_null(g,n))
+	  p1.2 = ^Opt(t2);
+	else raise Unify();
+      case CArrayType*(_,_,opt):
+	if(opt)
+	  p1.2 = ^Opt(t2);
+	else raise Unify();
+      default: raise Unify(); // otherwise error
+      }
+    }
+  default: // t1 is not an evar and t1 != t2
+    // we're forced to look at t2 here because it might be an Evar
+    switch t2 {
+    case Evar(_): // t2 is an evar, swap t1 and t2 and try again
+      unify_it(g,t2,t1);
+      return;
+    case ArrayType*(t3,_): // t2 is an array
+      switch t1 {
+      case ArrayType*(t4,_):  // see if t1 is an array and unify the elt type
+	unify_it(g,t3,t4);  // should really check the expressions too
+      default: raise Unify();
+      }
+    case CArrayType*(t3,sz2,opt2):
+      switch t1 {
+      case CArrayType*(t4,sz1,opt1):
+	unify_it(g,t3,t4);
+	if(sz1 != sz2) raise Unify();
+	// if(opt1 != opt2) raise Unify(); // XXX - maybe should relax this.
+      default: raise Unify();
+      }
+    case FnType*(c2,vs2,ret_typ2,arg_types2): // t2 is a function type 
+      switch t1 { 
+      case FnType*(c1,vs1,ret_typ1,arg_types1): // t1 is a function type
+	if(c1!=c2) raise Unify();
+      <*(var,typ)>list inst = null;
+      // We must rename the bound type-variables so they're consistent.
+      // this builds a map from the bound variables in t2 to the 
+      // bound variables in t1 and checks that the lists are of the
+      // same length.
+      while (vs1 != null) {
+	if (vs2 == null) raise Unify();
+	inst = ^list(^(vs2.hd,^typ.VarType(vs1.hd)),inst);
+	vs1 = vs1.tl;
+	vs2 = vs2.tl;
+      }
+      if (vs2 != null) raise Unify();
+      // Apply the substitution to the types in t2 and attempt to unify
+      // them with the types in t1.
+      unify_list(g,^list(ret_typ1,arg_types1),
+		 substs(inst,^list(ret_typ2,arg_types2)));
+      default: raise Unify(); // t1 was not a function type but t2 was
+      }
+    case TupleType(ts2): // t2 is a tuple type
+      switch t1 {
+      case TupleType(ts1): unify_list(g,ts1,ts2); 
+      default: raise Unify();
+      }
+    case NamedType*(n2,ts2): // t2 is a named type
+      switch t1 {
+      case NamedType*(n1,ts1): // t1 is a named type
+	if (strcmp(n1,n2) != 0) // are the names the same?
+	  raise Unify(); 
+	unify_list(g,ts1,ts2);  // if so, unify the type arguments
+      default: raise Unify(); // t1 is not a named type
+      }
+    case VarType(x): // t2 is a (bound) variable
+      switch t1 {
+      case VarType(y): // t1 is a (bound) variable
+	if (strcmp(x,y) != 0) raise Unify();  // are they the same variable?
+      default: raise Unify();
+      }
+    case IntType(p2): // t2 is an integer of some flavor
+      switch t1 {
+      case IntType(p1): // t1 is an integer of some flavor
+	// are the flavors the same?
+	if ((p1.1 != p2.1) || (p1.2 != p2.2)) 
+	  raise Unify();
+      default: raise Unify(); // t1 is not an integer
+      }
+    case FloatType:
+      switch t1 {
+      case FloatType: ;
+      default: raise Unify();
+      }
+    case DoubleType:
+      switch t1 {
+      case DoubleType: ;
+      default: raise Unify();
+      }
+    // t2 is either void,char,string, etc. but not equal to t1
+    default: raise Unify(); 
+    }
+  }
+} // unify_it
+
+exp add_cast(exp e) {
+  _ t = ^.IntType(^(true,^.B4)); // Could share this type. FIX!
+  return ^exp(^Opt(t),^.Cast(^(t,e)),e.assigned_to,e.loc);
+}
+
+
+// Poptranslate requires that conversions between ints and float pass through
+// signed int because the x86 only supports conversions between floats and 
+// signed ints.  If f is a float and s is a short we convert as follows:
+// (: short) f  becomes (:short)(:int)f
+// (: float) s  becomes (:float)(:int)s
+// Doubles are exactly the same as floats.
+void rewrite_cast(exp e) {
+
+  _ x = e.raw_exp.Cast;
+  _ e2 = x.2;
+  _ dest_t = x.1;
+
+  _ src_t = e2.typ.v;
+  switch dest_t {
+  case FloatType:
+    switch src_t {
+    case IntType*(_,sz) : 
+      if(sz!=^.B4) e.raw_exp = ^.Cast(^(dest_t,add_cast(e2)));
+    default: ;
+    }
+  case DoubleType:
+    switch src_t {
+    case IntType*(_,sz):
+      if(sz!=^.B4) e.raw_exp = ^.Cast(^(dest_t,add_cast(e2)));
+    default: ;
+    }
+  case IntType *(_,sz):
+    if(sz!=^.B4) {
+      switch src_t {
+      case FloatType:  e.raw_exp = ^.Cast(^(dest_t,add_cast(e2)));
+      case DoubleType: e.raw_exp = ^.Cast(^(dest_t,add_cast(e2)));
+      default:;
+      }
+    }
+  default: ;
+  }
+}
+
+// insert a cast
+void coerce(exp e,typ t) {
+  _ e_new = ^exp(e.typ,e.raw_exp,e.assigned_to,e.loc);
+  e.raw_exp = ^raw_exp.Cast(^(t,e_new));
+  e.typ = ^Opt(t);
+  rewrite_cast(e);
+}
+
+bool coercable(typ t) {
+  switch compress(t) {
+  case IntType(_): return true;
+  case CharType:   return true;
+  case FloatType:  return true;
+  case DoubleType: return true;
+  default:         return false;
+  }
+}
+
+/* Coercions 
+ * There are 3 basic coercion schemes used in ANSI C:
+ *
+ * 1. "the integral promotions:" chars, shorts, enumerated types
+ *     are promoted to int. If either argument is unsigned int, convert the
+ *     other to unsigned int. 
+ *     See K&R A6.1 for definition.
+ *     Used in integer operations (bit shifting) subscripting, 
+ *     switch statements, etc.  
+ *     Implemented here in function unify_coerce_int.
+ *
+ * 2. "the usual arithmetic conversions:" two arithmetic types 
+ *     (ie: char,int(signed/unsigned),float,double) are compared and promoted.
+ *     There is a hierarchy: signed int < unsigned int < float < double.
+ *     Promote one argument to the type of the higher one in the hierarchy.
+ *     Types of size smaller than int are always promoted to signed int.
+ *     See K&R A6.5 for definition.
+ *     Used in general arithmetic operations (add,subtract,mul,div).
+ *     Implemented here in function unify_coerce2.
+ * 
+ * 3. Any arithmetic type converts with any other arithmetic type in
+ *    assignment, as a function argument, as a return value.  These
+ *    coercions happen implicitly, even if precision is lost.
+ *    Implemented here in function unify_coerce1.
+ *
+ *    This implementation differs significantly from the OCaml version
+ *    because no pattern-matching but is intended to implement the same
+ *    functionality.
+ */
+
+// Assume both types have been compressed!
+// Only works for numeric (coercable) types.
+bool arith_leq(typ t1, typ t2) {
+  switch t2 {
+  case DoubleType:
+    switch t1 {
+    case DoubleType: ;
+    case FloatType: ;
+    case IntType(_): ;
+    case CharType: ;
+    default: return false;
+    }
+    return true;
+  case FloatType:
+    switch t1 {
+    case FloatType: ;
+    case IntType(_): ;
+    case CharType: ;
+    default: return false;
+    }
+    return true;
+  case IntType *(signed2,sz2):
+    if(!signed2 && sz2==^.B4) { // t2 == unsigned int
+      switch t1 {
+      case IntType(_): return true;
+      case CharType:   return true;
+      default:         return false;
+      }
+    }
+    switch t1 {
+    case IntType *(signed1,sz1):
+      if(!signed1 && sz1 == ^.B4) return false; // t1==unsigned int, t2 is not.
+      return true; // All other int types are effectively equal.
+    case CharType: return true;
+    default: return false;
+    }
+  case CharType:
+    switch t1 {
+    case CharType: return true;
+    default: return false;
+    }
+  default: return false;
+  }
+}
+
+// unify the types of two expressions if possible.
+// If not, attempt to coerce one to the other --
+// we assume the expressions already have types on them.
+bool unify_coerce2(global_env g,exp e1,exp e2) {
+  typ t1 = compress(e1.typ.v);
+  typ t2 = compress(e2.typ.v);
+  if (unify(g,t1,t2))
+    return true;
+
+  _ t1_leq_t2 = arith_leq(t1,t2);
+  _ t2_leq_t1 = arith_leq(t2,t1);
+
+  if(!t1_leq_t2 && !t2_leq_t1) return false;
+  if(!t2_leq_t1) { // Swap the arguments so that e2 < e1 in the hierarchy.
+    _ temp = t2;
+    t2 = t1;
+    t1 = temp;
+
+    _ temp2 = e2;
+    e2 = e1;
+    e1 = temp2;
+  }
+
+  switch t1 {
+  case DoubleType: coerce(e2,t1); return true;
+  case FloatType:  coerce(e2,t1); return true;
+  case IntType*(signed1,s1):
+    _ signed_int = ^.IntType(^(true,^.B4));
+    if(s1 != ^.B4) { // If t1 is small coerce it to a signed int.
+      coerce(e1,signed_int);
+    }
+
+    switch t2 {
+    case IntType*(signed2,s2):
+      // If t2 is unsigned do nothing.
+      // Swap above ensures that if t2 is an unsigned int, so is t1.
+      // Otherwise apply the default coercion.
+      if(s2==^.B4 && !signed2) return true;
+      coerce(e2,signed_int);
+      return true;
+    case CharType:
+      coerce(e2,signed_int);
+      return true;
+    default: return false; // Should never happen!
+    }
+  case CharType:
+    _ signed_int = ^.IntType(^(true,^.B4));
+    switch t2 {
+    case IntType*(u2,s2): // Should never happen.
+      if (s2 != ^size_of.B4)
+	coerce(e2,signed_int);
+      coerce(e1,signed_int);
+      return true;
+    case CharType: // Could happen.
+      coerce(e1,signed_int);
+      coerce(e2,signed_int);
+      return true;
+    default: return false;
+    }
+  default: return false;
+  }
+}
+
+/* Given a typed expression e, perform "the integral promotions" only:
+
+   K&R rule A.6:  A char, short, enumerated type may be used wherever an 
+   integer may be used. If an int can represent all values of the
+   original type then the value is converted to an int.  Otherwise
+   the value is converted to unsigned int.
+
+   Return true if e can be promoted to an integral type. */
+
+bool unify_coerce_int(global_env g, exp e) {
+  _ te = compress(e.typ.v);
+  _ unsigned_int = ^.IntType(^(false,^.B4));
+  _ signed_int   = ^.IntType(^( true,^.B4));
+
+  if(unify(g,te,unsigned_int)) return true;
+
+  switch te {
+  case IntType*(sgnd,sz):
+    if(sgnd && sz == ^.B4) return true;
+    if(sz != ^.B4) { coerce(e,signed_int); return true; }
+    return false;
+  case CharType: coerce(e,signed_int); return true;
+  default: return false;
+  }
+}
+// Given a target type and a typed expression, coerce e to the target type if
+// possible.
+bool unify_coerce1(global_env g, exp e, typ t) {
+  t = compress(t);
+  typ te = compress(e.typ.v);
+
+  if (unify(g,te,t))
+    return true;
+
+  if(coercable(t) && coercable(te)) {
+    coerce(e,t); return true;
+  }
+  return false;
+  /*  FMS: This is old code.  Now match Ocaml implementation. 
+  switch te {
+  case IntType(_):
+    switch t {
+    case IntType(_): coerce(e,t); return true;
+    case CharType:   coerce(e,t); return true;
+    default:         return false;
+    }
+  case CharType:
+    switch t {
+    case IntType(_): coerce(e,t); return true;
+    case CharType:   coerce(e,t); return true;
+    default:         return false;
+    }
+  default: return false;
+  }
+  */
+}
+
+// returns an expression for a default initializer for a type t (if any) 
+// hopefully some or all of this can go away soon
+exp default_initializer(global_env g,typ t,location loc) {
+  _ re = ^exp(null,^raw_exp.Const(^cnst.Null),null,loc);
+  switch compress(t) {
+  case IntType*(signd,_):
+    re.raw_exp = ^raw_exp.Const(^cnst.Int(0));
+    if (!signd)
+      re = ^exp(null,^raw_exp.Cast(^(t,re)),null,loc);
+  case BooleanType: re.raw_exp = ^raw_exp.Const(^cnst.Bool(false));
+  case StringType:  re.raw_exp = ^raw_exp.Const(^cnst.String(""));
+  case CharType:    re.raw_exp = ^raw_exp.Const(^cnst.Char('\000'));
+  case FloatType:   re.raw_exp = ^raw_exp.Const(^cnst.Float(0.0f));
+  case DoubleType:  re.raw_exp = ^raw_exp.Const(^cnst.Double(0.0));
+  case ArrayType*(t,eopt):
+    if (eopt == null)
+      re.raw_exp = ^raw_exp.ConstArray(^(null,^Opt(t)));
+    else {
+      re.raw_exp = 
+	^raw_exp.FunCall(^(^exp(null,^raw_exp.Var("new_array"),null,loc),null,
+	^list(eopt.v,^list(default_initializer(g,t,loc),null))));
+    }
+  case CArrayType *(t,sz,opt):
+    if(opt) return re;
+    _ di = default_initializer(g,t,loc);
+    _ dis = null;
+    for(int i = 0; i < sz; i++) {
+      dis = ^list(di,dis);
+    }
+    re.raw_exp = ^.ConstCArray(dis);
+  case TupleType(ts):
+    re.raw_exp = ^raw_exp.NewTuple(List::map_c(def_init,^(g,loc),ts));
+  case NamedType(p):
+    _ n  = p.1;
+    _ ts = p.2;
+    // check for an opened type name
+    if (!(Dict::member(g.structs,n) 
+	  || Dict::member(g.unions,n)
+	  || Dict::member(g.abstracts,n))) {
+      try {
+	n = Dict::lookup(g.open_typs,n);
+	p.1 = n;
+      } handle excep switch excep {
+      case Dict::Absent: terr2(loc,"unbound type name ",n);
+      }
+    }
+    // if it's possibly null, we're done otherwise...
+    if (possibly_null(g,n)) return re;  
+    _ sdopt = Dict::lookup_opt(g.structs,n);
+    _ udopt;
+    if (sdopt != null) {
+      // n is a struct -- return a struct of the default expressions for
+      // each of the field types.
+      _ sd = sdopt.v.1;
+      _ inst = List::zip(sd.tyvars,ts);
+      _ es = 
+	List::map_c(fun *(<field_name>Opt,exp)
+		     f(*(*(global_env,location),<*(var,typ)>list) env,
+		       *(field_name,capability,typ)               field){
+		       return ^(null,def_init(env.1,subst(env.2,field.3)));
+		    },
+                   ^(^(g,loc),inst), 
+		   sd.fields);
+      re.raw_exp = ^raw_exp.NewStruct(^(n,^Opt(ts),es));
+    } else if ((udopt = Dict::lookup_opt(g.unions,n)) != null) {
+      // n is a union -- return the first field (and an expression of the
+      // argument type if any.)
+      _ ud = udopt.v.1;
+      if (ud.fields == null) {
+	terr(loc,"Union has no fields!");
+      } else {
+	// get first field
+	_ field = ud.fields.hd.1;
+	// get its type
+	typ t = ud.fields.hd.2;
+	// if it's void then the field doesn't carry a value
+	if (t == ^typ.VoidType) 
+	  re.raw_exp = ^raw_exp.NewUnion(^(n,^Opt(ts),field,null));
+	else {
+	  // otherwise construct a default value for that type
+	  _ inst = List::zip(ud.tyvars,ts);
+	  _ e = ^Opt(default_initializer(g,subst(inst,t),loc));
+	  re.raw_exp = ^raw_exp.NewUnion(^(n,^Opt(ts),field,e));
+	}
+      }
+    } else 
+      terr(loc,"Abstract types require initializers.");
+  case FnType(_): terr(loc,"function pointer declarations require initializer");
+  case ExnType:   terr(loc,"exception declarations require initializer");
+  default:
+    terr3(loc,"declaration of type ",typ2string(t)," requires initializer");
+  }
+  return re;
+}
+
+static exp def_init(*(global_env,location) env,typ t) {
+  return(default_initializer(env.1,t,env.2));
+}
+
+
+

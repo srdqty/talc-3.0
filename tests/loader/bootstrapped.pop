@@ -1,0 +1,23 @@
+
+extern int fact (int);
+extern string name (int);
+
+int fact(int n) 
+{
+  int a = 1;
+  
+  while (n > 1) 
+    {
+      a = a * n;
+      n--;
+    }
+  return(a); 
+}
+
+string name( int n )
+{
+  if (n == 0) {
+    return "zero";
+  }
+  return "nonzero integer";
+}

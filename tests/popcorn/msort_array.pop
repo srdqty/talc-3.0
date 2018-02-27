@@ -1,0 +1,44 @@
+/* Test sorting a Popcorn array */
+
+#include "unix.h"
+#include "core.h"
+#include "array.h"
+
+static int generate_array(int sz) [] {
+  int arr[];
+  arr = new_array(sz,0);
+  srandom(unix_time());
+  for (int i = 0; i<sz; i++) {
+    arr[i] = random() % sz;
+  }
+  return arr;
+}
+
+static void print_array(int arr[]) {
+  int i, len;
+  len = size(arr);
+  for (i=0; i<len; i++) {
+    Core::print_int(arr[i]);
+    Core::print_string(" ");
+  }
+  Core::print_string("\n");
+}
+
+void pop_main() {
+  string args[] = std_args();
+  int arr[] = { 5, 2, 5, 2, 3, 2, 3};
+  int sz;
+
+  if (size(args) != 2) {
+    fprintf(tal_stderr,"usage: %s <size of array>\n",args[0]);
+    exit(0);
+  }
+  sz = Core::int_of_string(args[1]);
+  arr = generate_array(sz);
+  print_array(arr);
+  Core::print_string("\n=========\nSorted\n=========\n");
+  Array::qsort(Core::intcmp,arr,0,size(arr));
+  print_array(arr);
+  return;
+}
+  

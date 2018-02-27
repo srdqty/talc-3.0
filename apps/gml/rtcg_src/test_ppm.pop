@@ -1,0 +1,16 @@
+
+#include "ppm.h"
+
+void pop_main() {
+
+  _ p = Ppm::init(500,500);
+
+  for(_ i = 0; i < 500; i++) {
+    for(_ j = 0; j < 500 ;j++) {
+      if(i%4==0) Ppm::setp(p,i,j,0,0,255);
+    }
+  }
+
+  Ppm::dump("test.ppm",p);
+
+}

@@ -1,0 +1,120 @@
+ 	INCLUDE	TAL.INC
+	_begin_TAL
+
+
+	TAL_IMPORT	pop_runtime.tali
+	TAL_IMPORT	loader.tali
+	TAL_IMPORT	pop_load_i.tali
+	
+	TAL_EXPORT 	pop_load_e.tali
+
+	TYPE	<?arr = fn c:T4 . Exist[?sz:Sint].^*[S(?sz)^r,array(?sz,c^rw)]>
+	TYPE	<?str = Exist[?sz:Sint].^*[S(?sz)^r,array(?sz,B1^rw)]>
+	TYPE	<?exnname = fn c$0:Tm . ^T^rw(c$0)*[junk 4]>
+	TYPE	<?exn = Exist[c$0:Tm].^*[(?exnname c$0)^r,c$0]>
+	TYPE	<?H = fn s:Ts cg:Tt . code {TLA: ^*[cg^rw],EAX: ?exn,ESP: sptr s}>
+	TYPE	<?E = fn s:Ts cg:Tt . (?H s cg)::s>
+	TYPE	<?S = fn ?ret:T4 ?s1:Ts ?s2:Ts cg:Tt . (code {TLA: ^*[cg^rw],EAX: ?ret,EBP: sptr (?E ?s2 cg),ESP: sptr ?s1@(?E ?s2 cg)})::?s1>
+	TYPE	<?Sv = fn ?s1:Ts ?s2:Ts cg:Tt . (code {TLA: ^*[cg^rw],EBP: sptr (?E ?s2 cg),ESP: sptr ?s1@(?E ?s2 cg)})::?s1>
+	TYPE	<?Ha = fn ?s1:Ts ?s2:Ts cg:Tt . (sptr (?E ?s2 cg))::(?s1@(?E ?s2 cg))>
+
+type < fntype = fn ret:T4 args:Ts. \
+ (All[s1:Ts s2:Ts cg:Tt]. code {TLA: ^*[cg^rw], EBP: sptr (?E s2 cg), ESP: sptr  \
+   (?S ret (args@s1) s2 cg)@(?E s2 cg)})>
+
+type <prod_int2int = *[(fntype B4 (B4::se))^rw] >
+type <prod_2xint2int = *[(fntype B4 (B4::se))^rw,(fntype B4 (B4::se))^rw]  >
+
+CODE
+
+
+_pop_load:
+LABELTYPE<All[s1:Ts s2:Ts cg:Tt].code {TLA: ^*[cg^rw],EBP: sptr (?E s2 cg), \ 
+	ESP: sptr (?S (`Core?Opt? (^prod_int2int)) ?str::?str::s1 s2 cg)@(?E s2 cg)}>
+	push 	EBP	
+	push 	_string134
+	push 	DWORD PTR [ESP+16]
+	push 	DWORD PTR [ESP+16]
+	call tapp(_tal_load,<prod_int2int, \
+		(sptr (?E s2 cg))::(?S (`Core?Opt? (^prod_int2int)) ?str::?str::s1 s2 cg)@(?E s2 cg), cg>)
+	ADD	ESP,12
+	POP	EBP
+	MOV	EBX,EAX
+	NAMEOBJ p,EBX
+	CMP	EBX,0
+	JE	_null_label
+	MALLOC 	p2,4
+	MOV 	[EAX], forgetname(EBX)
+	FORGETUNIQUE	p2
+	COERCE 	forgetname(EAX)
+	REMOVENAME p
+	COERCE 	roll(<^T(0)(`Core?Opt?mem (^prod_int2int))>, EAX)
+	COERCE	rollsum(<`Core?Opt? (^prod_int2int)>, EAX)
+	RETN 
+_null_label:
+	REMOVENAME p	
+	MOV	EAX,rollsum(<`Core?Opt? (^prod_int2int)>, 0)
+	RETN
+
+
+_pop_load2:
+LABELTYPE<All[s1:Ts s2:Ts cg:Tt].code {TLA: ^*[cg^rw],EBP: sptr (?E s2 cg), \ 
+	ESP: sptr (?S (`Core?Opt? (^prod_2xint2int)) ?str::?str::s1 s2 cg)@(?E s2 cg)}>
+	push 	EBP
+	push 	_string135
+	push 	DWORD PTR [ESP+16]
+	push 	DWORD PTR [ESP+16]
+	call 	tapp(_tal_load, <prod_2xint2int, \
+		(sptr (?E s2 cg))::(?S (`Core?Opt? (^prod_2xint2int)) ?str::?str::s1 s2 cg)@(?E s2 cg), cg>)
+	ADD	ESP,12
+	POP 	EBP
+	MOV	EBX,EAX
+	NAMEOBJ p,EBX
+	CMP	EBX,0
+	JE	_null_label2
+	MALLOC 	p2,4
+	MOV 	[EAX], forgetname(EBX)
+	FORGETUNIQUE	p2
+	COERCE 	forgetname(EAX)
+	REMOVENAME p
+	COERCE 	roll(<^T(0)(`Core?Opt?mem (^prod_2xint2int))>, EAX)
+	COERCE	rollsum(<`Core?Opt? (^prod_2xint2int)>, EAX)
+	RETN 
+_null_label2:
+	REMOVENAME p	
+	MOV	EAX,rollsum(<`Core?Opt? (^prod_2xint2int)>, 0)
+	RETN
+
+
+DATA
+
+_string134:
+COERCE	pack(<137>, ?, <Exist[i:Sint].^*[S(i)^rw,Rep(prod_int2int,i)^r]>)
+	DD	137  
+	DTYPEREP	\
+ 9, 115, 49, 0, 115, 50, 0, 99, 103, 0, 99, 36, 48, 0, 73, 52, 86, 1, 86, 3,\
+ 115, 5, 84, 74, 4, 42, 3, 11, 86, 7, 33, 1, 1, 13, 1, 15, 66, 70, 17, 82,\
+ 42, 5, 19, 15, 33, 1, 1, 21, 0, 69, 7, 77, 9, 23, 86, 5, 70, 27, 66, 42, 3,\
+ 29, 33, 1, 1, 31, 0, 99, 1, 109, 1, 7, 65, 25, 1, 33, 35, 67, 37, 58, 39, 5,\
+ 64, 3, 41, 58, 1, 43, 115, 45, 115, 41, 109, 0, 47, 49, 65, 1, 1, 33, 35,\
+ 67, 51, 58, 53, 45, 115, 55, 109, 0, 57, 49, 1, 33, 35, 67, 59, 65, 5, 116,\
+ 61, 65, 3, 83, 63, 65, 1, 83, 65, 70, 67, 66, 42, 3, 69, 1, 71
+
+_string135: 
+COERCE	pack(<138>, ?, <Exist[i:Sint].^*[S(i)^rw,Rep(prod_2xint2int,i)^r]>)
+	DD	138
+	DTYPEREP	\
+9, 115, 49, 0, 115, 50, 0, 99, 103, 0, 99, 36, 48, 0, 73, 52, 86, 1, 86, 3,\
+ 115, 5, 84, 74, 4, 42, 3, 11, 86, 7, 33, 1, 1, 13, 1, 15, 66, 70, 17, 82,\
+ 42, 5, 19, 15, 33, 1, 1, 21, 0, 69, 7, 77, 9, 23, 86, 5, 70, 27, 66, 42, 3,\
+ 29, 33, 1, 1, 31, 0, 99, 1, 109, 1, 7, 65, 25, 1, 33, 35, 67, 37, 58, 39, 5,\
+ 64, 3, 41, 58, 1, 43, 115, 45, 115, 41, 109, 0, 47, 49, 65, 1, 1, 33, 35,\
+ 67, 51, 58, 53, 45, 115, 55, 109, 0, 57, 49, 1, 33, 35, 67, 59, 65, 5, 116,\
+ 61, 65, 3, 83, 63, 65, 1, 83, 65, 70, 67, 66, 42, 5, 69, 69, 1, 71
+
+
+	_end_TAL
+	END
+
+
+

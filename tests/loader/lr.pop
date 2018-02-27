@@ -1,0 +1,39 @@
+#include "core.h"
+open Core;
+
+extern <b>Opt cast<a,b>(a, <a>rep, <b>rep);
+extern <a>Opt tal_load<a>(<a>rep, string, string);
+
+abstype entry[a] = *(<a>rep,a);
+
+<int>rep gtrep = repterm@<int>;
+<a <a>(string, <a>Core::Opt)>rep lrep = repterm@<a <a>(string, <a>Core::Opt)>;
+
+exception Foo;
+
+a foo<a>(string s,<a>Core::Opt o) {
+  if (o == null)
+    raise Foo();
+  else
+    return o.v;
+}
+
+<*(void (a lsym<a> (string, <a>rep), 
+	void asym<a> (string, <a>rep, a)))>rep inittype =
+  repterm@<*(void (a lsym<a> (string, <a>rep), 
+	           void asym<a> (string, <a>rep, a)))>;
+
+// DISALLOWED
+<a>rep makerep<a>() {
+  return repterm@<a>;
+}
+
+void pop_main() {
+  <int>rep trep = repterm@<int>;
+
+  int a = 1;
+  <int>Opt b;
+  b = cast(a,trep,gtrep);
+  return;
+}
+

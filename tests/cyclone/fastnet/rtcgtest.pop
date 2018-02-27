@@ -1,0 +1,40 @@
+#include "absyn.h"
+#include "env.h"
+#include "svc.h"
+#include "core.h"
+open Core;
+
+int cg_test(int w, int x)
+{
+  int i = 3 + 4;
+
+  int f(int, int, int) = 
+      codegen(int spec(int a, int b, int c)
+	    {
+	      int res = a;
+	      
+	      res = res + b;
+	      res = res + 1;
+	      
+	      return res;
+	    });
+  i = i + f(w + x, 5, 7);
+
+  return i;
+}
+
+
+/* dynamic service */
+value RTCGtest(<value> List::list vl, pop_pkt ppkt)
+{
+  printf("RTCGtest works!\n");
+
+  return(^value.Unit);
+}
+
+/* Called when the file is loaded */
+static void init () {
+  printf("Adding service: RTCGtest\n");
+  Svc::svc_env = ^List::list(^("RTCGtest", RTCGtest),Svc::svc_env);
+  return;
+}

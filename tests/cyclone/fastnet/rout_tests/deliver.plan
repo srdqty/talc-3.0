@@ -1,0 +1,21 @@
+(* tests delivery of data to an application waiting on socket 'num' *)
+svc openPort : int -> port
+svc deliver : (port,'a) -> unit
+svc closePort : port -> unit
+svc OpenFailed : exn
+
+fun stuff(num)=
+  try
+    let val m = openPort(num)
+        val h = hd thisHost()
+        val i = 100323
+        val s = "hello"
+    in
+      (deliver(m,h); deliver(m,i); deliver(m,s); deliver(m,m);
+       closePort(m))
+    end
+  handle OpenFailed => 
+    (print("No server listening on host ");
+     print(thisHost());
+     print(" on port ");
+     print(num))

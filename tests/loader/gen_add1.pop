@@ -1,0 +1,52 @@
+// #include "dlpop.h"
+#include "core.h"
+open Core;
+
+extern void func(int);
+
+/*
+ * Test that we can 
+ */
+abstract struct window {
+  int x;
+  int y;
+}
+
+window make (int x, int y) {
+ return new window (x,y);
+}
+
+void print_window(window w) {
+  printf("window = (%d,%d)\n",w.x,w.y);
+}
+
+/* shouldn't conflict with definition in gen_add_call.pop */
+static struct bad2 {
+  int a (int);
+}
+
+/* from gen_add_call.pop */
+extern struct fart {
+  int a;
+  int b;
+}
+extern fart aFart;
+
+struct bstruct { int i; int j; }
+bstruct b;
+
+void print_b() {
+  print_string("entering gen_add1:print_b\n");
+  aFart.a = 2;
+  func(b.i);
+  func(b.j);
+  print_string("leaving gen_add1:print_b\n");
+} 
+
+static void init () {
+  print_b();
+//  handle_t h = dlopen("gen_add2");
+//  void alter_b() = dlsym(h, "alter_b");
+//  dlclose(h);
+}
+

@@ -1,0 +1,155 @@
+/* copyright (c) 1998, Greg Morrisett
+ * parse.pop:  parser for the calculator example Popcorn program
+ *
+ * imports:
+ *   print_char, print_string -- from calclib.c & stdlib.c
+ *   type token -- from lex.c
+ *   peek_token, next_token, print_token -- from lex.c
+ *   
+ * exports:
+ *   type operator (+,-,*,/,;)
+ *   type exp (number, identifier, assignment, compound)
+ *   exp get_exp()  parses an expression from stdin using the lexer
+ */
+extern void print_char(char);
+extern void print_string(string);
+
+extern union token {
+  char ERROR;
+  void EOF;
+  int  Number;
+  string Ident;
+  void LPAREN;
+  void RPAREN;
+  void DIV;
+  void ASTERISK;
+  void PLUS;
+  void MINUS;
+  void EQUAL;
+  void SEMICOLON;
+}
+
+extern token peek_token();
+extern token next_token();
+extern void print_token(token);
+
+union operator {
+  void Plus;
+  void Minus;
+  void Times;
+  void Div;
+  void Semi;
+}
+
+union exp {
+  int Number;
+  string Ident;
+  *(string,exp) Assign;
+  *(exp,operator,exp) Compound;
+  
+}
+
+static exp error(string s) {
+  print_string("ERROR: ");
+  print_string(s);
+  print_char('\n');
+  return(new exp.Number(0));
+}
+
+static exp get_aexp() {
+  switch(peek_token()) {
+    case Number(n):  next_token(); return(new exp.Number(n));
+    case Ident(x): 
+      { 
+	next_token(); 
+	switch(peek_token()) {
+	  case EQUAL:
+	    next_token();
+	    return(new exp.Assign(new(x,get_cexp())));
+	  default:
+	    return(new exp.Ident(x));
+        }
+      }
+    case LPAREN:
+      {
+	next_token();
+        exp e = get_cexp();
+        switch (peek_token()) {
+	  case RPAREN: next_token(); return(e);
+          default:     return(error("missing right paren"));
+        }
+      }
+    default:  return(error("bad expression1"));
+  }
+}
+
+static exp get_bexp() {
+
+  exp e = get_aexp();
+
+  switch(peek_token()) {
+    case ASTERISK:
+      {
+        next_token();
+        return(new exp.Compound(new(e,new operator.Times,get_bexp())));
+      }
+    case DIV:
+      {
+        next_token();
+        return(new exp.Compound(new(e,new operator.Div,get_bexp())));
+      }
+    default:
+      return(e);
+  }
+}
+
+static exp get_cexp() {
+
+  exp e = get_bexp();
+
+  switch(peek_token()) {
+    case PLUS:
+      { 
+        next_token();
+        return(new exp.Compound(new(e,new operator.Plus,get_cexp())));
+      }
+    case MINUS:
+      {
+        next_token();
+        return(new exp.Compound(new(e,new operator.Minus,get_cexp())));
+      }
+    default:
+      return(e);
+  }
+}
+ 
+static exp get_dexp() {
+  exp e = get_cexp();
+
+  switch(peek_token()) {
+    case SEMICOLON:
+      {
+	next_token();
+	return(new exp.Compound(new(e,new operator.Semi,get_dexp())));
+      }
+    default:
+      return(e);
+  }
+}
+
+exp get_exp() {
+
+  exp e = get_dexp();
+  token t = peek_token();
+
+  switch(t) {
+    case EOF:
+      return(e);
+    default:
+      print_string("bad token: ");
+      print_token(t);
+      return(error("bad expression2"));
+  }
+}
+
+  

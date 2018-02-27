@@ -1,0 +1,390 @@
+
+{
+  /* poplex_init()  ***MUST*** BE CALLED ONCE BEFORE LEXING OR YOU'LL GET A NULL
+// ERROR WHEN PROCESSING AN IDENTIFIER!!!
+
+// like caml implementation, we're missing lots of operators that I know
+// I put in once before.
+
+// like caml implementation, should not do a recursive call for every
+// string constant character -- easy to run out of stack depth on a long
+// string!
+
+// like caml implementation  style comments nest unlike C
+*/
+
+  /* This and the parser agree that "line" means absolute position for error
+     reporting purposes
+     */
+
+#include "core.h"
+#include "list.h"
+#include "lexing.h"
+#include "dict.h"
+#include "string.h"
+#include "hashtable.h"
+#include "gcdfec.h"
+#include "poperr.h"
+#include "popsyntax.h"
+#include "popparse.h"
+
+open Core;
+open List;
+open Lexing;
+open Popsyntax;
+open Popparse;
+open Poperr;
+
+/* Use pragma to override command-line PIL output. */
+extern bool Popilprint::suppress_output;
+
+/* for parser -- must not be prefixed */
+int yylex() { 
+ int ans = Poplex::token(lbuf.v);
+ yylloc.first_line = lexeme_start (lbuf.v);
+ yylloc.last_line  = lexeme_end   (lbuf.v);
+ switch ans {
+ case ID:          yylval = ^YYSTYPE.String(Poplex::token_string);
+ case CONSTSTRING: yylval = ^YYSTYPE.String(Poplex::token_string);
+ case CONSTINT:    yylval = ^YYSTYPE.Int   (Poplex::token_int);
+ case CONSTCHAR:   yylval = ^YYSTYPE.Char  (Poplex::token_char);
+ case CONSTFLOAT:  yylval = ^YYSTYPE.Float (Poplex::token_float);
+ case CONSTDBL:    yylval = ^YYSTYPE.Double(Poplex::token_double);
+ case TUPLEOFFSET: yylval = ^YYSTYPE.Int   (Poplex::token_int);
+ default:          ; /* contents of yylval meaningless */
+ }
+ return ans;
+} 
+void yyerror(string s) { /* Is there more acurate place information??? */
+  Gcdfec::post_error
+    (Gcdfec::mk_err_parse
+     (Gcdfec::seg_of_abs(yylloc.first_line,yylloc.last_line), s));
+} 
+
+prefix Poplex;
+open   Poplex;
+
+void poplex_init() {
+  /* build reserved word dictionary */
+  <string,short>Hashtable::table t = 
+     Hashtable::create(101, strcmp, Hashtable::hash_string);
+  rw = ^Opt(t);
+  for (int i=0; i < size(rw_array); ++i) 
+    Hashtable::insert(t, rw_array[i].1, rw_array[i].2);
+}
+
+int    token_int;
+char   token_char;
+string token_string;
+
+/* floating point datatypes are string, for now, until I
+   decide what to do wrt converting to IEEE - WC */
+
+double token_double;
+float token_float;
+
+open Gcdfec {
+static void err<a>(lexerError e, <a>lexbuf lb) {
+  seg s = seg_of_abs(lexeme_start(lb),lexeme_end(lb));
+  post_error(mk_err_lex (s,error_message(^errorb.Elexer(e))));
+}
+
+int runaway_start = 0;
+
+static void runaway_err<a>(Poperr::lexerError e, <a>lexbuf lb) {
+  seg s = seg_of_abs(runaway_start, lexeme_start(lb));
+  post_error(mk_err_lex(s,error_message(^errorb.Elexer(e))));
+}
+}
+
+static char char_for_backslash(char c) {
+  switch c {
+  case 'n': return '\010';
+  case 'r': return '\013';
+  case 'b': return '\008';
+  case 't': return '\009';
+  default:  return c; /* default does quote correctly */
+  }
+}
+
+static char char_for_decimal_code<a>(<a>lexbuf lb, int i) {
+  int c = 
+    100 * (lexeme_char(lb,i)  -48) +
+     10 * (lexeme_char(lb,i+1)-48) +
+          (lexeme_char(lb,i+2)-48);
+  return chr(c);
+}
+
+static <<string,short>Hashtable::table>Opt rw = null;
+
+static *(string,short) rw_array [] = {
+      ^("abstract",ABSTRACT),
+      ^("abstype",ABSTYPE),
+      ^("array",ARRAY),
+      ^("bool",BOOL), 
+      ^("break",BREAK), 
+      ^("byte",BYTE),
+      ^("case",CASE), 
+      ^("catch",CATCH),
+      ^("char",CHAR),
+      ^("chr",CHR),
+      ^("codegen",CODEGEN),
+      ^("const",CONST),
+      ^("continue",CONTINUE), 
+      ^("cut",CUT), 
+      ^("default",DEFAULT), 
+      ^("do",DO), 
+      ^("double",DOUBLE),
+      ^("else",ELSE), 
+      ^("exception",EXCEPTION),
+      ^("exn",EXN),
+      ^("extern",EXTERN),
+      ^("false",CONSTFALSE),
+      ^("fill",FILL), 
+      ^("finally",FINALLY),
+      ^("float", FLOAT),
+      ^("for",FOR), 
+      ^("fprintf",FPRINTF),
+      ^("fun",FUN),
+      ^("handle",HANDLE),
+      ^("if",IF), 
+      ^("int",INT), 
+      ^("new",NEW), 
+      ^("null",NULL), 
+      ^("open",OPEN),
+      ^("ord",ORD),
+      ^("prefix",PREFIX),
+      ^("printf",PRINTF),
+      ^("public",PUBLIC),
+      ^("rdtsc",RDTSC),	
+      ^("raise",RAISE),
+      ^("return",RETURN), 
+      ^("signed",SIGNED),
+      ^("size",SIZE),
+      ^("short",SHORT),
+      ^("splice",SPLICE), 
+      ^("sprintf",SPRINTF),
+      ^("static",STATIC), 
+      ^("string",STRING),
+      ^("struct",STRUCT), 
+      ^("switch",SWITCH),
+      ^("try",TRY),
+      ^("true",CONSTTRUE), 
+      ^("union",UNION),
+      ^("unsigned",UNSIGNED),
+      ^("void",VOID), 
+      ^("while",WHILE),
+      ^("with",WITH)
+};
+
+// can try interning strings once our hashtable resizes
+static short process_id(string s) {
+  try
+    return Hashtable::lookup(rw.v, s);
+  handle y switch y {
+  case Not_found: token_string = s; return ID; 
+  }
+}
+
+static int comment_depth = 0;
+
+string string_buffer = "xxxxxxxxxx";
+int    string_pos    = 0;
+void store_string_char(char c) {
+  int sz = size(string_buffer);
+  if (string_pos >= sz) {
+    string str = new_string(2*sz);
+    strncpy(str,0,string_buffer,0,sz);
+    string_buffer = str;
+  }	
+  string_buffer[string_pos] = c;
+  ++string_pos;
+}
+string get_stored_string () {
+  string str = String::substring(string_buffer,0,string_pos);
+  string_pos = 0;
+  return str;
+} 
+
+string strip(string s, int num) {
+ _ sz = size(s) - num;
+ return String::substring(s,0,sz);
+}
+
+}
+
+let newline = ('\010' | '\013' | "\013\10")
+let whitespace = [' ' '\009' '\011' '\012']
+
+rule token = parse
+  ['A'-'Z''a'-'z']['A'-'Z''a'-'z''0'-'9''_']*
+       { return process_id (lexeme(lexbuf)); }
+| "__cdecl" { return CDECL; }
+| "__stdcall" { return STDCALL; }
+| "0x"['0'-'9''a'-'f''A'-'F']*    
+      { token_int = int_of_string(lexeme(lexbuf)); return CONSTINT; }
+| "0o"['0'-'7']*          
+      { token_int = int_of_string(lexeme(lexbuf)); return CONSTINT; }
+| "0b"['0''1']*
+      { token_int = int_of_string(lexeme(lexbuf)); return CONSTINT; }
+| '.'['0'-'9']+
+      { _ res = lexeme(lexbuf);
+	res = String::substring(res,1,size(res)-1);
+	token_int = int_of_string(res);
+	return TUPLEOFFSET;
+      }
+| ['0'-'9']+ 
+      { token_int = int_of_string(lexeme(lexbuf)); return CONSTINT; }
+/*
+float is 123.456e+7f
+double is 123.456e+7lf
+double is 123.456
+double is 123e+71
+float is 123e+71f
+*/
+
+| ['0'-'9']+"."['0'-'9']+(['E''e']['+''-']?['0'-'9']+)?"lf"
+      { token_double = double_of_string(strip(lexeme(lexbuf),2)); 
+	return CONSTDBL; }
+| ['0'-'9']+("."['0'-'9']*)?(['E''e']['+''-']?['0'-'9']+)"lf"
+      { token_double = double_of_string(strip(lexeme(lexbuf),2)); 
+	return CONSTDBL; }
+| ['0'-'9']+"."['0'-'9']+(['E''e']['+''-']?['0'-'9']+)?
+      { token_double = double_of_string(lexeme(lexbuf));
+	return CONSTDBL; }
+| ['0'-'9']+("."['0'-'9']*)?(['E''e']['+''-']?['0'-'9']+)
+      { token_double = double_of_string(lexeme(lexbuf)); 
+	return CONSTDBL; }
+
+| ['0'-'9']+"."['0'-'9']+(['E''e']['+''-']?['0'-'9']+)?['f''F']
+      { token_float = float_of_string(strip(lexeme(lexbuf),1)); 
+	return CONSTFLOAT;}
+| ['0'-'9']+("."['0'-'9']*)?(['E''e']['+''-']?['0'-'9']+)['f''F']
+      { token_float = float_of_string(strip(lexeme(lexbuf),1)); 
+	return CONSTFLOAT; }
+
+| "("  { return  LPAREN; }
+| ")"  { return  RPAREN; }
+| "{"  { return  LBRACE; }
+| "}"  { return  RBRACE; }
+| "{|" { return  LCBRACE; }
+| "|}" { return  RCBRACE; }
+| "["  { return  LBRACKET; }
+| "]"  { return  RBRACKET; }
+| "[|" { return  LCBRACKET; }
+| "|]" { return  RCBRACKET; }
+| "+"  { return  PLUS; }
+| "-"  { return  MINUS; }
+| "*"  { return  TIMES; }
+| "/"  { return  DIV; }
+| "==" { return  EE; }
+| "!=" { return  NE; }
+| "="  { return  EQUALS; }
+| "!"  { return  BANG; }
+| "~"  { return  TILDE; }
+| "?"  { return  QUESTION; }
+| ":"  { return  COLON; }
+| ";"  { return  SEMICOLON; }
+| "."  { return  DOT; }
+| ","  { return  COMMA; }
+| "<=" { return  LESSTHANEQ; }
+| ">=" { return  GREATERTHANEQ; }
+| "<"  { return  LESSTHAN; }
+| ">"  { return  GREATERTHAN; }
+| "++" { return  PLUSPLUS; }
+| "--" { return  MINUSMINUS; }
+| "+=" { return  PLUSEQUAL; }
+| "-=" { return  MINUSEQUAL; }
+| "*=" { return  TIMESEQUAL; }
+| "/=" { return  DIVEQUAL; }
+| "%="   { return  MODEQUAL; }
+| "|="   { return  PIPEEQUAL; }
+| "^="   { return  CARETEQUAL; }
+| "&="   { return  AMPEREQUAL; }
+| "<<="  { return  LESSLESSEQ; }
+| ">>="  { return  GREATERGREATEREQ; }
+| ">>>=" { return  GREATERGREATERGREATEREQ; }
+| "&&" { return  AMPERAMPER; }
+| "||" { return  PIPEPIPE; }  
+| "&"  { return  AMPER; }
+| "|"  { return  PIPE; }
+| "<<" { return  LESSLESS; }
+| ">>" { return  GREATERGREATER; }
+| ">>>" { return GREATERGREATERGREATER; }
+| "%"  { return  PERCENT; }
+| "^"  { return  CARET; }
+| "@"  { return  AT; }
+| "_"  { return  UNDERSCORE; }
+| "::" { return  COLONCOLON; }
+| newline                         { return  token(lexbuf); }
+| "#pragma"whitespace+"PIL"[^ '\010' '\013']*(newline)  
+	{ Popilprint::suppress_output = false;
+	  return  token(lexbuf); }
+| "#pragma"whitespace+"NOPIL"[^ '\010' '\013']*(newline)  
+	{ Popilprint::suppress_output = true;
+	  return  token(lexbuf); }
+| "#"[^ '\010' '\013']*(newline)  { return  token(lexbuf); }
+| [' ' '\009' '\011' '\012']+     { return  token(lexbuf); }
+| "//"[^'\010' '\013']* newline   { return  token(lexbuf); }
+| "/*"  { comment_depth = 1; 
+	  runaway_start = lexeme_start(lexbuf); 
+	  comment(lexbuf); 
+	  return token(lexbuf); }
+| "\""  { string_pos = 0; 
+	  runaway_start = lexeme_start(lexbuf);
+	  strng(lexbuf);
+	  token_string = get_stored_string();
+	  return CONSTSTRING;
+       }
+| "'" [^ '\\' '\''] "'"           
+    { token_char = lexeme_char(lexbuf,1);
+      return CONSTCHAR;
+    }
+| "'" '\\' ['\\' '\'' 'n' 't' 'b' 'r'] "'"
+    { token_char = char_for_backslash(lexeme_char(lexbuf,2));
+      return CONSTCHAR;
+    }
+| "'" '\\' ['0'-'9'] ['0'-'9'] ['0'-'9'] "'"
+    { token_char = char_for_decimal_code(lexbuf,2);
+      return CONSTCHAR;
+    } 
+| eof { return -1; }
+| _ { err(^lexerError.NonWhitespace, lexbuf); 
+      return token(lexbuf); 
+    }
+and strng = parse
+    "\""            { return 0; /* return value ignored */ }
+  | "\\" newline    { return strng(lexbuf); }
+  | "\\\t"          { return strng(lexbuf); }
+  | "\\ "           { return strng(lexbuf); }
+  | "\\\\"          { store_string_char('\\');   return strng(lexbuf); }
+  | newline         { store_string_char('\n');   return strng(lexbuf); }
+  | "\\t"           { store_string_char('\t');   return strng(lexbuf); }
+  | "\\n"           { store_string_char('\n');   return strng(lexbuf); }
+  | "\\\""          { store_string_char('\034'); return strng(lexbuf); }
+  | [' '-'~']       { /* for efficiency, should have a while loop here */
+                      store_string_char (lexeme_char(lexbuf,0));
+		      return strng(lexbuf); }
+  | eof             { runaway_err(^lexerError.RunawayString, lexbuf);
+                      return 0; /* return value ignored */ 
+                    }
+  | _               { err (^lexerError.IllegalStringCharacter(lexeme(lexbuf)),
+			   lexbuf);
+		      return strng(lexbuf); }
+and comment = parse
+   "/*"             { ++comment_depth; return comment(lexbuf); }
+ | "*/"             { --comment_depth; 
+		      if (comment_depth > 0) 
+			return comment(lexbuf);
+		      return 0; /* return value ignored */
+		    }
+ | newline          { return comment(lexbuf); }
+ | eof              { runaway_err(^lexerError.RunawayComment, lexbuf);
+                      return 0; /* return value ignored */ 
+                    }
+ | _                { return comment(lexbuf); }
+
+{
+
+
+}

@@ -1,0 +1,17 @@
+(* Should fail with ServiceNotPresent exception *)
+fun test1() : int =
+ n()
+
+fun n() : int = 7
+
+(* mutually recursive functions -- should fail for non base cases *)
+
+fun odd(i : unit) : bool =
+  if i = 1 then true
+  else (even(i-1))
+
+fun even(i : unit) : bool =
+  if i = 0 then true
+  else (odd(i-1))
+
+val entry_fun       : unit = "test1"

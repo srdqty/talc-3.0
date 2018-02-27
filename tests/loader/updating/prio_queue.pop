@@ -1,0 +1,75 @@
+/* This implementation is not as efficient as it would be with a heap,
+   but this is only for demonstrating an online update ... */
+
+#include "list.h"
+open List;
+
+prefix Queue;
+open Queue;
+
+struct <a>queue { 
+  <*(int,a)>list head; 
+  int cur_sz; 
+  int max_sz; 
+}
+
+exception Queue_empty;
+exception Queue_full;
+
+<a>queue create<a>(int max_sz) {
+  return new queue(null,0,max_sz);
+}
+
+void enqueue<a>(<a>queue q, a elem, int prio) {
+  if (q.cur_sz < q.max_sz) {
+    if (q.head == null) {
+      q.head = cons(^(prio,elem),null);
+    }
+    else {
+      <*(int,a)>list front, trailer;
+      bool inserted = false;
+      for (front = q.head, trailer = null; 
+	   front != null; 
+	   trailer = front, front = front.tl) {
+	if (front.hd.1 > prio) {
+	  /* insert at front */
+	  if (trailer == null) {
+	    q.head = cons(^(prio,elem),q.head);
+	  }
+	  /* insert in the middle */
+	  else {
+	    trailer.tl = cons(^(prio,elem),front);
+	  }
+	  inserted = true;
+	  break;
+	}
+	/* else keep looking for right spot */
+      }
+      /* insert at the end */
+      if (!inserted) {
+	trailer.tl = cons(^(prio,elem),front);
+      }
+    }
+    q.cur_sz++;
+  }
+  else
+    raise (^Queue_full());
+}
+
+a dequeue<a>(<a>queue q) {
+  if (q.head == null)
+    raise (^Queue_empty());
+  else {
+    *(int,a) x = q.head.hd;
+    q.head = q.head.tl;
+    return x.2;
+  }
+}
+
+int length<a>(<a>queue q) {
+  return q.cur_sz;
+}
+
+int max_size<a>(<a>queue q) {
+  return q.max_sz;
+}

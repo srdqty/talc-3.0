@@ -1,0 +1,14 @@
+(* tests resident-data services *)
+svc put : (string,key,'a,int) -> unit
+svc generateKey : void -> key
+
+fun store(i) =
+  let val session = generateKey()
+      fun mark(a, f) =
+        put("mark"^toString(a),session,true,20)
+  in
+    (foldr(mark,i,());
+     print(toString(hd thisHost()) ^ " stored data successfully"))
+  end
+
+fun doit() = store([1;2;3;4;5])

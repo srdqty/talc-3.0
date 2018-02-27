@@ -1,0 +1,145 @@
+#include "core.h"
+#include "opcodes.h"
+
+extern struct inst { 
+  int opcode;
+  int val; }
+extern int p_mem[];
+extern int p_stack[];
+extern int p_prg_size;
+
+/*
+ * SPECIALIZATION CACHE
+ *
+ *   The specialization cache serves two purposes.  First, it is required to
+ *   insure the specialization of recursive functions terminates.  Second, it
+ *   is an optimization: functions only need to be specialized once w.r.t.
+ *   the same static parameters --- subsequent calls to the specializer can
+ *   reuse an already specialized function.
+ * 
+ *   In general, an entry is needed for each (fn * static parameters).
+ *   In this specific case, there is only one function, the program
+ *   never changes, and the stack pointer is always 0 (property of
+ *   interpreter or input programs?).  Therefore, there cache entries
+ *   are only w.r.t.  the PC value. The cache (sp_funs[]) is an array
+ *   of functions, indexed by the PC value the interpreter was
+ *   specialized w.r.t.
+ *
+ *   The array that implements the cache is large enough to hold the biggest
+ *   program specialized.  This is clearly not optimal, but if fine for now.
+ * 
+ *   Each element in the array is initialized with the value
+ *   pop_interpret_init().  This value is used during specialization to 
+ *   determine whether a function has been specialized or not w.r.t. a
+ *   given PC value.  Before making a recursive call to the specializer, a
+ *   placeholder function (pop_interpret_proc()) is inserted into the 
+ *   appropriate cache location to indicate the function is in the process
+ *   of being specialized --- this is used to avoid infinite looping in the
+ *   specializer.
+ *   
+ *   NOTE --> static values: static globals in a specialized function need to 
+ *   be saved/restored when using the specialization cache.  In this case
+ *   there are none, so this can be ignored.
+ *
+ * RECURSIVE CALLS TO SPECIALIZER
+ *  
+ *   The recursive calls to the specializer are needed (vs. the while loop)
+ *   for languages which make unconditional branches.  Without a recursive
+ *   call, the PC would become dynamic following the dynamic conditional.
+ *   
+ *   Currently, there is a recursive call in each branch of the conditional
+ *   under dynamic control.  Since each call contains the "continuation" of 
+ *   execution, after the specialized function is called, the loop should 
+ *   not be executed any more.  Therefore, a "break" statement needs to be
+ *   inserted after the conditional branch.
+ *
+ *   NOTE --> I think it might be possible to eliminate one of the recursive
+ *   calls and the break stmt.  e.g. replace the false branch with something
+ *   like "pc++; sp--".
+ *
+ */
+
+void sp_funs[]();		       /* specialization cache */
+void pop_interpret_init() { return; }  /* initial cache value  */
+void pop_interpret_proc() { return; }  /* processing value     */
+
+void pop_interpret_gen(inst prg [], int pc, int sp)()
+{
+  return
+    codegen(
+    void interpret_1_spec()
+    {
+      cut while (pc < p_prg_size) {
+	switch((prg[pc]).opcode) {
+	case PUSH:
+	  sp++;
+	  splice p_stack[fill(sp)] = fill((prg[pc]).val);
+	  pc++;
+	case POP:
+	  sp--;
+	  pc++;
+	case ADD:
+	  splice p_stack[fill(sp-1)] = p_stack[fill(sp)] + p_stack[fill(sp-1)];
+	  sp--;
+	  pc++;
+	case SUB:
+	  splice p_stack[fill(sp-1)] = p_stack[fill(sp-1)] - p_stack[fill(sp)];
+	  sp--;
+	  pc++;
+	case MUL:
+	  splice p_stack[fill(sp-1)] = p_stack[fill(sp)] * p_stack[fill(sp-1)];
+	  sp--;
+	  pc++;
+	case LD:
+	  splice p_stack[fill(sp)] = p_mem[p_stack[fill(sp)]];
+	  pc++;
+	case ST:
+	  splice p_mem[p_stack[fill(sp)]] = p_stack[fill(sp-1)];
+	  sp = sp - 2;
+	  pc++;
+	case JMP:
+	  pc = (prg[pc]).val;
+	case JEQ:
+	  splice 
+	    if (p_stack[fill(sp)] != 0)
+	      {
+		/* is this the first time we've specialized the function
+		   w.r.t. to the static values? */
+		cut if(sp_funs[prg[pc].val] == pop_interpret_init) {
+		  /* insert a temporary placeholder to indicate that this
+		     function is in the middle of being specialized */
+		  sp_funs[prg[pc].val] = pop_interpret_proc;
+		  /* replace placeholder w/ specialized function */
+		  sp_funs[prg[pc].val] = 
+		    pop_interpret_gen(prg, prg[pc].val, sp-1);
+		}
+		/* call specialized function */
+		sp_funs[fill(prg[pc].val)]();
+
+	      } else
+		{
+		  cut if(sp_funs[pc+1] == pop_interpret_init) {
+		    sp_funs[pc+1] = pop_interpret_proc;
+		    sp_funs[pc+1] = pop_interpret_gen(prg, pc+1, sp-1);
+		  }
+		  sp_funs[fill(pc+1)]();
+		}
+	  /* since the specialized functions contain the "continuations" of
+	     the program being interpreted, break out of the loop */
+	  break;
+	case CMP:
+	  splice
+	    if (p_stack[fill(sp)] == p_stack[fill(sp-1)])
+	      p_stack[fill(sp-1)] = 1;
+	    else
+	      p_stack[fill(sp-1)] = 0;
+	  sp--;
+	  pc++;
+	default:
+	  splice printf("\nERROR pc:%d\n", fill(pc)); /* error */
+	}
+      }
+      return;
+    }
+    );
+}

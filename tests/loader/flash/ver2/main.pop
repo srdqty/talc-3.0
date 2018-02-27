@@ -1,0 +1,190 @@
+/* library includes */
+#include "unixlib.h"
+
+/* flash webserver includes */
+#include "config.h"
+#include "libhttpd.h"
+/* #include "cgi.h" */
+#include "conn.h"
+#include "loop.h"
+#include "timer.h"
+#include "handy.h"
+#include "common.h"
+
+int systemPageSize;
+int systemPageSizeBits;
+
+/* XXX arg stuff here */
+int sendBufSizeBytes = 32768;
+int port = 31415; /* 80 is real port */
+int maint_port = 7777; /* UDP port for update notices */
+int maxNameCacheSize = 6000;
+
+static <string>Core::Opt hostname = null;
+static <string>Core::Opt cgiPattern = null;
+static string argv0;
+
+httpd_conn allConnects[FD_SETSIZE/2];
+int maxConnects;
+
+int fdToConnMap[FD_SETSIZE];
+
+/* ---------------------------------------------------------------- */
+static void
+InitConnectStates(int maxConns, int acceptFD)
+{
+  int i;
+
+  for (i=0; i < FD_SETSIZE/8; i++)
+    freeConnBits[i] = 0xff; /* '\777'; */
+  firstFreeConnHint = 0;
+
+  for (i = 0; i < FD_SETSIZE; i++)
+    fdToConnMap[i] = -2;
+}
+/* ---------------------------------------------------------------- */
+static void
+ShutDown()
+{
+  int cnum;
+
+  for (cnum = 0; cnum < maxConnects; ++cnum)
+    if (!ISCONNFREE(cnum)) {
+      fprintf(tal_stderr,"calling DoneWithConnection for conn %d\n",cnum);
+      DoneWithConnection(allConnects[cnum], true);
+      fprintf(tal_stderr,"  back\n");
+    }
+  /* KillAllFreeCGISocks(); */
+  HttpdTerminate();
+}
+/* ---------------------------------------------------------------- */
+static void
+HandleKill(signal_number sig)
+{
+  fprintf(tal_stderr,
+	  "exiting due to signal %s\n", unix_signal_string(sig));
+  ShutDown();
+  exit(1);
+}
+
+/* ---------------------------------------------------------------- */
+void pop_main() {
+  bool debug = true;		/* keep debugging on always */
+  string cwd;
+  int nfiles;
+  int i;
+
+  /* figure out system page size */
+  systemPageSizeBits = systemPageSize = getpagesize();
+  for (i = 0; ; i++) {
+    if (systemPageSizeBits <= 1) {
+      systemPageSizeBits = i;
+      break;
+    }
+    systemPageSizeBits >>= 1;
+  }
+
+  argv0 = (std_args())[0];
+
+  /* set up signal handling */
+  unix_signal(^signal_behavior.Signal_handle(HandleKill),
+              ^signal_number.SIGINT);
+  unix_signal(^signal_behavior.Signal_handle(HandleKill),
+              ^signal_number.SIGTERM);
+  unix_signal(^signal_behavior.Signal_ignore,
+	      ^signal_number.SIGPIPE);	  /* get EPIPE instead */
+  InitFDSets();
+
+  /* Check port number. */
+  /*
+  if (port <= 0) {
+    fprintf(stderr, "illegal port number\n");
+    exit(1);
+  }
+  */
+
+  /* Figure out uid/gid from user. */
+  /*
+  pwd = getpwnam(serverUserStr);
+  if (pwd == (struct passwd*) 0) {
+    fprintf(stderr, "unknown user - '%s'\n", serverUserStr);
+    exit(1);
+  }
+  uid = pwd->pw_uid;
+  gid = pwd->pw_gid;
+  */
+
+  /* figure out absolute pathname for this program */
+  if (argv0[0] == '/') {
+    int l = size(argv0);
+    for (int i = l-1; i>=0; i--)
+      if (argv0[i] == '/')
+	break;
+    cwd = Core::new_string(i+1);
+    Core::strncpy(cwd,0,argv0,0,i+1);
+  }
+  else {
+    cwd = unix_getcwd();
+    if (cwd[size(cwd)-1] != '/')
+      cwd = Core::strconcat(cwd, "/");
+  }
+
+  /* Initialize the HTTP layer.  Got to do this before giving up root,
+   ** so that we can bind to a privileged port.
+   */
+  if (HttpdInitialize(hostname, port, maint_port, cgiPattern, cwd))
+    exit(1);
+  
+  if (! debug) {
+    /* We're not going to use stdin stdout or stderr from here on, so close
+     ** them to save file descriptors.
+     */
+    /* Core::file_close(tal_stdin);
+    Core::file_close(tal_stdout);
+    Core::file_close(tal_stderr); */
+
+    /* Daemonize - make ourselves a subprocess. */
+    if (unix_fork() != 0)
+      exit(0);
+  }
+  else {
+    /* for some reason, we're getting a weird bug if we
+       leave either of these open. Stderr seems unaffected */
+    /* Core::file_close(tal_stdin);
+       Core::file_close(tal_stdout); */
+    ;
+  }
+  
+  /* Figure out how many file descriptors we can use. */
+  nfiles = MIN(HttpdGetNFiles(), FD_SETSIZE);
+  
+  /* conservative estimate:
+     each connection can require 2 fds - one to the client, and
+     the other either to the filesystem or the cgi app */
+  maxConnects = (nfiles - (SPARE_FDS /* + maxReadHelp + maxConvHelp */))/2;
+  fprintf(tal_stderr, "%d max connections allowed\n", maxConnects);
+  
+  if (maxConnects < 1)
+    Panic("too many helpers specified");
+
+  if (maxConnects < 64)
+    fprintf(tal_stderr, 
+	    "WARNING: large # of helpers limits # connections\n");
+
+  unix_gettimeofday(globalTimeOfDay);
+
+  InitConnectStates(maxConnects, HS.fd);
+
+  lastTimerCheckTime = globalTimeOfDay.tv_sec;
+
+  while (true) {
+    /* The loop will return on a successful maintenance command,
+       restarting the loop.  This is necessary in case the loop
+       code itself changes. */
+    MainLoop();
+  }
+
+  return;			/* will never reach here */
+}
+/* ---------------------------------------------------------------- */
+

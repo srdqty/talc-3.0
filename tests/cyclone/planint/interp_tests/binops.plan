@@ -1,0 +1,6 @@
+(* tests concatenation *)
+(* test1: (string, string) -> string *)
+fun test1(str1 : string, str2 : string) : unit =
+  (str1 ^ str2) ^ "bub"
+
+fun main() : unit = test1("this", "that")

@@ -1,0 +1,33 @@
+This is the first revision of the Flash webserver, serving as the
+baseline for all of the updates to follow.  The implementation advances
+and progresses in the subdirectories ver2, ver3, etc.  This version
+contains the following features:
+
+- retrieval of files relative to the current directory (that flash
+  was run in), or following symlinks elsewhere in the filesystem.
+- memory mapped files
+- byte-aligned output (I think)
+
+It does not contain the features:
+
+- CGI processing (and thus no persistent CGI processes)
+- pathname translation caching
+- response header caching
+- file caching
+- memory residence testing
+
+
+
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+This is no longer the most up-to-date version (that is, this whole
+source tree).  I'm now keeping a separate CVS for this stuff elsewhere,
+so as not to clutter up the talc source tree.  I'd remove this altogether
+but the directories are stuck here anyway.
+
+-- mwh@dsl.cis.upenn.edu 11/20/00
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+

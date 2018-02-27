@@ -1,0 +1,120 @@
+
+// poperr.pop
+
+// temporarily rename error to avoid clash with gcdfec.  All this goes away
+// once we use prefix.
+
+// ported to Popcorn by Dan, April 1999
+
+#include "id.h"
+#include "core.h"
+#include "list.h"
+#include "string.h"
+open Core;
+open List;
+open String;
+
+prefix Poperr;
+open   Poperr;
+
+union lexerError {
+  string IllegalStringCharacter;
+  void   RunawayComment;
+  void   RunawayString;
+  void   InvalidHexNum;
+  void   InvalidChar;
+  void   NonWhitespace;
+}
+
+union parseError {
+  string Syntax;
+  void   SwitchClausesDontMatch;
+  void   ExternNoInit;
+  void   ParamNotNamed;
+  void   ParseUnimplemented;
+}
+
+union tcError {
+  string Unimplemented;
+  string Impossible;
+  string TypeError;
+}
+
+union tcWarn {
+  Id::id WshadowVar;
+}
+
+union errorb {
+  parseError Eparse;
+  lexerError Elexer;
+  tcError    Etypecheck;
+  tcWarn     Wtypecheck;
+}
+
+union errorType {
+  int  ETwarning;
+  void ETerror;
+  void ETpedantic;
+  void ETcomment;
+}
+
+errorType error_type(errorb e) {
+  switch e {
+  case Eparse(x):     return ^errorType.ETerror;
+  case Elexer(x):     return ^errorType.ETerror;
+  case Etypecheck(x): return ^errorType.ETerror;
+  case Wtypecheck(x): return ^errorType.ETwarning(10);
+  }
+}
+
+string error_message(errorb e) {
+  switch e {
+  case Eparse(x):
+    switch x {
+    case Syntax(s):              return s;
+    case SwitchClausesDontMatch: return "Switch clauses don't match";
+    case ParseUnimplemented:     return "Unimplemented";
+    case ExternNoInit: 
+      return "External value declarations cannot have initializers";
+    case ParamNotNamed:
+      return "Variables in function declarations require names.";
+    }
+  case Elexer(x):
+    switch x {
+    case IllegalStringCharacter(s):
+      return strconcat_l(^list("Illegal string character in string: \"",
+			       ^list(s, ^list("\"",null))));
+    case RunawayComment: return "Runaway comment";
+    case RunawayString:  return "Runaway string";
+    case InvalidHexNum:  return "Invalid hexadecimal number";
+    case InvalidChar:    return "Invalid character code";
+    case NonWhitespace:  return "Invalid whitespace";
+    }
+  case Etypecheck(x):
+    switch x {
+    case Unimplemented(s):
+      return strconcat_l(^list("Typechecking : ", 
+			       ^list(s, 
+			       ^list(" unimplemented", null))));
+    case Impossible(s): return strconcat("Impossible: ", s);
+    case TypeError(s):  return strconcat("Type error: ", s);
+    }
+  case Wtypecheck(x):
+    switch x {
+    case WshadowVar(i): 
+      return strconcat_l(^list("Variable ", 
+			 ^list(Id::id_to_string(i), 
+			 ^list(" shadowed", null))));
+    }
+  }
+}
+
+// is_verbose, error_level removed since not used
+
+// mk_lexer_error, mk_parse_error removed since used rarely and 
+// in "gcdfec aware" places.
+
+
+
+
+

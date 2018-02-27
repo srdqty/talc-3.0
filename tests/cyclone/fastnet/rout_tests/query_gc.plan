@@ -1,0 +1,4 @@
+(* get some garbage collection stats *)
+fun foo() =
+  print(queryGC())
+

@@ -1,0 +1,95 @@
+- file updated: 9/13/99
+- timings represent 100,000 runs
+- correct answers
+  m[0]:  30  m[1]: 10  m[2]: 20 m[3]: 30 
+  m[0]:   0  m[1]:  1  m[2]:  2 m[3]: -1843523296 
+  m[0]: 630  m[1]: 10  m[2]: 20 m[3]: 3 
+
+(LINUX) 233MHz P2, 64MB -------------------------------------------------------
+
+Program #1 (60 instructions, mostly load/store)
+
+  [Popcorn]             Time:  1220 msec
+  [Cyclone]
+    Code generation:    Time: 51700 msec
+    Code execution:     Time:   370 msec
+  [gcc -O3]             Time:   380 msec    (-O0: 720 msec)
+  [Tempo CT -O3]        Time:    31 msec    (-O0:  60 msec)
+  [Tempo RT -O3]        Time:    65 msec    (-O0: 101 msec)
+
+  Speedup Cyclone vs. Popcorn: 3.3
+  Breakeven point: 60 runs
+  Speedup Cyclone vs. gcc -O3: 1.0
+  x faster Tempo CT is than Cyclone: 12
+
+Program #2 (27 instructions, mostly arithmetic)
+
+  [Popcorn]             Time: 500 msec
+  [Cyclone]
+    Code generation:    Time: 35400 msec
+    Code execution:     Time: 170 msec
+  [gcc -O3]             Time: 150 msec  (-O0: 310 msec)
+  [Tempo CT -O3]        Time:  17 msec  (-O0:  37 msec)
+  [Tempo RT -O3]        Time:  41 msec  (-O0:  69 msec)
+
+  Speedup Cyclone vs. Popcorn: 2.9
+  Breakeven point: 110 runs
+  Speedup Cyclone vs. gcc -O3: 0.9
+  x faster Tempo CT is than Cyclone: 10
+
+Program #3 (17 instructions, mixed load/store and arithmetic)
+
+  [Popcorn]             Time: 360 msec
+  [Cyclone]
+    Code generation:    Time: 30200 msec
+    Code execution:     Time: 100 msec
+  [gcc -O3]             Time: 120 msec  (-O0: 230 msec)
+  [Tempo CT -O3]        Time:  15 msec  (-O0:  20 msec)
+  [Tempo RT -O3]        Time:  24 msec  (-O0:  36 msec)
+
+  Speedup Cyclone vs. Popcorn: 3.6
+  Breakeven point: 120 runs
+  Speedup Cyclone vs. gcc -O3: 1.2
+  x faster Tempo CT is than Cyclone: 7
+  
+
+(WINDOWS 98), 200MHz Pentium, 64MB --------------------------------------------
+
+Program #1 (60 instructions, mostly load/store)
+
+  [Popcorn]             Time:  1829 msec
+  [Cyclone]
+    Code generation:    Time: 134400 msec
+    Code execution:     Time:    401 msec    
+  [cl]                  Time:   934 msec 
+  [cl /02]              Time:   384 msec    
+
+  Speedup Cyclone vs. Popcorn: 4.6
+  Breakeven point:  90 runs
+  Speedup Cyclone vs. cl /O2: .96
+
+Program #2 (27 instructions, mostly arithmetic)
+
+  [Popcorn]             Time:   764 msec
+  [Cyclone]
+    Code generation:    Time: 92490 msec
+    Code execution:     Time:   226 msec
+  [cl]                  Time:   401 msec   
+  [cl /02]              Time:   181 msec   
+
+  Speedup Cyclone vs. Popcorn: 3.4
+  Breakeven point:  170 runs
+  Speedup Cyclone vs. cl /O2: .80
+
+Program #3 (17 instructions, mixed load/store and arithmetic)
+
+  [Popcorn]             Time:   511 msec   
+  [Cyclone]
+    Code generation     Time:  77770 msec
+    Code execution:     Time:   121 msec    
+  [cl]                  Time:   269 msec    
+  [cl /02]              Time:   121 msec
+
+  Speedup Cyclone vs. Popcorn: 4.2
+  Breakeven point:  200 runs
+  Speedup Cyclone vs. cl /O2: 1.0

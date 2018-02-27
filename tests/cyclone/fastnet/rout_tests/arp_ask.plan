@@ -1,0 +1,31 @@
+(* this packet is sent out on a broadcast to do address resolution in the 
+   style of ARP *)
+svc bind : (blob,host,dev) -> unit
+svc getSrcDev : void -> dev
+
+(* reply(I,J) says that host J has linklayer address I *)
+fun reply(I,J) =
+    bind(I,J,getSrcDev())
+
+svc retrieveBinding : (host,dev) -> blob
+svc BindFailed : exn
+svc NoBinding : exn
+
+(* ask(i,j,J) says host j with linklayer address i wants to know the
+   linklayer address of host J *)
+fun ask(i,j,J) =
+  try
+    let val ifc = getSrcDev() in
+      if (thisHostOf(ifc) = J) then
+	(try
+	   bind(i,j,ifc)
+	 handle BindFailed => ();
+	 OnNeighbor(|reply|(retrieveBinding(J,ifc),J), j,
+	            getRB(),ifc))
+      else
+	let val pa = retrieveBinding(j,ifc) in
+	  bind(i,j,ifc)
+        end
+    end
+  handle NoBinding => ()
+

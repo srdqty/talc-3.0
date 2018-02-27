@@ -1,0 +1,177 @@
+(fn x => (x x) fn x => (x x))
+array = {1, 2, 3, 4, 5}
+array = {1, 100, 20, 4, 5}
+array = {3, 4, 6, 9, 13, 18, 24, 31, 39, 48}
+Theorem: Code generator is correct.
+Proof:
+fact_rec(10) = 3628800
+fact_while(10) = 3628800
+fact_for(10) = 3628800
+fact_cond(10) =  3628800
+fact_arr(10) = {1, 1, 2, 6, 24, 120, 720, 5040, 40320, 362880, 3628800}[10] 
+             = 3628800
+fact_struct(10) = 3628800
+fact_union(10) = 3628800
+fact_constarray(10) = 3628800
+QED.
+x=5
+Caught void exn.
+End of test_handle.
+x=5
+Caught value_exn. Reraising.
+test_nested_handle: caught value_exn
+Uncaught exception: 008A07D0
+Originating at: check_exn.pop (71:15-71:31)
+Call stack (only instrumented functions).
+(6)	f
+	pop_main
+.
+Passed nested_trys.
+Control flow out of try worked.
+an_int = 6
+a_string = A string
+an_intarray = {1, 2, 3, 4, 5}
+a_struct = (1, 2)
+an_opt_struct = (s = (4, 5), y = 1)
+a_union = none
+a_union2 = some = (3, 4)
+a_tuple = (1, false)
+print_x: global_x = 5
+global_x = 5
+for   ... = 5 4 3 2 1 
+while ... = 5 4 3 2 1 
+do    ... = 5 4 3 2 1 
+fact_spill(10) = 0 0 2 0 0 2 4 0 0 2 0 0 2 4 10 0 0 2 0 0 2 4 0 0 2 0 0 2 4 10 34 0 0 2 0 0 2 4 0 0 2 0 0 2 4 10 0 0 2 0 0 2 4 0 0 2 0 0 2 4 10 34 154 0 0 2 0 0 2 4 0 0 2 0 0 2 4 10 0 0 2 0 0 2 4 0 0 2 0 0 2 4 10 34 0 0 2 0 0 2 4 0 0 2 0 0 2 4 10 0 0 2 0 0 2 4 0 0 2 0 0 2 4 10 34 154 874 0 0 2 0 0 2 4 0 0 2 0 0 2 4 10 0 0 2 0 0 2 4 0 0 2 0 0 2 4 10 34 0 0 2 0 0 2 4 0 0 2 0 0 2 4 10 0 0 2 0 0 2 4 0 0 2 0 0 2 4 10 34 154 0 0 2 0 0 2 4 0 0 2 0 0 2 4 10 0 0 2 0 0 2 4 0 0 2 0 0 2 4 10 34 0 0 2 0 0 2 4 0 0 2 0 0 2 4 10 0 0 2 0 0 2 4 0 0 2 0 0 2 4 10 34 154 874 5914 0 0 2 0 0 2 4 0 0 2 0 0 2 4 10 0 0 2 0 0 2 4 0 0 2 0 0 2 4 10 34 0 0 2 0 0 2 4 0 0 2 0 0 2 4 10 0 0 2 0 0 2 4 0 0 2 0 0 2 4 10 34 154 0 0 2 0 0 2 4 0 0 2 0 0 2 4 10 0 0 2 0 0 2 4 0 0 2 0 0 2 4 10 34 0 0 2 0 0 2 4 0 0 2 0 0 2 4 10 0 0 2 0 0 2 4 0 0 2 0 0 2 4 10 34 154 874 0 0 2 0 0 2 4 0 0 2 0 0 2 4 10 0 0 2 0 0 2 4 0 0 2 0 0 2 4 10 34 0 0 2 0 0 2 4 0 0 2 0 0 2 4 10 0 0 2 0 0 2 4 0 0 2 0 0 2 4 10 34 154 0 0 2 0 0 2 4 0 0 2 0 0 2 4 10 0 0 2 0 0 2 4 0 0 2 0 0 2 4 10 34 0 0 2 0 0 2 4 0 0 2 0 0 2 4 10 0 0 2 0 0 2 4 0 0 2 0 0 2 4 10 34 154 874 5914 46234 409114 3628800
+552
+1 2 3 4 5 6 7 8 9 2 4 6 8 10 12 14 16 18 3 6 9 12 15 18 21 24 27 4 8 12 16 20 24 28 32 36 5 10 15 20 25 30 35 40 45 6 12 18 24 30 36 42 48 54 7 14 21 28 35 42 49 56 63 8 16 24 32 40 48 56 64 72 9 18 27 36 45 54 63 72 81 
+1
+65535
+-1
+810000
+-1
+255
+-124
+10
+-25
+65136
+1
+1
+1
+hello world.
+helloRworld.
+helleRworld.
+Successfully failed and caught exception.
+And now succeeded.
+3628800
+89
+3 rings peg 1 -> peg 2: 1->2 1->3 2->3 1->2 3->1 3->2 1->2 
+[99, 98, 97, 96, 95, 94, 93, 92, 91, 90, 89, 88, 87, 86, 85, 84, 83, 82, 81, 80, 79, 78, 77, 76, 75, 74, 73, 72, 71, 70, 69, 68, 67, 66, 65, 64, 63, 62, 61, 60, 59, 58, 57, 56, 55, 54, 53, 52, 51, 50, 49, 48, 47, 46, 45, 44, 43, 42, 41, 40, 39, 38, 37, 36, 35, 34, 33, 32, 31, 30, 29, 28, 27, 26, 25, 24, 23, 22, 21, 20, 19, 18, 17, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0]
+.....
+[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99]
+enqueue: 0 1 2 3 4 
+dequeue: 0 1 2 3 4 
+q empty?yes
+99 98 97 96 95 94 93 92 91 90 89 88 87 86 85 84 83 82 81 80 79 78 77 76 75 74 73 72 71 70 69 68 67 66 65 64 63 62 61 60 59 58 57 56 55 54 53 52 51 50 49 48 47 46 45 44 43 42 41 40 39 38 37 36 35 34 33 32 31 30 29 28 27 26 25 24 23 22 21 20 19 18 17 16 15 14 13 12 11 10 9 8 7 6 5 4 3 2 1 0 
+.....
+0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 
+hello
+32 = 32
+foo = foo
+c = c
+exp: 3 * 2 = 6
+blah: howdy 3 a A
+Hello
+32 = 32
+foo = foo
+c = cexp: 3 * 2 = 6
+blah: howdy 3 a A
+feedface 4277009102
+3 feedface 3735928559 hello A
+t[8] -20463144 1629336972 544947471 -1627799111 1665259660 -2126149612 1566951700 32 
+01110113121
+2331126
+21110
+512100
+514303132
+8hello --> 1
+hello1 --> 2
+bob --> 3
+0: 
+1: 
+2: (bob,3) 
+3: (hello1,2) (hello,1) 
+
+0: 
+1: 
+2: (bob,3) 
+3: (hello1,2) 
+
+0: 
+1: (hello1,2) 
+2: 
+3: 
+4: (bob,3) 
+5: 
+6: (hello,4) (hello,3) (hello,2) (hello,1) 
+7: 
+8: 
+hello --> 4
+hello1 --> 2
+bob --> 3
+0: 
+1: (hello1,2) 
+2: 
+3: 
+4: (bob,3) 
+5: 
+6: (hello,1) 
+7: 
+8: 
+
+0: 
+1: (hello1,2) 
+2: 
+3: 
+4: (bob,3) 
+5: 
+6: 
+7: 
+8: 
+hello is missing: OK
+0: 
+1: (hello1,2) 
+2: 
+3: 
+4: (bob,3) 
+5: 
+6: (hello,2) 
+7: 
+8: 
+
+hello --> 2
+hello1 --> 2
+bob --> 3
+caught passed exception
+caught globally-defined exception y
+caught void_exn
+caught globally-defined exception y2
+caught string_exn(foo)
+caught fn-exn in struct
+caught fn-exn in struct
+caught string_exn(foo)
+caught string-exn in struct (invalid arg)
+f(1) = 1
+(changed) f(1) = 2
+x.1=3, y.1=2, f.x.1=3, f2.x.1=3, f3.x.1=2, g.x.1=3
+foo:f.1(x).1 = 43
+mod(f,1,t)=true, mod2.1(f,1,t)=true
+Successfully caught NullPointer.
+Successfully caught UnionVariant.
+Successfully caught ArrayBounds.
+
+Causing uncaught NullPointer exception.
+Uncaught exception: 00416EF4
+Originating at: NullPointer exception
+Call stack (only instrumented functions).
+	pop_main
+.

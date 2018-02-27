@@ -1,0 +1,106 @@
+MAKE SOURCE TO SOURCE TRANSLATION
+
+- fix mutual recursion stuff:
+
+  Ramifications of this: in the current scheme, we maintain the invariant
+  that we don't stick anything in the global table until it's usable.  By
+  changing this, we are trusting that the caller of the init function will
+  remove these elements from the global table if the whole thing doesn't
+  work.  Seems reasonable anyway: some of the elements in the table that
+  have all of their externals resolved may call local functions that don't.
+
+  Also assuming the convention that all updates stuck in the table first.
+
+- add mutual recursion for type defintions.  This implies creating a new
+  version of load that takes a list of binaries.  Shouldn't be too
+  hard to adapt the current stuff to use this.
+
+- deal with globally declared exns, functions, etc. initialized with an
+  externals---add lines to the init function to look these guys up and
+  fill them in.
+- deal with external abstract types -- will have to make them potentially
+  null in the GOT
+
+- remove stuff for existing translation from the compiler?
+  - remove fun_con' from Popcomptypes (only used by loader stuff in popcomp)
+
+SECURITY
+
+- user-provided filters for the lookup and update functions.  Allows
+  the implementation of application security.
+
+- how do we deal with namespace management?  For example, we don't want
+  programs to be able to call tal_exit ...
+
+LINKING
+
+- fix dlsym to only operate on the symbol hashtable for that module
+  (rather than the entire symtable beyond that module)
+- make changes to allow mutually recursive modules.
+  - XXX dependencies for global variables?  That is
+      extern int foo(int);
+      static int f(int) = foo;
+    is this even possible?
+  - when export_deps is empty and not do_import, always can return 0
+    (don't need vars)
+  - think about saving the exception thrown when a lookup fails
+    and then rethrowing it when done?  Then could go back to boolean
+    return code.
+  - fix dyninit_dlnative function in dlnative to have correct type
+
+- cool things to try
+  - loadable files that refer to dlsym, dlopen, etc.
+  - loading the dlpop library itself
+
+- trim register_trusted_XXX functions to only register those symbols that
+  are really needed.
+  - how to eliminate pop_never_null for null checks?  Determine what
+    symbols are introduced by the compiler (other than macros)
+
+- the linking process in talout.ml of generating custom initialization
+  code for initializing the dynamic symbols is unsafe.  How could we
+  employ typechecking here?  
+
+- pipe the following to /dev/null (make sure works under NT)
+000002e7 T _init_gen_call
+00000fa3 T _init_core
+0000070f T _init_hashtable
+00001c0b T _init_list
+00000504 T _init_stdlib
+00000118 T _init_loader
+  
+PRETTY PRINTING
+
+- fix cast to have "3.5" precedence (right now has same as ~, !, etc.)
+- unify the use of boxes in all of the functions (i.e. always
+  require the caller to create the box, or assume the callee will
+  do it).  May want different policies for different kinds of entities
+  (i.e. expressions vs. statements).
+- look at rsa.pop to work on better boxing for long function preambles
+  etc.
+- fix printing of float constants to be re-parseable
+- eliminate extra {'s when printing Prefix and Open decls (i.e. when
+  the } is at the end of the file
+
+ADD EXNCON's TO POPCORN
+
+- look closely at scoping issues for exncons
+
+LINKING ALGORITHM ?
+    given a list of distinct numbers X
+      and a list of sets S_1 .. S_N containing numbers in X
+
+    define F(X,S) ("sublist in X containing S") to be the sublist of X
+      starting at the first number, all the way to the point where the
+      sublist contains all the numbers in the set S.  For example, 
+      X = 1,5,3,7,11 
+      S = 7,3 
+      F(X,S) = 1,5,3,7
+
+    we wish to reorder X so that
+      for each F(X,S), where S is one of S_1 .. S_N, we maximize the
+      number of F(X,S) where |F(X,S)| is 1.  Then with the remainder
+      we maximize the number of F(X,S) where |F(X,S)| is 2
+
+      
+

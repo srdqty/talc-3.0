@@ -1,0 +1,43 @@
+#include "core.h"
+#include "list.h"
+open Core;
+open List;
+
+extern struct bstruct { int i; int j; }
+extern bstruct b;
+extern void print_b();
+
+void alter_b()
+{
+  print_string("entering gen_add2:alter_b()\n");
+  b.i = 1;
+  b.j = 2;
+  print_b();
+  print_string("leaving gen_add2:alter_b()\n");
+}
+
+static void init () {
+  alter_b();
+  combine();
+}
+
+void combine() {
+ print_string("entering gen_add2:combine()\n");
+ <int>list x = ^list(5,^list(4,^list(3,^list(2,^list(1,^list(0,null))))));
+ <bool>list y= ^list(true,^list(false,null));
+
+ try { zip(x,y);
+ } handle w { 
+   switch w { 
+   case List_mismatch: { 
+     print_string("Successfully failed and caught exception.\n");
+     <*(int,int)>list z = zip(x,x);
+     print_string("And now succeeded.\n");
+   }
+   default: {return;}
+   }
+ }
+
+ print_string("leaving gen_add2:combine()\n");
+return;
+}

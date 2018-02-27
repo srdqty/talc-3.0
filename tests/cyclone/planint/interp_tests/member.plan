@@ -1,0 +1,11 @@
+(* polymorphic use of foldl to implement list membership test *)
+(* returns true if 'thing' is a member of the list 'things' *)
+fun member(thing : unit, things : unit) : unit =
+  let fun foldfun(stat : unit, elem : unit) : unit =
+    stat or (elem = thing)
+  in
+    foldr(foldfun, things, false)
+  end
+
+val entry_fun       : unit = "member"
+val entry_args      : unit = [1; [1;2;3]]

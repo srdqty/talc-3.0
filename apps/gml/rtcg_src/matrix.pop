@@ -1,0 +1,717 @@
+#include "top.h"
+#include "core.h"
+#include "math.h"
+#include "hashtable.h"
+
+open Core;
+open Math;
+
+prefix Matrix;
+open Matrix;
+
+struct matrix {
+  FP x0,x1,x2,x3;
+  FP y0,y1,y2,y3;
+  FP z0,z1,z2,z3;
+  FP a0,a1,a2,a3;
+}
+
+struct vector {
+  FP x0,x1,x2,x3;
+}
+
+bool vequal(vector u,vector v) {
+  return (u.x0 == v.x0 &&
+	  u.x1 == v.x1 &&
+	  u.x2 == v.x2 &&
+	  u.x3 == v.x3);
+}
+
+matrix identity = ^matrix(1.0f, 0.0f, 0.0f, 0.0f,
+			  0.0f, 1.0f, 0.0f, 0.0f,
+			  0.0f, 0.0f, 1.0f, 0.0f,
+			  0.0f, 0.0f, 0.0f, 1.0f);
+
+static matrix create_zero() {
+  return ^matrix(0,0,0,0,
+		 0,0,0,0,
+		 0,0,0,0,
+		 0,0,0,0);
+}
+
+matrix translate(FP x, FP y, FP z) {
+  return ^matrix(1,0,0,-x,
+		 0,1,0,-y,
+		 0,0,1,-z,
+		 0,0,0,1);
+}
+
+matrix unscale(FP x, FP y, FP z) {
+  return ^matrix(x,0,0,0,
+		 0,y,0,0,
+		 0,0,z,0,
+		 0,0,0,1);
+}
+
+matrix scale(FP x, FP y, FP z) {
+  return unscale(1.0/x,1.0/y,1.0/z);
+}
+
+matrix unuscale(FP s) {
+  return unscale(s,s,s);
+}
+
+matrix uscale(FP s) {
+  return scale(s,s,s);
+}
+
+matrix rotatex(FP t) {
+  _ co = cos(t);
+  _ si = sin(t);
+  return ^matrix( 1,  0,  0,  0,
+		  0, co, si,  0,
+		  0,-si, co,  0,
+		  0,  0,  0,  1);
+}
+
+matrix rotatey(FP t) {
+  _ co = cos(t);
+  _ si = sin(t);
+  return ^matrix( co,  0,-si,  0,
+		   0,  1,  0,  0,
+		  si,  0, co,  0,
+		   0,  0,  0,  1);
+}
+
+matrix rotatez(FP t) {
+  _ co = cos(t);
+  _ si = sin(t);
+  return ^matrix( co, si,  0,  0,
+		 -si, co,  0,  0,
+		   0,  0,  1,  0,
+		   0,  0,  0,  1);
+}
+
+static FP get(matrix m, int i, int j) {
+  switch i {
+  case 0:
+    switch j {
+    case 0: return m.x0;
+    case 1: return m.x1;
+    case 2: return m.x2;
+    case 3: return m.x3;
+    default: raise(^Failure("Matrix error."));
+    }
+  case 1:
+    switch j {
+    case 0: return m.y0;
+    case 1: return m.y1;
+    case 2: return m.y2;
+    case 3: return m.y3;
+    default: raise(^Failure("Matrix error."));
+    }
+  case 2:
+    switch j {
+    case 0: return m.z0;
+    case 1: return m.z1;
+    case 2: return m.z2;
+    case 3: return m.z3;
+    default: raise(^Failure("Matrix error."));
+    }
+  case 3:
+    switch j {
+    case 0: return m.a0;
+    case 1: return m.a1;
+    case 2: return m.a2;
+    case 3: return m.a3;
+    default: raise(^Failure("Matrix error."));
+    }
+  default: raise(^Failure("Matrix error."));
+  }
+}
+
+static void set(matrix m, int i, int j, FP v) {
+  switch i {
+  case 0:
+    switch j {
+    case 0: m.x0 = v;
+    case 1: m.x1 = v;
+    case 2: m.x2 = v;
+    case 3: m.x3 = v;
+    default: raise(^Failure("Matrix error."));
+    }
+  case 1:
+    switch j {
+    case 0: m.y0 = v;
+    case 1: m.y1 = v;
+    case 2: m.y2 = v;
+    case 3: m.y3 = v;
+    default: raise(^Failure("Matrix error."));
+    }
+  case 2:
+    switch j {
+    case 0: m.z0 = v;
+    case 1: m.z1 = v;
+    case 2: m.z2 = v;
+    case 3: m.z3 = v;
+    default: raise(^Failure("Matrix error."));
+    }
+  case 3:
+    switch j {
+    case 0: m.a0 = v;
+    case 1: m.a1 = v;
+    case 2: m.a2 = v;
+    case 3: m.a3 = v;
+    default: raise(^Failure("Matrix error."));
+    }
+  default: raise(^Failure("Matrix error."));
+  }
+}
+
+void print(FILE f,matrix m) {
+  for(_ i=0; i<4; i++) {
+    for(_ j = 0; j<4; j++) {
+      fprint_fp(f,get(m,i,j));
+      fprintf(f," ");
+    }
+    fprintf(f,"\n");
+  }
+}
+
+void vprint(FILE f,vector v) {
+  fprintf(f,"[");
+  fprint_fp(f,v.x0);
+  fprintf(f," ");
+  fprint_fp(f,v.x1);
+  fprintf(f," ");
+  fprint_fp(f,v.x2);
+  fprintf(f," ");
+  fprint_fp(f,v.x3);
+  fprintf(f,"]");
+}
+
+// XXX - Should unroll this loop in the future. 
+matrix mul(matrix m1, matrix m2) {
+  _ m3 = create_zero();
+
+  for(_ i=0; i<4; i++) {
+    for(_ j=0; j<4; j++) {
+      FP s = 0.0;
+      for(_ k=0; k<4; k++) {
+	s = s + get(m1,i,k) * get(m2,k,j);
+      }
+      set(m3,i,j,s);
+    }
+  }
+
+  return m3;
+}
+
+matrix transpose(matrix m) {
+  matrix m2 = create_zero();
+
+  for(_ i=0; i<4; i++) {
+    for(_ j=0; j<4; j++) {
+      set(m2,i,j,get(m,j,i));
+    }
+  }
+
+  return m2;
+}
+
+void vmul(vector r, matrix m, vector v) {
+  _ x0 = v.x0, x1 = v.x1, x2 = v.x2, x3 = v.x3;
+  r.x0 = x0 * m.x0 + x1 * m.x1 + x2 * m.x2 + x3 * m.x3;
+  r.x1 = x0 * m.y0 + x1 * m.y1 + x2 * m.y2 + x3 * m.y3;
+  r.x2 = x0 * m.z0 + x1 * m.z1 + x2 * m.z2 + x3 * m.z3;
+  r.x3 = x0 * m.a0 + x1 * m.a1 + x2 * m.a2 + x3 * m.a3;
+}
+
+< <matrix,void f(vector,matrix,vector)>Hashtable::table >Opt vmul_code_cache;
+
+int vmul_benefit[] = {0,0,0,0,
+		      0,0,0,0,
+		      0,0,0,0,
+		      0,0,0,0};
+int vmul_num_gen = 0;
+
+void vmul_report(FILE f) {
+  _ b = vmul_benefit;
+
+  fprintf(f,"vmul=\'vmul_gen\'\n");
+  fprintf(f,"num_gen=%d\n",vmul_num_gen);
+  fprintf(f,"benefit_dist= [");
+  for(int i = 0 ; i < size(b); i++) {
+      fprintf(f,"%d ", b[i]);
+  }
+  fprintf(f,"];\n"); 
+}
+
+void vmul_gen(matrix m)(vector r, matrix m, vector v) {
+  if(vmul_code_cache == null) {
+    vmul_code_cache = 
+      ^Opt(Hashtable::create(101,ptr_compare@<matrix>,hash@<matrix>));
+  }
+  
+  try {
+    return Hashtable::lookup(vmul_code_cache.v, m);
+  } handle y {
+    ;
+  }
+
+  vmul_num_gen++;
+
+  int benefit = 0;
+  _ code = codegen(void vmul_rtcg(vector r, matrix m, vector v) {
+    _ x0 = v.x0, x1 = v.x1, x2 = v.x2, x3 = v.x3;
+    cut {
+      for(_ i = 0; i < 4; i++) {
+	splice { 
+	  _ ri = 0.0;
+	  cut {
+	    for(_ j = 0; j < 4; j++) {
+	      _ mij = get(m,i,j);
+	      _ seen = false;
+	      for(_ k = 0; k < j; k++) {
+		if(get(m,i,k) == mij) { seen = true; break; }
+	      }
+	      if(mij != 0.0 && !seen) {
+		splice {
+		  _ tmp = 0.0;
+		  cut {
+		    for(_ k = j; k < 4; k++) {
+		      if(get(m,i,k) == mij) 
+			switch k {
+			case  0: splice { tmp += x0; }
+			case  1: splice { tmp += x1; }
+			case  2: splice { tmp += x2; }
+			default: splice {tmp += x3; }
+		      }
+		    }
+
+		    if(mij == 1.0) { 
+		      benefit++; 
+		      splice { ri += tmp; } 
+		    }
+		    else if(mij == -1.0) {
+		      benefit++;
+		      splice { ri -= tmp; } 
+		    }
+		    else {
+		      switch i*4 + j {
+		      case  0: splice { ri += m.x0 * tmp; }
+		      case  1: splice { ri += m.x1 * tmp; }
+		      case  2: splice { ri += m.x2 * tmp; }
+		      case  3: splice { ri += m.x3 * tmp; }
+		      case  4: splice { ri += m.y0 * tmp; }
+		      case  5: splice { ri += m.y1 * tmp; }
+		      case  6: splice { ri += m.y2 * tmp; }
+		      case  7: splice { ri += m.y3 * tmp; }
+		      case  8: splice { ri += m.z0 * tmp; }
+		      case  9: splice { ri += m.z1 * tmp; }
+		      case 10: splice { ri += m.z2 * tmp; }
+		      case 11: splice { ri += m.z3 * tmp; }
+		      case 12: splice { ri += m.a0 * tmp; }
+		      case 13: splice { ri += m.a1 * tmp; }
+		      case 14: splice { ri += m.a2 * tmp; }
+		      default: splice { ri += m.a3 * tmp; }
+		      }
+		    }
+		  }
+		}
+	      } else benefit++;
+	    }
+
+	    switch i {
+	    case 0: splice { r.x0 = ri; }
+	    case 1: splice { r.x1 = ri; }
+	    case 2: splice { r.x2 = ri; }
+	    default: splice { r.x3 = ri; }
+	    }
+	  }
+	}
+      }
+    }
+  });
+
+  vmul_benefit[benefit]++;
+  Hashtable::insert(vmul_code_cache.v,m,code);
+  return code;
+}
+
+struct matrix_desc {
+  int bv[];  // bv[ij] & (1<<k) == 1 iff m[i][j] == m[i][k].
+  int bv_zero; // bv_zero & (1<<ij) == 1 iff m[i][j] = 0.0.
+  int bv_one; // bv_one & (1<<ij) == 1 iff m[i][j] = 1.0.
+  int bv_neg_one; // ditto -1.0.
+}
+
+matrix_desc matrix2desc(matrix m) {
+  _ ans = ^matrix_desc(new_array(16,0),0,0,0);
+
+  for(int i=0; i<4; i++) {
+    for(int j=0; j<4; j++) {
+      _ ij = i*4 + j;
+      
+      _ mij = get(m,i,j);
+
+      if     (mij ==  0.0) ans.bv_zero     |= (1 << ij);
+      else if(mij ==  1.0) ans.bv_one      |= (1 << ij);
+      else if(mij == -1.0) ans.bv_neg_one  |= (1 << ij);
+      else {
+	_ bv_ij = 0;      
+	for(_ k =j+1; k < 4; k++) {
+	  if(get(m,i,k) == mij) bv_ij |= (1 << k);
+	}
+	ans.bv[ij] = bv_ij;
+      }
+    }
+  }
+  return ans;
+}
+
+int matrix_desc_cmp(matrix_desc m1, matrix_desc m2) {
+  if(m1.bv_zero     != m2.bv_zero    ) return (m1.bv_zero    - m2.bv_zero);
+  if(m1.bv_one      != m2.bv_one     ) return (m1.bv_one     - m2.bv_one);
+  if(m1.bv_neg_one  != m2.bv_neg_one ) return (m1.bv_neg_one - m2.bv_neg_one);
+
+  for(_ i = 0; i < 16; i++) {
+    if(m1.bv[i] != m2.bv[i]) return(m1.bv[i] - m2.bv[i]);
+  }
+
+  return 0;
+}
+
+int matrix_desc_hash(matrix_desc m) {
+  int h = (m.bv_zero | (m.bv_one << 16)) | (m.bv_neg_one << 16);
+  int h2 = 0;
+  for(_ i = 0; i < 4; i++)
+    h2 |= m.bv[4*i] << 4*i;
+
+  return h ^ (h2 << 8);
+}
+
+< <matrix_desc,
+  void f(vector,matrix,vector)>Hashtable::table >Opt vmul2_code_cache;
+
+int vmul2_benefit[] = {0,0,0,0,
+		       0,0,0,0,
+		       0,0,0,0,
+		       0,0,0,0};
+int vmul2_num_gen = 0;
+
+vector test_u1 = ^vector(0.0,0.0,0.0,0.0);
+vector test_u2 = ^vector(0.0,0.0,0.0,0.0);
+vector test_v  = ^vector(1.2,2.2,3.1,4.6);
+
+void vmul2_test(void f(vector,matrix,vector), matrix m) {
+    vmul(test_u1,m,test_v);
+    f(test_u2,m,test_v);
+    
+    if(!vequal(test_u1,test_u2)) {
+      printf("vmul2_gen failed!!!\n");
+      print(tal_stdout,m);
+      printf(" * ");
+      vprint(tal_stdout,test_v);
+      printf(" = ");
+      vprint(tal_stdout,test_u1);
+      printf(" != ");
+      vprint(tal_stdout,test_u2);
+      printf("\n");
+    }
+}
+
+// vmul2_gen will be a bit smarter, although more painful to write than vmul.
+// The idea is to only generate new code for matrices whose structure is different.
+// We should generate less matrices that way, and therefore reduce the instruction
+// cache effects we appear to be seeing.
+void vmul2_gen(matrix m)(vector,matrix,vector) {
+
+  if(vmul2_code_cache == null) {
+    vmul2_code_cache = 
+      ^Opt(Hashtable::create(101,matrix_desc_cmp,matrix_desc_hash));
+
+    // Insert vmul -- we don't need to generate vmul!
+    Hashtable::insert(vmul2_code_cache.v, 
+		      ^matrix_desc(new_array(16,0),0,0,0), vmul);
+  }
+  _ md = matrix2desc(m);
+
+  try {
+    _ f = Hashtable::lookup(vmul2_code_cache.v,md);
+
+    // vmul2_test(f,m);
+
+    return f;
+  } handle y {
+    ;
+  }
+
+  _ benefit = 0;
+  vmul2_num_gen++;
+
+  // Generate the code.
+  _ f = codegen(void vmul2_rtcg(vector r, matrix m, vector v) {
+    // This would be much easier to write with an & of operator.
+
+    _ x0 = v.x0, x1 = v.x1, x2 = v.x2, x3 = v.x3;
+    _ tmp = 0.0, ri = 0.0;
+    cut {
+      for(int i=0; i<4; i++) {
+	int bv_seen = 0;
+	splice {
+	  ri = 0.0;
+	  cut {
+	    for(int j=0; j<4; j++) {
+	      _ ij = i*4 + j;
+
+	      _ bv_ij = md.bv[ij];
+
+	      if((bv_seen     & (1 <<  j)) == 0 &&
+		 ((md.bv_zero & (1 << ij)) == 0)) { // This elt of m is not zero.
+		   splice { 
+		     tmp = 0.0;
+		     
+		     cut {
+		       for(_ k = j; k < 4; k++) {
+			 if(((bv_ij >> k) & 1) == 1 || (k == j)) {
+			   bv_seen |= (1 << k);
+			   switch k {
+			   case 0:  splice { tmp += x0; }
+			   case 1:  splice { tmp += x1; }
+			   case 2:  splice { tmp += x2; }
+			   default: splice { tmp += x3; }
+			   }
+			 }
+		       }		      
+		       if(((md.bv_one >> ij) & 1) == 1) {
+			 benefit++;
+			 splice { ri += tmp; }
+		       }
+		       else if(((md.bv_neg_one >> ij) & 1) == 1) {
+			   benefit++;
+			   splice { ri -= tmp; }
+		       }
+		       else {
+			 switch ij {
+			   case  0: splice { ri += m.x0 * tmp; }
+			   case  1: splice { ri += m.x1 * tmp; }
+			   case  2: splice { ri += m.x2 * tmp; }
+			   case  3: splice { ri += m.x3 * tmp; }
+			   case  4: splice { ri += m.y0 * tmp; }
+			   case  5: splice { ri += m.y1 * tmp; }
+			   case  6: splice { ri += m.y2 * tmp; }
+			   case  7: splice { ri += m.y3 * tmp; }
+			   case  8: splice { ri += m.z0 * tmp; }
+			   case  9: splice { ri += m.z1 * tmp; }
+			   case 10: splice { ri += m.z2 * tmp; }
+			   case 11: splice { ri += m.z3 * tmp; }
+			   case 12: splice { ri += m.a0 * tmp; }
+			   case 13: splice { ri += m.a1 * tmp; }
+			   case 14: splice { ri += m.a2 * tmp; }
+			   default: splice { ri += m.a3 * tmp; }
+			 }
+		       }
+		     }
+		   }		
+		 }
+	      else benefit++;
+	    }
+	    switch i {
+	      case 0:  splice { r.x0 = ri; }
+	      case 1:  splice { r.x1 = ri; }
+	      case 2:  splice { r.x2 = ri; }
+	      default: splice { r.x3 = ri; }
+	    }
+	  }
+	}
+      }
+    }
+  });
+
+  if(benefit > size(vmul2_benefit) || benefit < 0) {
+    printf(" benefit = %d\n",benefit);
+    raise(^Failure("Unreasonable benefit!"));
+  }
+
+  vmul2_benefit[benefit]++;
+  Hashtable::insert(vmul2_code_cache.v,md,f);
+
+  //vmul2_test(f,m);
+
+  return f;
+}
+
+void vmul2_report(FILE f) {
+  _ b = vmul2_benefit;
+
+  fprintf(f,"vmul=\'vmul2_gen\'\n");
+  fprintf(f,"num_gen = %d\n",vmul2_num_gen);
+  fprintf(f,"benefit_dist = [");
+  for(int i = 0 ; i < size(b); i++) {
+      fprintf(f,"%d ",b[i]);
+  }
+  fprintf(f,"];\n"); 
+}
+
+vector add_scaled(vector x, FP t, vector v) {
+  return ^vector { x0 = x.x0 + t * v.x0,
+		   x1 = x.x1 + t * v.x1,
+		   x2 = x.x2 + t * v.x2,
+		   x3 = x.x3 + t * v.x3};
+}
+
+void imp_add_scaled(vector x, FP t, vector v) {
+  x.x0 += t * v.x0;
+  x.x1 += t * v.x1;
+  x.x2 += t * v.x2;
+  x.x3 += t * v.x3;
+}
+
+vector add(vector x, vector y) {
+  return ^vector { x0 = x.x0 + y.x0,
+		   x1 = x.x1 + y.x1,
+		   x2 = x.x2 + y.x2,
+		   x3 = x.x3 + y.x3};
+}
+
+void sub(vector r, vector x, vector y) {
+  r.x0 = x.x0 - y.x0;
+  r.x1 = x.x1 - y.x1;
+  r.x2 = x.x2 - y.x2;
+  r.x3 = x.x3 - y.x3;
+}
+
+
+void subr_gen(vector y)(vector,vector) {
+ return codegen(void sub(vector r, vector x) {
+   cut { 
+     if (y.x0 == 0.0)      splice { r.x0 = x.x0; } 
+     else if (y.x0 == 1.0) splice { r.x0 = x.x0 - 1.0; }
+     else                  splice { r.x0 = x.x0 - fill(^(y.x0)).1; }
+
+     if (y.x1 == 0.0)      splice { r.x1 = x.x1; } 
+     else if (y.x1 == 1.0) splice { r.x1 = x.x1 - 1.0; }
+     else                  splice { r.x1 = x.x1 - fill(^(y.x1)).1; }
+
+     if (y.x2 == 0.0)      splice { r.x2 = x.x2; } 
+     else if (y.x2 == 1.0) splice { r.x2 = x.x2 - 1.0; }
+     else                  splice { r.x2 = x.x2 - fill(^(y.x2)).1; }
+
+     if (y.x3 == 0.0)      splice { r.x3 = x.x3; } 
+     else if (y.x3 == 1.0) splice { r.x3 = x.x3 - 1.0; }
+     else                  splice { r.x3 = x.x3 - fill(^(y.x3)).1; }
+
+   }
+});
+}
+
+void sub_gen(vector x)(vector,vector) {
+ return codegen(void sub_rtcg(vector r, vector y) {
+   cut { 
+     if (x.x0 == 0.0)      splice { r.x0 = -y.x0; } 
+     else if (x.x0 == 1.0) splice { r.x0 = 1.0 - y.x0; }
+     else                  splice { r.x0 = fill(^(x.x0)).1 - y.x0; }
+
+     if (x.x1 == 0.0)      splice { r.x1 = -y.x1; } 
+     else if (x.x1 == 1.0) splice { r.x1 = 1.0 - y.x1; }
+     else                  splice { r.x1 = fill(^(x.x1)).1 - y.x1; }
+
+     if (x.x2 == 0.0)      splice { r.x2 = -y.x2; } 
+     else if (x.x2 == 1.0) splice { r.x2 = 1.0 - y.x2; }
+     else                  splice { r.x2 = fill(^(x.x2)).1 - y.x2; }
+
+     if (x.x3 == 0.0)      splice { r.x3 = -y.x3; } 
+     else if (x.x3 == 1.0) splice { r.x3 = 1.0 - y.x3 ; }
+     else                  splice { r.x3 = fill(^(x.x3)).1 - y.x3; }
+   }
+});
+}
+
+FP dot(vector x, vector y) {
+  return (x.x0 * y.x0 + 
+	  x.x1 * y.x1 + 
+	  x.x2 * y.x2 + 
+	  x.x3 * y.x3);
+}
+
+FP dot_gen(vector x)(vector y) {
+
+  // Optimize dot.  Want to take advantage of zeroes, ones, and equal
+  // elements in x.
+  _ x0 = x.x0, x1 = x.x1, x2 = x.x2, x3 = x.x3;
+
+  return codegen(FP dot_rtcg(vector y) {
+    FP result = 0.0;
+    
+    cut {
+      if(x0 != 0.0) {
+	splice { 
+	  FP tmp = y.x0;
+
+	  cut {
+	    if (x0 == x1) splice { tmp += y.x1; }
+	    if (x0 == x2) splice { tmp += y.x2; }
+	    if (x0 == x3) splice { tmp += y.x3; }
+
+	    if (x0 == 1.0) splice { result += tmp; }
+	    else splice { result += tmp * fill(^(x0)).1; }
+	  }
+	}
+      }
+
+      if(x1 != x0 && x1 != 0.0) {
+	splice {
+	  FP tmp = y.x1;
+	  
+	  cut {
+	    if (x1 == x2) splice { tmp += y.x2; }
+	    if (x1 == x3) splice { tmp += y.x3; }
+	    
+	    if (x1 == 1.0) splice { result += tmp; }
+	    else splice { result += tmp * fill(^(x1)).1; }
+	  }
+	}
+      }
+
+      if(x2 != x0 && x2 != x1 && x2 != 0.0) {
+	splice {
+	  FP tmp = y.x2;
+
+	  cut {
+	    if (x2 == x3) splice { tmp += y.x3; }
+	    if (x2 == 1.0) splice { result += tmp; }
+	    else splice { result += tmp * fill(^(x2)).1; }
+	  }
+	}
+      }
+     
+      if(x3 != 0.0 && x3 != x0 && x3 != x1 && x3 != x2) {
+	if (x3 == 1.0) splice { result += y.x3; }
+	else splice { result += y.x3 * fill(^(x3)).1; }
+      }
+    }
+    return result;
+  });
+}
+
+FP square(vector x) {
+  return (x.x0 * x.x0 + 
+	  x.x1 * x.x1 +
+	  x.x2 * x.x2 +
+	  x.x3 * x.x3);
+}
+
+vector normalize(vector r, vector x) {
+  _ nx = sqrt(square(x));
+  r.x0 = x.x0 / nx;
+  r.x1 = x.x1 / nx;
+  r.x2 = x.x2 / nx;
+  r.x3 = x.x3 / nx;
+  return r;
+}
+
+
+vector neg(vector x) {
+  return ^vector(-x.x0, -x.x1, -x.x2, -x.x3);
+}

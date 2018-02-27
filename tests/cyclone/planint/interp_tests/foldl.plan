@@ -1,0 +1,10 @@
+(* will return list of pairs; fst(pair) = thisHost(), snd(pair)
+   = each element of the provided list, in reverse order *)
+fun cons(j,i) =
+  let val name = (hd thisHost()) in
+    (name,i)::j
+  end
+
+fun test1(v) =
+  foldl (cons,[],v)
+

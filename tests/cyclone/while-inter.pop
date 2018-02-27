@@ -1,0 +1,25 @@
+#include "core.h"
+open Core;
+
+void pop_main()
+{
+  int i;
+
+  int f(int) =
+    codegen(int spec(int a)
+	    {
+	      int b = 0;
+
+	      while(a < 10) {
+		a = a + 1;
+		b = b + 1;
+		cut i = 1;
+	      }	        
+	      print_int(b);
+	      print_string(" ");
+	      return a;
+	    });
+  print_int(f(0));
+  print_string("\n");
+}
+

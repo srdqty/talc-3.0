@@ -1,0 +1,14 @@
+extern struct bstruct { int i; int j; }
+extern bstruct b;
+extern int func(int);
+
+int c = 0;
+
+void foo() {
+  b.j = func(b.i) + c;
+} 
+
+static void init () {
+  c = 5;
+}
+

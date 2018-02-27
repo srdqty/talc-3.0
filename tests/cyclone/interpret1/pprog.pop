@@ -1,0 +1,196 @@
+#include "opcodes.h"
+
+/* Instruction type */
+struct inst
+{
+  int opcode;
+  int val;
+}
+
+/* Program */
+inst pprog1[] =
+{
+  ^inst(PUSH, 0),    ^inst(PUSH, 0),  ^inst(ST, EMPTY),
+  ^inst(PUSH, 111),  ^inst(PUSH, 1),  ^inst(ST, EMPTY),
+  ^inst(PUSH, 222),  ^inst(PUSH, 2),  ^inst(ST, EMPTY),
+  ^inst(PUSH, 333),  ^inst(PUSH, 3),  ^inst(ST, EMPTY),
+
+  ^inst(PUSH, 1),  ^inst(LD, EMPTY),  ^inst(PUSH, 0),  ^inst(ST, EMPTY),
+  ^inst(PUSH, 2),  ^inst(LD, EMPTY),  ^inst(PUSH, 1),  ^inst(ST, EMPTY),
+  ^inst(PUSH, 3),  ^inst(LD, EMPTY),  ^inst(PUSH, 2),  ^inst(ST, EMPTY),
+  ^inst(PUSH, 0),  ^inst(LD, EMPTY),  ^inst(PUSH, 3),  ^inst(ST, EMPTY),
+
+  ^inst(PUSH, 1),  ^inst(LD, EMPTY),  ^inst(PUSH, 0),  ^inst(ST, EMPTY),
+  ^inst(PUSH, 2),  ^inst(LD, EMPTY),  ^inst(PUSH, 1),  ^inst(ST, EMPTY),
+  ^inst(PUSH, 3),  ^inst(LD, EMPTY),  ^inst(PUSH, 2),  ^inst(ST, EMPTY),
+  ^inst(PUSH, 0),  ^inst(LD, EMPTY),  ^inst(PUSH, 3),  ^inst(ST, EMPTY),
+
+  ^inst(PUSH, 1),  ^inst(LD, EMPTY),  ^inst(PUSH, 0),  ^inst(ST, EMPTY),
+  ^inst(PUSH, 2),  ^inst(LD, EMPTY),  ^inst(PUSH, 1),  ^inst(ST, EMPTY),
+  ^inst(PUSH, 3),  ^inst(LD, EMPTY),  ^inst(PUSH, 2),  ^inst(ST, EMPTY),
+  ^inst(PUSH, 0),  ^inst(LD, EMPTY),  ^inst(PUSH, 3),  ^inst(ST, EMPTY),
+
+  ^inst(END, EMPTY)
+};
+
+
+inst pprog2[]=
+{
+  ^inst(PUSH, 1234),
+
+  ^inst(PUSH, 5678),    ^inst(ADD, EMPTY),
+  ^inst(PUSH, 4),       ^inst(MUL, EMPTY),
+  ^inst(PUSH, 3),       ^inst(MUL, EMPTY),
+  ^inst(PUSH, 21),      ^inst(MUL, EMPTY),
+  ^inst(PUSH, 1740590), ^inst(SUB, EMPTY),
+
+  ^inst(PUSH, 5678),    ^inst(ADD, EMPTY),
+  ^inst(PUSH, 4),       ^inst(MUL, EMPTY),
+  ^inst(PUSH, 3),       ^inst(MUL, EMPTY),
+  ^inst(PUSH, 21),      ^inst(MUL, EMPTY),
+  ^inst(PUSH, 1740590), ^inst(SUB, EMPTY),
+
+  ^inst(PUSH, 5678),    ^inst(ADD, EMPTY),
+  ^inst(PUSH, 4),       ^inst(MUL, EMPTY),
+  ^inst(PUSH, 3),       ^inst(MUL, EMPTY),
+  ^inst(PUSH, 21),      ^inst(MUL, EMPTY),
+  ^inst(PUSH, 1740590), ^inst(SUB, EMPTY),
+
+  ^inst(PUSH, 5678),    ^inst(ADD, EMPTY),
+  ^inst(PUSH, 4),       ^inst(MUL, EMPTY),
+  ^inst(PUSH, 3),       ^inst(MUL, EMPTY),
+  ^inst(PUSH, 21),      ^inst(MUL, EMPTY),
+  ^inst(PUSH, 1740590), ^inst(SUB, EMPTY),
+
+  ^inst(PUSH, 5678),    ^inst(ADD, EMPTY),
+  ^inst(PUSH, 4),       ^inst(MUL, EMPTY),
+  ^inst(PUSH, 3),       ^inst(MUL, EMPTY),
+  ^inst(PUSH, 21),      ^inst(MUL, EMPTY),
+  ^inst(PUSH, 1740590), ^inst(SUB, EMPTY),
+
+  ^inst(PUSH, 5678),    ^inst(ADD, EMPTY),
+  ^inst(PUSH, 4),       ^inst(MUL, EMPTY),
+  ^inst(PUSH, 3),       ^inst(MUL, EMPTY),
+  ^inst(PUSH, 21),      ^inst(MUL, EMPTY),
+  ^inst(PUSH, 1740590), ^inst(SUB, EMPTY),
+
+  ^inst(PUSH, 3),  ^inst(ST  ,  EMPTY),
+
+  ^inst(END, EMPTY)
+};
+
+inst pprog3[]=
+{
+           ^inst(PUSH, 0),  ^inst(PUSH, 0),  ^inst(ST, EMPTY),
+
+           ^inst(PUSH, 2), ^inst(PUSH, 1), ^inst(ST, EMPTY),
+  /* 6 */  
+           ^inst(PUSH, 1), ^inst(LD, EMPTY), 
+           ^inst(PUSH, 0), ^inst(CMP, EMPTY),
+           ^inst(JEQ, 54),
+
+           ^inst(PUSH, 2), ^inst(PUSH, 2), ^inst(ST, EMPTY),
+  /* 14 */  
+           ^inst(PUSH, 2), ^inst(LD, EMPTY), 
+           ^inst(PUSH, 0), ^inst(CMP, EMPTY),
+           ^inst(JEQ, 47),
+
+           ^inst(PUSH, 2), ^inst(PUSH, 3), ^inst(ST, EMPTY),
+  /* 22 */ 
+           ^inst(PUSH, 3), ^inst(LD, EMPTY),
+           ^inst(PUSH, 0), ^inst(CMP, EMPTY),
+           ^inst(JEQ, 40),
+
+           ^inst(PUSH, 0), ^inst(LD, EMPTY),
+           ^inst(PUSH, 1), ^inst(ADD, EMPTY),
+           ^inst(PUSH, 0), ^inst(ST, EMPTY),
+
+	   ^inst(PUSH, 3), ^inst(LD, EMPTY), ^inst(PUSH, 1), ^inst(SUB, EMPTY), ^inst(PUSH, 3), ^inst(ST, EMPTY),
+
+           ^inst(JMP, 22),
+  /* 40 */ ^inst(PUSH, 2), ^inst(LD, EMPTY), ^inst(PUSH, 1), ^inst(SUB, EMPTY), ^inst(PUSH, 2), ^inst(ST, EMPTY),
+           ^inst(JMP, 14),
+
+  /* 47 */ ^inst(PUSH, 1), ^inst(LD, EMPTY), ^inst(PUSH, 1), ^inst(SUB, EMPTY), ^inst(PUSH, 1), ^inst(ST, EMPTY),
+           ^inst(JMP, 6),
+
+  /* 54 */ ^inst(END, EMPTY)
+};
+
+inst pprog4[]=
+{
+           ^inst(PUSH, 0),  ^inst(PUSH, 0),  ^inst(ST, EMPTY),
+
+           ^inst(PUSH, 5), ^inst(PUSH, 1), ^inst(ST, EMPTY),
+  /* 6 */ 
+           ^inst(PUSH, 1), ^inst(LD, EMPTY),
+           ^inst(PUSH, 0), ^inst(CMP, EMPTY),
+           ^inst(JEQ, 24),
+
+           ^inst(PUSH, 0), ^inst(LD, EMPTY),
+           ^inst(PUSH, 1), ^inst(ADD, EMPTY),
+           ^inst(PUSH, 0), ^inst(ST, EMPTY),
+
+	   ^inst(PUSH, 1), ^inst(LD, EMPTY), ^inst(PUSH, 1), ^inst(SUB, EMPTY), ^inst(PUSH, 1), ^inst(ST, EMPTY),
+           ^inst(JMP, 6),
+
+  /* 24 */ ^inst(PUSH, 5), ^inst(PUSH, 2), ^inst(ST, EMPTY),
+  /* 27 */ 
+           ^inst(PUSH, 2), ^inst(LD, EMPTY),
+           ^inst(PUSH, 0), ^inst(CMP, EMPTY),
+           ^inst(JEQ, 45),
+
+           ^inst(PUSH, 0), ^inst(LD, EMPTY),
+           ^inst(PUSH, 1), ^inst(ADD, EMPTY),
+           ^inst(PUSH, 0), ^inst(ST, EMPTY),
+
+	   ^inst(PUSH, 2), ^inst(LD, EMPTY), ^inst(PUSH, 1), ^inst(SUB, EMPTY), ^inst(PUSH, 2), ^inst(ST, EMPTY),
+           ^inst(JMP, 27),
+
+  /* 45 */ ^inst(PUSH, 5), ^inst(PUSH, 3), ^inst(ST, EMPTY),
+  /* 48 */ 
+           ^inst(PUSH, 3), ^inst(LD, EMPTY),
+           ^inst(PUSH, 0), ^inst(CMP, EMPTY),
+           ^inst(JEQ, 66),
+
+           ^inst(PUSH, 0), ^inst(LD, EMPTY),
+           ^inst(PUSH, 1), ^inst(ADD, EMPTY),
+           ^inst(PUSH, 0), ^inst(ST, EMPTY),
+
+	   ^inst(PUSH, 3), ^inst(LD, EMPTY), ^inst(PUSH, 1), ^inst(SUB, EMPTY), ^inst(PUSH, 3), ^inst(ST, EMPTY),
+           ^inst(JMP, 48),
+
+  /* 66 */ ^inst(END, EMPTY)
+};
+
+inst pprog5[]=
+{ 
+  ^inst(PUSH, 1), 
+  ^inst(PUSH, 0),
+  ^inst(ST, EMPTY), /* accum = 1 */
+
+  ^inst(PUSH, 1),  /* BEGIN: */
+  ^inst(LD, EMPTY),
+  ^inst(PUSH, 0),
+  ^inst(CMP, EMPTY),
+  ^inst(JEQ, 23), /* if(n == 0) then goto FIN */
+
+  ^inst(PUSH, 0),
+  ^inst(LD, EMPTY),
+  ^inst(PUSH, 1),
+  ^inst(LD, EMPTY),
+  ^inst(MUL, EMPTY),
+  ^inst(PUSH, 0),
+  ^inst(ST, EMPTY), /* accum = accum * n */
+
+  ^inst(PUSH, 1),
+  ^inst(LD, EMPTY),
+  ^inst(PUSH, 1),
+  ^inst(SUB, EMPTY),
+  ^inst(PUSH, 1),
+  ^inst(ST, EMPTY), /* n = n - 1 */
+  ^inst(JMP, 3), /* goto BEGIN */
+
+  /* ^inst(PUSH, 1),  FIN: (Useless instruction just for the end) */
+  ^inst(END, EMPTY)
+}; 

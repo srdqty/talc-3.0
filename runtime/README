@@ -1,0 +1,47 @@
+                                  TALC Runtime
+                                  ============
+
+Copyright Greg Morrisett, Neal Glew
+  January 1999, all rights reserved
+
+The TALC runtime consists of the garbage collector, a startup
+function, some utilities, and some special array functions.  These are
+split across three files: {lib,}gc.{a,lib}, tal_start.c, and
+tal_util.tal.
+
+Two interfaces control how .tal files see the runtime.  tal.tali
+defines the stuff provided by the runtime, and tal_prog.tali defines
+what a .tal program should provide to link to the startup module.
+
+The file tal.inc is included by all .tal files and sets MASM up to do
+what we want.
+
+Finally, some data representation assumptions are documented in
+representation.doc.
+
+Standard Libraries
+------------------
+
+The files stdlib.* provide a standard library that provides some O/S,
+I/O, and int<->string conversion utilities.
+
+Popcorn Runtime
+---------------
+
+Popcorn has its own additional runtime files, pop_runtime.*.
+
+Cyclone Runtime
+---------------
+
+Cyclone has its own special files: cyclone.inc to be included by files
+that use cyclone stuff, and cylonelib.c that contains the
+implementation of the cyclone macros.
+
+Loader Runtime
+--------------
+
+Support for dynamic linking is provided as a primitive that
+loads in closed object files that export a particular function.  This
+interface is not yet finished.
+
+

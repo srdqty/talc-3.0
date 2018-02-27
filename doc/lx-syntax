@@ -1,0 +1,93 @@
+The syntax of the LX part of TAL
+--------------------------------
+
+HANDY TABLE
+-----------
+
+Kinds:
+------ 
+Binary	ABSTRACT			CONCRETE		Description
+
++	Ksum of kind list		+[ kind_list ]		Sum kinds
+V       Kvar of identifier		kvar			kind variables
+U	Kmu of (identifier * kind)	RECKIND <kvar = kind>	Mutually recursive kinds
+		list  * identifier	ANDKIND <kvar = kind>	  only in the abbreviations
+
+
+Cons:
+-----
+BINARY	ABSTRACT			CONCRETE			Description
+
+i	Cinj of int * con * kind	inj number con [kind]		Sum intro form	
+;	Ccase of con * id * con list	case (con) tvar [conlist]	sum elim form, tvar bound
+									   in each con of conlist
+W	Cfold of kind * con		fold [kind] con			recursive kind intro
+0	Cvoid of kind			void [kind]			void (at all base kinds)
+P	Cpr of id *							Primitive recursion
+           (id * id * kind * id * kind * con) list			   (see below)
+// concrete form of Cpr only         	PRIMREC < tvar : kvar -|> kind = fn tvar : kind . con > 
+// appears in abbreviations   	        ANDREC  < tvar : kvar -|> kind = fn tvar : kind . con > 
+
+Instructions:
+-------------
+BINARY	ABSTRACT				CONCRETE			
+
+V	Vcase of int * con * id * genop coerce	VCASE number,tvar,con,coerce
+P	Letprod of id list * con		LETPROD [tvars],con
+r	Letroll of id * con			LETROLL tvar,con
+
+
+NOTES AND EXAMPLES
+-----------------
+
+Since the main use for recursive kinds will be to create constructor
+'datatypes' I've only added notation for them through kind
+abbreviations. In otherwords, in the abbreviation portion of a TAL
+file you may define a recursive kind as:
+
+RECKIND <name = k>
+
+where k is some kind expression containing name. If you would like a
+set of mutually recursive kinds, you can follow that line with:
+
+ANDKIND <name' = k'>
+
+You can also define non-recursive kind abbreviations for convenience:
+
+KIND <name = k>
+
+The syntax for kinds themselves is extended to include kind variables
+(simple identifiers) and sum kinds +[ k ... ]  
+
+For example the kind of natural numbers is ( *[] was already present
+as the kind of the empty tuple of constructors.) :
+
+RECKIND <N = +[ *[], N ]>
+
+Like recursive kinds, primitive recursive functions must be defined
+through abbreviations.  For example 
+
+PRREC < unroll_N : j -!> +[ *[], j] = fn a : +[ *[], j] . a >
+
+just unrolls natural numbers. Another example, that give an number n,
+returns a the type linked lists of B4's of exactly length n is:
+
+PRREC < prodN : j -!> T4 = fn a : +[ *[], j] .
+	case (a) b [ S(0), ^*[B4^rw, (prodN b)^rw] ]  >
+(i.e. if the arg is zero, then return the type of nil, S(0). Otherwise
+if it is b+1 recur on b and put it in a tuple with a B4.)
+
+The general form is :
+
+PRIMREC < name : j -|> k' = fn a : k . c > 
+
+You can think of it as a type constructor of kind 
+mu j.k -> k'[mu j.k/j].
+
+where name is the name of the function, j is the kind variable, 
+a is the argument to the function, k is its kind (unfolded) and 
+c is the body.
+
+
+
+

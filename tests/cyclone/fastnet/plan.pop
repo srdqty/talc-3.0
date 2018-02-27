@@ -1,0 +1,88 @@
+#include <string.h>
+#include <list.h>
+#include <tal_sockets.h>
+
+#include "planbase.h"
+#include "absyn.h"
+#include "parse.h"
+#include "env.h"
+#include "svc.h"
+#include "eval.h"
+#include "network.h"
+
+open Core;
+extern string std_args()[];
+
+/******************************************************************************
+ * PLAN interpreter
+ *****************************************************************************/
+
+void pop_main() {
+  string argv[] = std_args();	/* command line arguments */
+  FILE fp;			/* file pointer */
+  FILE rt_fp;
+  exp expr;
+  value v;
+  int i, c;
+  string s = Core::new_string(MAX_PLANPROG);
+  string s1 = Core::new_string(MAX_PLANPROG);
+  string inter_str = Core::new_string(MAX_PLANPROG);
+  string_file parse_str;
+  
+  if (size(argv) != 2) {
+    print_string(argv[0]);
+    print_string(": usage: <num>\n");
+  }
+  else {
+    string_file string_packet;
+
+    try {
+
+      /* initialize the core services */
+      Svc::init_services();
+
+      /* initialize interface info */
+      rt_fp = Core::file_open("c1", "r");
+      for(i = 0; (c = fgetc(rt_fp)) != EOF; i++)
+	inter_str[i] = c;
+      inter_str[i] = EOF;
+      inter_str = String::substring(inter_str, 0, i+1);
+      parse_str = ^string_file(0, inter_str);
+      read_interface_file(parse_str);
+      Core::file_close(rt_fp);
+
+      /* read routing table info */
+      rt_fp = Core::file_open("r4000", "r");
+      for(i = 0; (c = fgetc(rt_fp)) != EOF; i++)
+	s1[i] = c;
+      s1[i] = EOF;
+      s1 = String::substring(s1, 0, i+1);
+      parse_str = ^string_file(0, s1);
+      read_rout_table_file(parse_str);
+
+      /* assign received_host to some value */
+      received_host = "cyclone:4000";
+	 
+      /* open file, read packet, (program + entry info) */
+      fp = file_open(argv[1], "r");
+      for(i = 0; (c = fgetc(fp)) != EOF; i++)
+	s[i] = c;
+      s[i] = EOF;
+      string_packet = ^string_file(0, String::substring(s, 0, i+1));
+      
+      pop_pkt ppkt = str_to_pop_pkt(string_packet);
+      printf("%s", deflist_to_str(ppkt.program));
+      v = eval_pop_pkt(null, ppkt);
+      printf("%s\n", value_to_str(v));
+    } handle e
+      switch e {
+      case InternalError(s): printf("ERROR: %s\n", s);
+      case PlanExcept(s): printf("(inject): PlanExcept Error");
+      case Core::FileOpenError(fname):
+	printf("(inject): File not found: %s", fname);
+      default:            printf("(inject): Error Internal 6");
+      }
+
+    print_string("done.\n");
+  }
+}

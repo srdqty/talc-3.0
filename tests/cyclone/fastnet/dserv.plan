@@ -1,0 +1,7 @@
+fun doit() : unit = (test_service("dynlink_linked"); print("Done"))
+
+val entry_fun  : unit = "doit"
+val entry_args : unit = []
+val entry_src  : unit = "blah"
+val entry_eval : unit = "cyclone:4001"
+val entry_rb   : unit = 20

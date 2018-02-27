@@ -1,0 +1,34 @@
+#include "poptiming.h"
+#include "core.h"
+open Core;
+
+int simple_pow_gen(int n)(int) {
+  return codegen(int simple_pow(int x) {
+    int result = 1;
+    cut { 
+      while(n!=0) {
+	splice { result *=x; }
+	--n;
+      }
+    }
+    return result;
+  });
+}
+
+void pop_main() {
+  string args[] = std_args();
+  if(size(args)!=2) {
+    printf("%s: usage <exponent>\n",args[0]);
+    return;
+  }
+
+  int exp = int_of_string(args[1]);
+  int result = 0;
+  int x = 15;
+
+  MAIN_TEST("pow",COMPILER,RTCG_KIND,args[1],_ pow = simple_pow_gen(exp),pow(x));
+
+  _ result = pow(x);
+  printf("exponent = %d, result = %d\n",exp,result);
+  output_timers(string_to_Cstring("pow.log"));
+}

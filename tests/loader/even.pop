@@ -1,0 +1,11 @@
+#include "core.h"
+
+extern bool odd(int);
+bool even(int x) {
+  if (x == 0) return true;
+  else return odd(x-1);
+}
+
+static void init() {
+  printf("in even.pop:init()\n");
+}

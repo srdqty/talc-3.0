@@ -1,0 +1,31 @@
+// File used to generate tali for sptc.h
+
+// WARNING: Keep up to date with sptc.h
+
+bool sptc_open(int width,int height) {
+  return false;
+}
+
+bool sptc_close() {
+  return false;
+}
+
+bool sptc_set_palette(int x[] ) {
+  return false;
+}
+
+string sptc_pixels() {
+  return "";
+}
+
+void sptc_update() {
+  return;
+}
+
+bool sptc_keyhit() {
+  return false;
+}
+
+int sptc_read() {
+  return 0;
+}

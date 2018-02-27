@@ -1,0 +1,252 @@
+ISSUES
+======
+
+Updating types
+--------------
+
+I can already see that some problems are going to arise with respect to
+adding elements to struct definitions.  Even in the best case, we cannot
+"update" the type; we can only provide a new version, with a new name.
+
+To maintain compatibility with the running program, we would ideally like
+TAL to understand subtyping enough to not require mapper procedures.
+Instead, we have to make mapper procedures whereever we mentioned the old
+types.  There are two ways to "grow" type definitions then:
+
+  1) Simply add the elements to a new type definition.  For example,
+     if we had
+
+       struct foo {
+         int a;
+         int b;
+       }
+
+     and we wished to add a new field, int c, we would do:
+
+       struct newfoo {
+         int a;
+         int b;
+         int c;
+       }
+
+     Then the mapper procedures would call functions like:
+
+       newfoo foo2newfoo(foo f) {
+         return ^newfoo(f.a,f.b,0);
+       }
+       foo newfoo2foo(newfoo nf) {
+         return ^foo(nf.a,nf.b);
+       }
+
+  2) We can nest the old type in the new type:
+
+       struct newfoo {
+         foo f;
+         int c;
+       }
+
+     So that the mapper procedures use
+
+       newfoo foo2newfoo(foo f) {
+         return ^newfoo(f,0);
+       }
+       foo newfoo2foo(newfoo nf) {
+         return nf.f;
+       }
+
+  The second choice has two benefits over the first choice:
+  - Allocation is reduced; the size of the new type is less and
+    no allocation is needed at all in the return case.
+  - Mapper procedure conversion is faster.  It's a single op
+    in the return case, and requires less copies in the first case.
+
+  Its disadvantages are also twofold:
+  - We would like to maintain a discipline in which the programmer
+    simply changes the code as if developing in a compile-and-run
+    (static) discipline, and then crafts updates based on these
+    changes.  Creating this "hybrid" type is clumsy and unintuitive
+    in this circumstance.
+  - There is a runtime cost in the newcode of following the extra
+    level of indirection.  Over time, we can imagine that types
+    become fairly convoluted with lots of levels of indirection.
+    On the other hand, this might facilitate multiple users changing
+    the same typedef without necessarily knowing how the others
+    changed it.
+
+  In the case that we know that we'll make all the updates at once,
+  meaning that there won't be any need for mapper procedures, then
+  the first choice is clearly preferable, because it eases the
+  development process.  Furthermore, if we were to ever get
+  subtyping in TAL, we wouldn't need the mapper procedures.
+
+==========================================================================
+
+Goal
+----
+Build a basic webserver.  Then dynamically apply optimizations detailed in
+the Flash paper:
+  - pathname translation caching
+  - response header caching
+  - memory mapped files
+  - byte-aligned output
+  - persistent CGI processes (amortize startup cost)
+  - memory residence testing (hack for mincore)
+
+
+
+
+Working notes on the original C version of Flash
+------------------------------------------------
+
+Call tree for normal connections:
+MainLoop (loop.pop)
+  unix_select
+  AcceptConnections (accept.pop)
+    DoConnReadingBackend (loop.pop)
+      ProcessRequestReading (readreq.pop)
+      SetSelectHandler(DoSingleWrite) (loop.pop)
+      StartRequest (loop.pop)
+        ProcessColdRequest (cold.pop)
+          ProcessColdRequestBackend (cold.pop)
+            RegularFileStuff (file.pop)
+              ColdFileStuff (cold.pop)
+      SetTimer (timer.pop)
+  unix_select
+  DoSingleWrite (file.pop)
+
+Main loop is in function loop.c:MainLoop.  This does a select on all of the
+fd's of open connections as well as the listen socket.  First, timers are
+checked for expiration on any of the connections.  Next, any open
+connections are serviced by calling their set "select handlers."  Finally,
+it attempts to "accept" any connection requests; it appears accept() is done
+at least every 1 sec (even if no activity on listen socket).
+
+Connections are "accepted" in accept.c:AcceptConnections().  After an fd is
+created for the connection, a httpd_conn struct for it is created (if
+necessary) and initialized, and a first stab at reading the request is made
+by calling loop.c:DoConnReadingBackend.  If the request is not able to be
+entirely read here, the select handler for the connection is set to
+DoConnReading, which calls this routine again.
+
+Inside DoConnReadingBackend, it first calls readreq.c:ProcessRequestReading.
+This allocates, if necessary, a HeaderInfoStruct to keep track of the
+request: it's current state and its data, in a series of buffers.  The HIS
+starts off in state RS_START.  It then reads up to the end of the current
+buffer, allocating a new buffer to add to the list if necessary.
+
+After filling the buffer, it runs through what it read, looking for \n's,
+which serve as delimiters for the request strings.  For the first string
+that it grabs (i.e. in state RS_FIRST), it stores a copy of the full string
+in hc->hc_origFirstLine, sets the state to RS_REST (indicating future
+strings in the same connection) and then processes the string by
+calling readreq.c:ProcessFirstHeaderLine.
+
+ProcessFirstHeaderLine parses the string as an HTTP request and ultimately
+sets the hc_encodedurl, hc->hc_protocol, and hc_method fields of the
+connection object.  In some cases it will set the mimeFlag field to be true,
+meaning that ProcessRequestReading will have to continue; otherwise it will
+return as being done.  If it continues, it will read the remaining fields,
+setting the state field to RS_REST, and then calling
+ProcessRemainingHeaderLines.  Finally, if necessary, the state gets set to
+RS_DATA for reading content data.  Future invocations of this function with
+this state will simply read the data until done.  When everything is done,
+it returns PRR_DONE to DoConnReadingBackend.
+
+DoConnReadingBackend then continues and starts the response to the request.
+It first sets the SelectHandler to DoSingleWrite.  Then it calls
+loop.c:StartRequest to begin processing the request.  The process here is to
+first decode the URL, obtain and respond with the data.  For the former, it
+first checks if name is in the name cache (type could be a file (HNT_FILE),
+a redirect (HNT_REDIRECT), or directory listing (HNT_LS)); if not it calls
+ProcessColdRequest to decode the URL.
+
+ProcessColdRequest(Backend) will verify the data is reasonable and either
+generate a redirect (returning SR_REDIRECT), a CGI action (for ls and other
+scripts, returning SR_CGI), or a regular file.  If the file has not been
+read in before (more specifically, it does not have a HotNameEntry in the
+name cache), it will first be scheduled for "name conversion" by calling
+ScheduleNameConversion.  This will send a message to a slave process that
+will decode the file name and stat it, causing it to be put into the system
+file cache.  When the master (in CurrentReaderDone) receives the result from
+the slave, it will call ResumeAfterConnReading for each relevant connection,
+on success, or will let the connection timeout on failure.  This causes
+ProcessColdRequest to get called again, and ultimately to call
+hotfile.c:RegularFileStuff, with as the argument the decoded URL as the
+HotNameEntry.
+
+  In RegularFileStuff, it first checks the cache to see if the file contents
+  are available.  If not, it calls ColdFileStuff to get the contents and put
+  them in a cache entry.
+
+    ColdFileStuff opens the file, storing the fd in the cachentry.  It also
+    stores the file size, the mod time, the Mime encodings (by calling
+    FigureMime), the response header (calls CalcRespHeader; this fills in
+    respHeader and ce_respHeaderLen), and the filename, and finally adds it
+    to the Data cache by calling AddEntryToDataCache.
+
+    AddEntryToDataCache sets up the process of reading the file from disk.
+    Reading of the file occurs in a number of block-sized chunks of type
+    ReadInfoRec.  This routine allocates the chunks' metadata (the data is
+    created with mmap later), sets the counter to how many chunks have been
+    read (numChunksInMem).  It then hashes the filename and sticks it in the
+    cache. XXX could really pull the preparation stuff out of this routine.
+
+    Each chunk (of type ReadInfoRec), has a reference counter, and some
+    pointers for inclusion on various lists.
+
+  RegularFileStuff then proceeds with the process of reading the file.  It
+  calls IncChunkLock(ce,0) to start the reading of the first chunk of data.
+  If this is the first attempt to read this data, then the chunk is removed
+  from the MRU list (calls RemoveFromChunkLRUList, which is a misnomer).
+  Then the reference count is incremented.
+
+  Ultimately returns SR_READY on success, which is also the return value of
+  PrcoessColdRequest and of StartRequest.
+
+DoConnReadingBackend then processes the return code.  On CGI, it disables
+the connection and waits for the CGI code, for regular files it sets an Idle
+timer and then returns, allowing writing to begin.
+
+Back to the top level select loop ...
+
+If a connection needs to be written to, it calls DoSingleWrite.  The first
+thing this does is to set the kernel socket send buffer size to match that
+of the file size (if possible).  It then performs some calculations for
+buffer sizing (XXX) and calls GetDataToSend.
+
+  GetDataToSend takes as arguments the cache entry, the file position to
+  read from, the desired size of the block and its maximal size, and returns
+  the actual size and starting offset.  The routine calculates the chunk
+  that contains the data, and if the data is present, returns a pointer to
+  the beginning of the chunk that contains the data.
+
+If GetDataToSend does not return any data (i.e. it's not been read from disk
+yet), it calls ScheduleAsyncRead with the # of bytes to send (as returned
+from GetDataToSend).  XXX This will cause the read_master to use a slave to
+bring the data into memory.  When this completes, it will call
+ResumeAfterFileReading.
+
+ResumeAfterFileReading, which calls ReadChunkIfNeeded.  If that data has
+already been read in (as indicated by the data portion of the chunk being
+present), then it simply returns.  Otherwise, it calls DoChunkRead to get
+call mmap to get the data in (XXX there's lots of extra stuff here to do
+with a "shadowMap" that appears not be used).  ResumeAfterFileReading sets
+the select handler for the file-descriptor (on write) to be DoSingleWrite,
+which should succeed the next time around.
+
+
+
+This seems to be how the cache works: 
+
+  There are a number of cacheBins which keep old cache entries.  When the
+  connection is first opened, if it doesn't already have a cache entry,
+  AddEntryToDataCache is called with a newly allocated entry, and it is
+  stored in one of the cacheBins.  Each entry has a ce_dataChunks field,
+  which is an array of page-sized blocks that contain the mmapped data for
+  the file.  When an entry is actively being used, the chunk within it will
+  have its numrefs field > 0.  When the entry is no longer needed, the chunk
+  is moved onto the MRU chunk list.  At a later time, if the cache size
+  needs to be reduced, those chunks on this list will be unmapped (even
+  though the entries themselves will persist).  This occurs in
+  ReduceCacheIfNeeded. 
+  

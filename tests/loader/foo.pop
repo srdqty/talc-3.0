@@ -1,0 +1,18 @@
+
+*(a) mktup<a>(a v) {
+  return ^(v);
+}
+
+/*
+extern int a;
+extern int bar(int);
+extern exn e;
+
+int foo(int b) {
+  return b+bar(b);
+}
+
+void baz() {
+  raise(e);
+}
+*/

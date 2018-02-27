@@ -1,0 +1,81 @@
+; Standard Library for TAL code
+;
+
+; For now we use the NEW popcorn calling convention, latter we should convert
+; to a generic C calling convention with EBP callee save rather than the
+; explicit exception handling we have here.
+	TYPE	<exn =Exist[c:Tm].^*[(^T^rw(c)*[B4^rw])^r,c]>
+	TYPE	<str =Exist[?sz:Sint].^*[S(?sz)^r,(^*[array(?sz,B1^rw)])^r]>
+	TYPE	<H =fn e2:Tcap s2:Ts . code{cap: e2,EDI:junk4,ESI:junk4,EBX:junk4,EAX:exn,ESP:sptr s2}>
+	TYPE	<F =fn ret:T4 args:Ts rargs:Ts . All[a1:T4 a2:T4 a3:T4 s1:Ts s2:Ts e1:Tcap e2:Tcap].code{cap: &[e1,e2],ESP:sptr (code{cap: &[e1,e2],EAX:ret,EBX:a1,EBP:sptr (H e2 s2)::s2,ESI:a2,EDI:a3,ESP:sptr rargs#s1#(H e2 s2)::s2})::(args#s1#(H e2 s2)::s2),EBP:sptr (H e2 s2)::s2,EBX:a1,ESI:a2,EDI:a3}>
+	TYPE	<Fv =fn args:Ts rargs:Ts. All[a1:T4 a2:T4 a3:T4 s1:Ts s2:Ts e1:Tcap e2:Tcap].code{cap: &[e1,e2],ESP:sptr (code{cap: &[e1,e2],ESP:sptr rargs#s1#(H e2 s2)::s2,EBP:sptr (H e2 s2)::s2,EDI:a3,ESI:a2,EBX:a1})::(args#s1#(H e2 s2)::s2),EBP:sptr (H e2 s2)::s2,EDI:a3,ESI:a2,EBX:a1}>
+	TYPE	<Ff =fn args:Ts rargs:Ts . All[a1:T4 a2:T4 a3:T4 s1:Ts s2:Ts e1:Tcap e2:Tcap].code{cap: &[e1,e2],ESP:sptr (code{cap: &[e1,e2],ST0,ESP:sptr rargs#s1#(H e2 s2)::s2,EBP:sptr (H e2 s2)::s2,EDI:a3,ESI:a2,EBX:a1})::(args#s1#(H e2 s2)::s2),EBP:sptr (H e2 s2)::s2,EDI:a3,ESI:a2,EBX:a1}>
+
+	TYPE	<arr = fn a:Tm 4 . Exist[s:Sint].^*[S(s)^r,(^*[array(s,a)])^r]>
+	TYPE	<cfn = fn args:Ts rargs:Ts res:T4 . All[a1:T4 a2:T4 a3:T4 s1:Ts s2:Ts e1:Tcap e2:Tcap].code{cap: &[e1,e2],EDI:a3,ESI:a2,EBX:a1,EBP: sptr (H e2 s2)::s2, ESP: sptr (code{cap: &[e1,e2], EDI:a3,ESI:a2,EBX:a1, EAX:res, EBP: sptr (H e2 s2)::s2, ESP: sptr rargs#s1#(H e2 s2)::s2})::args#s1#(H e2 s2)::s2}>
+	TYPE	<cproc = fn args:Ts rargs:Ts . All[a1:T4 a2:T4 a3:T4 s1:Ts s2:Ts e1:Tcap e2:Tcap].code{cap: &[e1,e2],EDI:a3,ESI:a2,EBX:a1,EBP: sptr (H e2 s2)::s2, ESP: sptr (code{cap: &[e1,e2], EDI:a3,ESI:a2,EBX:a1, EBP: sptr (H e2 s2)::s2, ESP: sptr rargs#s1#(H e2 s2)::s2})::args#s1#(H e2 s2)::s2}>
+
+; Environment
+	VAL	_getenv,<cfn `Cstring?::se junk 4::se `Cstring?>
+	VAL	_system,<cfn `Cstring?::se junk 4::se  B4>
+
+; I/O
+	TYPE	<FILE?:T4 = ^T(0)`FILE?mem>
+	TYPE	<FILE?mem:Tm>
+
+	VAL	_tal_stdin,<^*[`FILE?^rw]>
+	VAL	_tal_stdout,<^*[`FILE?^rw]>
+	VAL	_tal_stderr,<^*[`FILE?^rw]>
+	VAL	_fopen,<cfn `Cstring?::`Cstring?::se junk 8::se `FILE?>
+	VAL	_f_length,<cfn `Cstring?::se junk 4::se B4>
+	VAL	_f_close,<cfn `FILE?::se junk4::se B4>
+	VAL	_fprint_int,<cproc `FILE?::B4::se junk 8::se>
+	VAL	_fprint_char,<cproc `FILE?::B4::se junk 8::se >
+	VAL     _fprint_float,<cproc `FILE?::F4::se junk 8::se >
+	VAL     _fprint_double,<cproc `FILE?::F8::se junk 12::se>
+	VAL	_fprint_string,<cproc `FILE?::str::se junk 8::se>
+	VAL	_fprint_newline,<cproc `FILE?::se junk 4::se >
+	VAL	_fflush,<cproc `FILE?::se junk4::se >
+	VAL	_fgetc,<cfn `FILE?::se junk 4::se B4>
+	VAL	_ungetc,<cfn `FILE?::B4::se junk 8::se B4>
+	VAL	_f_string_read,<cfn `FILE?::str::B4::B4::se junk 16::se B4>
+	VAL     _fprint_uint,<cproc `FILE?::B4::se junk 8::se>
+
+; tal_start subversion
+	VAL	_tal_errno,<^*[B4^rw]>
+	VAL     _std_args,<cfn se se (arr str^rw)>
+	VAL     _std_env,<cfn se se (arr str^rw)>
+	VAL	_string_to_Cstring,<cfn str::se junk 4::se `Cstring?>
+	VAL	_Cstring_to_string,<cfn `Cstring?::se junk 4::se str>
+
+	VAL	_new_array,<All[a:T4].(cfn B4::a::se junk 8::se (arr a^rw))>
+	VAL	_new_array_f,<All[a:T4].(cfn B4::(cfn B4::se junk 4::se a)::se junk 8::se (arr a^rw))>
+	VAL	_new_array1,<cfn B4::se junk 4::se str>
+	VAL	_new_array2,<cfn B4::se junk 4::se (Exist[s:Sint].^*[S(s)^r,(^*[array(s,B2^rw)])^r])>
+	VAL	_new_array4,<cfn B4::se junk 4::se (arr B4^rw)>
+	VAL	_new_array4u,<cfn B4::se junk 4::se (arr B4^rw)>
+	VAL	_new_array8,<cfn B4::se junk 4::se (Exist[s:Sint].^*[S(s)^r,(^*[array(s,B8^rw)])^r])>
+
+; Hashing
+        VAL     _ptr_compare,<All[a:T4].(cfn a::a::se junk 8::se B4)>
+        VAL     _hash,<All[a:T4].(cfn a::se junk4::se B4)>
+
+; Floats
+	VAL	_new_array_float,<F (arr F4^rw) B4::se junk 4::se >
+	VAL	_d_to_str,<F str F8::se junk 8::se>
+	VAL	_f_to_str,<F str F4::se junk 4::se>
+	VAL	_str_to_d,<Ff str::se junk 4::se>
+	VAL	_str_to_f,<Ff str::se junk 4::se >
+	VAL	_d_to_hexstr,<F str F8::se junk 8::se >
+	VAL	_f_to_hexstr,<F str F4::se junk 4::se >
+	VAL	_new_array_double,<cfn B4::se junk 4::se (Exist[s:Sint].^*[S(s)^r,(^*[array(s,F8^rw)])^r])>
+
+	VAL	_arc_cos,<Ff F8::se junk 8::se >
+	VAL	_arc_sin,<Ff F8::se junk 8::se >
+	VAL	_power,<Ff F8::F8::se junk 16::se>
+
+; Timing
+	VAL	_int_time,<cfn se se B4>
+	VAL	_print_time,<cproc B4::B4::B4::se junk 12::se>
+
+; EOF: stdlibnew.tali

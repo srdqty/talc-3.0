@@ -1,0 +1,21 @@
+(* program used to control an on-the-fly compression benchmark *)
+svc setPercent : int -> unit
+svc setCompDelay : int -> unit
+svc setUncompDelay : int -> unit
+
+fun set(percent,comp,uncomp) =
+  (setPercent(percent);
+   setCompDelay(comp);
+   setUncompDelay(uncomp))
+
+svc closePort : port -> unit
+svc getImplicitPort : void -> port
+
+fun local(percent,comp,uncomp) =
+  (set(percent,comp,uncomp);
+  closePort(getImplicitPort()))
+
+fun remote(percent,comp,uncomp) =
+  (set(percent,comp,uncomp);
+  OnRemote(|closePort|(getImplicitPort()),getSource(),getRB(),defaultRoute))
+

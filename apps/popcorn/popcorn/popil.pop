@@ -1,0 +1,955 @@
+// Aim is an architecture like this:
+// 1. elaborate from popsyntax, 
+// 2. optimize: cse, dead-code elim, jump-threading, copy propagation,
+//              constant-folding, null-check elim, array-bounds check elim, ...
+// 3. register allocation
+// 4. translate to TAL
+
+// We will do everything intra-procedurally, and hopefully some day do inlining
+// upstream.
+
+// Conservatively assume any call may raise an exception, though later
+// we could conservatively flag procedures that couldn't possibly 
+// raise an exception.  This amounts to a simple inter-procedural analysis.
+
+// Currently no support for Cyclone, but ideas are percolating.
+// Basically, operands could be holes, and blocks could be block_holes
+// which are filled by copying some possible templates.
+
+// Currently no support for arrays without a size field.
+
+#include "core.h"
+#include "list.h"
+#include "set.h"
+#include "dict.h"
+#include "id.h"
+#include "xarray.h"  
+#include "bitvec.h"
+#include "popsyntax.h"
+#include "tal.h"
+
+#define cf_var     string
+#define cf_typname string
+#define cf_hole    int
+#define cf_local   int 
+
+#define list   List::list
+#define dict   Dict::dict
+// #define set    Set::set
+#define Opt    Core::Opt
+#define id     Id::id
+#define xarray Xarray::xarray
+
+prefix Popil;
+open   Popil;
+
+////////////// File, function, block, declaration structures ///////////////
+struct cf_file {
+  <cf_typname, cf_absdecl>    dict abstracts;
+  <cf_typname, cf_structdecl> dict structs;
+  <cf_typname, cf_uniondecl>  dict unions;
+  <cf_typname, cf_abstypedecl>dict abstypes;
+  <id,         cf_exndecl>    dict exns; // must be id b/c an operand
+  <id>Set::set                     void_pkts; // hack to apease operand_type
+  <id,         cf_typ>        dict extern_vals;
+  <id,         cf_globaldecl> dict globals;
+  <id,         cf_function>   dict funs;
+  <id,         cf_function>   dict rtcg_funs;
+  bool has_main;
+}
+struct cf_absdecl {
+  <cf_var>list tyvars;
+  bool         possibly_null;
+}
+
+struct cf_field {
+  cf_typ typ;
+  cf_capability cap;
+  int offset;
+}
+
+struct cf_structdecl {
+  Popsyntax::scope scope;
+  cf_typname       name;
+  <cf_var>list     tyvars;
+  bool             possibly_null;
+  cf_field         fields[];
+  field_name       field_names[];
+}
+struct cf_uniondecl {
+  Popsyntax::scope scope;
+  cf_typname       name;
+  <cf_var>list     tyvars;
+  *(<int>list, <*(int,cf_typ)>list) fields;
+}
+struct cf_abstypedecl {
+  Popsyntax::scope scope;
+  cf_typname       name;
+  <cf_var>list     all_tyvars;
+  <cf_var>list     exist_tyvars;
+  cf_typ           defn;
+}
+struct cf_exndecl {
+  Popsyntax::scope scope;
+  id               name;
+  <cf_typ>Opt      typOpt;
+}
+struct cf_globaldecl {
+  Popsyntax::scope   scope;
+  cf_typ             typ;
+  Tal::data_block    data; // if we ever need values for an analysis, this
+       // will be a pain, but if not, it save us from defining more syntax
+       // cannot leave in popsyntax form b/c of NewUnion and variant tags
+}
+?struct cf_function { // only nullable b/c of mutually-recursive init problem
+  cf_file              file;       // pointer back to file-level data
+  string               name;
+  cf_convention        convention; // Calling convention.
+  bool                 is_static;
+  <cf_var>list         tyvars;
+  <cf_var>list         exist_tyvars; // The rest of the free tyvars.
+  <cf_var>list         sing_tyvars; 
+  <cf_typ>list         arg_typs;
+  <cf_typ>Opt          ret_typ;
+  <cf_idinfo>xarray    all_operands;  // keeps type info out of instructions
+  <cf_constinfo>xarray all_consts;    // keeps type info out of instructions
+  <int>list            params;
+  cf_block             entry;  
+  <cf_block>xarray     blocks; // ASSUMED INVARIANT: blocks[i].num == i
+  <int[]>Opt           df_order; // ASSUMED: correct if not null
+  // by using an array, analyses can piggyback info by using parallel arrays
+
+  // Cyclone +
+  // About this function.
+  cf_function          generator; // WARNING: may be null
+  <cf_template>list    templates; // Templates this function is made up of.
+  <cf_holeinfo>xarray  all_holes; 
+
+  //About generated functions.
+  <*(<cf_local>xarray,cf_function)>xarray code_regions; // Internal xarray is a list of local operands that at some point contain template pointers.
+  <cf_template>xarray template_pointers;
+  // Cyclone -
+
+}
+struct cf_block {
+  cf_function  fn;    // pointer back to function-level data
+  id           label; // name of this block -- makes output more readable
+  int          num;   // unique to this block and index in fun's blocks array
+
+  <int>Opt    handler_var; // null means not a handler
+
+  <cf_instruction>xarray insts; // actual instructions
+  cf_transfer            trans; // expression for leaving the block
+
+  <cf_block>Opt    handler; // innermost local exn handler, if any
+  <cf_block>xarray pred;    // incoming edges
+  <cf_block>xarray succ;    // outgoing edges -- these might be implied
+
+  <int, cf_refinement>dict refined_locals; // vars with refined types
+  <*(cf_sing,cf_sing)>list ltes;           // constraints for bounds-elim???
+  <int, *(int[],int)>dict  partial_inits;  // partial initialization info
+  // codomain is a bitvec (1 = initialized) and the number of fields 
+
+  // Cyclone +
+  cf_template template; // template this block is contained within.
+
+  //On entry!
+  <int, BITVEC>dict regions; // Live regions in dictionary.
+
+  <int,<cf_hole>list>dict filled; // Could be an xarray instead of a list. 
+  // Cyclone -
+
+}
+
+// Cyclone +
+
+?struct cf_template {
+  id               name;
+  id               end_name;
+  <cf_block>xarray blocks;
+  cf_block         entry;
+  <*(cf_block,cf_hole)>Opt    exit; // No exit block implies it has 
+  // false post-condition.
+  <*(cf_hole,cf_block)>xarray holes;
+  <cf_block>Set::set labels; // Exported labels
+}
+// Cyclone -
+
+//////////////////////// Depth-first order ///////////////////
+int get_df_order(cf_function f)[] {
+  // unreachable blocks are left out of the order
+  // we assume handlers are reachable, though it's possible to construct
+  // programs where they aren't.
+  if (f.df_order != null) 
+    return f.df_order.v;
+  df_env env = depth_first(f);
+  int ans[] = new_array(env.arrive_pos,0);
+  for(int i=0; i < env.arrive_pos; ++i)
+    ans[i] = env.arrive[i];
+  return ans;
+}
+int reverse_topological_sort(cf_function f)[] {
+  return depth_first(f).leave;
+}
+static struct df_env {
+  int visited[];
+  int arrive[];
+  int arrive_pos;
+  int leave[];
+  int leave_pos;
+}
+static df_env depth_first(cf_function f) {
+  int num_blks = Xarray::length(f.blocks);
+  df_env env = ^df_env(Bitvec::new_empty(num_blks),
+		       new_array(num_blks, -1), 0,
+		       new_array(num_blks, -1), 0);
+  df_visit(env, f.entry);
+  return env;
+}
+static void df_visit(df_env env, cf_block b) {
+  if(!Bitvec::get_and_set(env.visited, b.num)) {
+    env.arrive[env.arrive_pos++] = b.num;
+    <cf_block>xarray succs     = b.succ;
+    int              num_succs = Xarray::length(succs);
+    for(int i=0; i < num_succs; ++i)
+      df_visit(env, Xarray::get(succs,i));
+    <cf_block>Opt h = b.handler;
+    if(h != null)
+      df_visit(env, h.v);
+    env.leave[env.leave_pos++] = b.num;
+  }
+}
+
+// Given an order for a function, pull out all blocks for the template
+// t and enforce the invariant that the entry block goes first, and 
+// the exit block (if any) goes last. (If incr is false put the entry block
+// last and the exit block first.
+int template_partition(cf_function f, cf_template t, bool incr, int order[])[] {
+
+  int num_blks = Xarray::length(t.blocks);
+  int result[] = new_array(num_blks,-1);
+  int num_order = size(order);
+  _ blocks = f.blocks;
+
+  int j = 0;
+  for(_ i = 0; i<num_order; ++i) {
+    _ blk_num = order[i];
+    if(blk_num<0) break;
+    
+    _ blk = Xarray::get(blocks,blk_num);
+    if(blk.template == t) {
+      result[j] = blk_num;
+      j++;
+    }
+  }
+
+  if(j<=1) return result; // No blocks or 1 found so just return.
+
+  // Otherwise have to put entry and exit blocks in the right place.
+
+  _ num_result = j;
+
+  _ entry_num = t.entry.num;
+  _ exit_num = (t.exit != null) ? t.exit.v.1.num : -1;
+
+  _ first_num = incr ? entry_num :  exit_num;
+  _ last_num  = incr ?  exit_num : entry_num;
+
+  if(first_num == last_num) {
+    raise Core::Impossible("Template with >1 block but entry block == exit block");
+  }
+  _ i = 0;
+  if(first_num>=0) { // Shift_right.
+    _ next = result[0];
+    i=1;
+    for(; i < num_result; ++i) {
+      if((next==first_num || next == last_num) && next >=0) 
+	break;
+
+      _ curr = result[i];
+      result[i] = next;
+      next = curr;
+    }
+  }
+  for(; i < num_result; i++) {
+    _ curr = result[i];
+    if((curr == first_num || curr == last_num) && curr >= 0)
+      break;
+  }
+
+  for(; i < (num_result-1);++i) { // Shift any remaining left.
+    result[i] = result[i+1];
+  }
+
+  if(first_num >= 0) 
+    result[0] = first_num;
+  if(last_num >= 0) 
+    result[num_result-1] = last_num;
+
+  return result;
+}
+
+//////////////////////// Terms and Such /////////////////////
+
+// Assumed invariants (not including those in register allocation):
+// * SumSwitch, ExnSwitch, and UnionCheck is not on a Global
+// * source of SelectField is not global (else we can't do null check
+//   properly). In some sense, this is like a switch.  Note the source
+//   MUST have already been null-checked.
+// * NullCheck operand is not a global.
+
+// Note that the register allocator adds some additional invariants
+// not enforced by the types or datatype of the IL.
+// This happens in the regalloc_rewrite function.
+union cf_instruction {
+  void Nop;
+
+  *(cf_operand, cf_operand)                                Copy;
+  *(Popsyntax::primop, cf_operand)                         Nullop;
+  *(Popsyntax::primop, cf_operand, cf_operand)             Unop; 
+  *(Popsyntax::primop, cf_operand, cf_operand, cf_operand) Binop;
+
+  *(cf_operand, cf_operand, cf_typedcopy) TypedCopy;// like a Copy, but gunky
+
+  *(int, cf_operand, cf_operand) SelectField;
+  *(int, cf_operand, cf_operand) AssignField;
+
+  // these used for strings too.
+  *(cf_operand, cf_operand)             ArrayCheck;
+  *(cf_operand,int)                     CArrayCheck;
+  *(cf_operand, cf_operand, cf_operand) ArraySub;
+  *(cf_operand, cf_operand, cf_operand) ArrayUpd;
+  cf_operand New;
+
+  *(cf_operand,cf_operand) Rdtsc;
+
+  // Cyclone +
+  // Figure out where to emit Forget instructions automatically.
+  cf_operand                           Start; // Type of op. provides "name".
+  *(cf_operand,cf_operand,cf_template) Dump;  // codeRgn,template ptr,template
+  *(cf_hole,cf_operand)                Hole;  // Magic definition of operand.
+  *(cf_operand, cf_operand,cf_hole,cf_operand)     
+                                       Fill;  // codeRgn, templ ptr, hole,value
+  *(cf_operand,cf_operand,cf_hole,cf_operand,cf_block)
+				       FillJmp; // ..., templ_ptr of value,block
+  *(cf_operand,cf_operand)             End;   // dest,codeRgn.
+  //Cyclone -
+
+}
+union cf_typedcopy {
+  void         InitRoll; // Roll up the type after initializing it.
+  <cf_typ>list Instantiation;
+  <cf_var>list Unpacking;
+  <cf_typ>list Packing;
+}
+union cf_transfer { 
+  void           Abort; // Cyclone: Terminate the program. 
+  cf_dest        Uncond; // may enter/leave a try, we can tell by handlers
+  cf_operand      Raise; 
+  <cf_operand>Opt Retn;  
+
+  // result (if non-void), function val, type args, term args
+  // note due to exceptions we may transfer to the handler from a Call
+  // soon this will go back to being an instruction
+  *(<cf_operand>Opt, cf_operand, <cf_typ>list, <cf_operand>list,
+    cf_dest) Call; 
+
+  *(cf_operand, <cf_typ>list, <cf_operand>list) TailCall;
+  
+   // true block, false block, lhs, rhs, comparison
+  *(cf_dest, cf_dest, 
+    cf_operand, cf_operand, Popsyntax::primop)   Cond; 
+
+  *(cf_operand, <*(int,cf_dest)>list, cf_dest) NumSwitch; 
+  // exp, (tag,block)s (variant,block)s, default (exp can't be global!)
+  *(cf_operand, <*(int,cf_dest)>list, 
+    <*(int,cf_dest)>list, <cf_dest>Opt)        SumSwitch; 
+  // exp, (variant,lbl)s, default (exp can't be global!)
+  *(cf_operand, <*(id,cf_dest)>list, cf_dest)  ExnSwitch;  
+
+  *(cf_operand, cf_dest)  NullCheck;
+           // int is variant, bool is void not value
+  *(cf_operand, int, bool, cf_dest) UnionCheck; 
+  *(cf_operand, cf_dest, cf_dest) NullBranch; //exp, notNull block, null block
+}
+union cf_operand {
+  // ints are indices into appropriate xarrays (and used for bit vectors)
+  int Const;  // xarray all_consts
+  int Local;  // xarray all_locals
+  id  Global; // id or string? some day make this an xarray too? maybe several?
+}
+
+// Cyclone +
+// Destination for control transfers.  Used to be cf_block before RTCG.
+union cf_dest {
+  cf_block Known;
+  cf_hole Unknown;
+}
+
+union cf_holeinfo {
+  cf_typ   Value;
+  <cf_block>list Jmp;
+  <cf_template>list Terminal; // A fallthru, not a regular hole.
+}
+
+// Cyclone - 
+
+////////////////////// Types and Such  ///////////////////////////
+
+union cf_convention {
+  void Stdcall, Cdecl;
+}
+
+struct cf_idinfo {
+  cf_typ  typ;
+  cf_use  usage;
+}
+struct cf_constinfo {
+  int    val;
+  cf_typ typ;
+}
+union cf_use { 
+  void          Generated;
+  string        FromAbove; // string for diagnostic purposes
+  *(string,int) Param;     // eg. int f(int b, int c) has b as 1 and c as 2
+}
+union cf_typ { // later should make abstract and share them all
+  void       Exn;
+  id         ExnName;  // needed for partial initialization
+  cf_var     Var;
+  void       Bool;
+  cf_numtype Num;      // used for Char too
+  void       Float;
+  void       Double;
+  *(cf_convention,
+    <cf_var>list,<cf_typ>Opt,<cf_typ>list) Fn; // tyvars, retn, params
+
+  // maybe unpacking should be implicit and size should be an identifier?
+  // that makes sense since we don't (yet) optimize away size field, 
+  // just the checks.
+  *(<int>Opt,cf_typ) Array; // packed array. 
+  *(cf_sing,cf_typ)  UnpackedArray; // size, elmt typ
+  cf_sing            Sing;          
+  *(cf_typname, <cf_typ>list) Named; // list is instantiation
+  cf_field           Tuple[]; 
+
+  cf_typ             Option; // Option type. (cf_typ better be a pointer)
+  // Cyclone +
+  int CodeRgn;   // int is position in code_regions within cf_function
+  int TemplPtr;  //  "               " template_pointers "          "
+  // Cyclone -
+
+}
+struct cf_numtype {
+  Popsyntax::size_of s;
+  bool is_signed;
+}
+union cf_capability {
+  void Read, ReadWrite;
+}
+union cf_sing {
+  cf_var Var;
+  int    Int;
+}
+union cf_refinement {
+  // we used to refine to another cf_typ, but these types are too high-level 
+  // to encode what we want.  So we go to the other extreme: special-cases
+  // for the various forms of refinement we actually do.
+
+  // if we do array-bounds-elim, add appropriate variants for that here?
+  // (that will gum up Popiltal even more, since that module currently
+  //  assumes numeric types won't be refined).
+
+  // Doing this could cause more substitutions on polymorphic types since
+  // we're effectively delaying the substitution until the capability is
+  // written down.  Memoizing would eliminate this shortcoming.
+  void NotNull;
+  int  VoidVariant;
+  int  ValueVariant;
+  id   ExceptionVariant;
+
+  void IsNull; // these are used for unrefining
+  void UnknownUnion;
+  void UnknownException;
+}
+
+///////////////////////// Useful Things /////////////////////
+static int install_var(cf_function f, cf_typ t, cf_use u) {
+  return Xarray::add_ind(f.all_operands, ^cf_idinfo(t,u));
+}  
+int install_local(cf_function f, cf_typ t, string s) {
+  return install_var(f,t,^cf_use.FromAbove(s));
+}
+int install_param(cf_function f, cf_typ t, string s, int pos) {
+  int i = install_var(f,t,^cf_use.Param(^(s,pos)));
+  f.params = ^list(i,f.params);
+  return i;
+}
+
+// Cyclone +
+int install_hole(cf_function f,cf_holeinfo hi) {
+  return Xarray::add_ind(f.all_holes,hi);
+}
+
+cf_holeinfo hole_info(cf_function f, cf_hole h) {
+  return Xarray::get(f.all_holes,h);
+}
+
+// Returns a list of all functions so that generated functions always
+// appear before generating functions.
+<cf_function>list get_fun_order(cf_file file) {
+  _ result = null;
+  _ funs = Dict::to_list(file.funs);
+  for(;funs!=null;funs=funs.tl) {
+    _ fn = funs.hd.2;
+    result = order_fun(fn,result);
+    result = ^list(fn,result);
+  }
+
+  return List::imp_rev(result);
+}
+
+// return result in reverse order. Simpler that way.
+static <cf_function>list order_fun(cf_function root,<cf_function>list generated) {
+
+  if(Xarray::length(root.code_regions)!=0) {
+    _ length = Xarray::length(root.code_regions);
+    
+    for(_ x = 0; x < length; x++) {
+      _ fn = Xarray::get(root.code_regions,x).2;
+      generated = ^list(fn,order_fun(fn,generated));
+    }
+  }
+
+  return generated;
+}
+
+// Cyclone -
+
+int newtemp(cf_function f, cf_typ t) {
+  return install_var(f, t, ^cf_use.Generated);
+}
+int newconst(cf_function f, int v, cf_typ t) {
+  // pools consstants at the function level -- could actually do so
+  // at the file level
+  // we do the naive O(n) lookup for pooling, but this should be a big 
+  // win in practice (when most the constants are 0 and 1)
+  // notice this would be much faster if type comparison was O(1)
+  <cf_constinfo>xarray all_consts = f.all_consts;
+  int                  len        = Xarray::length(all_consts);
+  for(int i=0; i<len; ++i) {
+    cf_constinfo info = Xarray::get(all_consts,i);
+    if (info.val == v && cf_typcmp(info.typ,t) == 0)
+      return i;
+  }
+  return Xarray::add_ind(f.all_consts, ^cf_constinfo(v,t));
+}
+
+static int tyvar_counter = 0;
+cf_var newtyvar() {
+  tyvar_counter++;
+  return Core::strconcat("a$",Core::string_of_int(tyvar_counter));
+}
+
+id hole2id(cf_template t, cf_hole h) {
+  _ s = Id::id_to_string(t.name); // This is dumb!
+  return Id::id_make(s,h);
+}
+
+// maybe all these separate dictionaries isn't such a good idea
+cf_typ operand_type(cf_function f, cf_operand op) {
+  switch op {
+  case Const(i): 
+    return (Xarray::get(f.all_consts, i)).typ;
+  case Local(i):
+    return (Xarray::get(f.all_operands, i)).typ;
+  case Global(i): 
+    // notice that functions should be in a dictionary!!!
+    cf_file file = f.file;
+    if(Set::member(file.void_pkts, i))
+      return ^cf_typ.Exn;
+    <cf_typ>Opt        opt = Dict::lookup_opt(file.extern_vals,i);
+    if (opt != null) return opt.v;
+    <cf_globaldecl>Opt opt = Dict::lookup_opt(file.globals, i);
+    if (opt != null) return opt.v.typ;
+    <cf_exndecl>Opt    opt = Dict::lookup_opt(file.exns, i);
+    if (opt != null) return ^cf_typ.ExnName(i);
+    <cf_function>Opt   opt = Dict::lookup_opt(file.funs, i);
+    if (opt != null) return ^cf_typ.Fn(^(opt.v.convention,opt.v.tyvars,
+					 opt.v.ret_typ,opt.v.arg_typs));
+    <cf_function>Opt   opt = Dict::lookup_opt(file.rtcg_funs, i);
+    if (opt != null) return ^cf_typ.Fn(^(opt.v.convention,
+					 opt.v.tyvars,
+					 opt.v.ret_typ,opt.v.arg_typs));
+    printf(" %s\n", Id::id_to_string(i));
+    raise Core::Impossible("Popil::operand_type, operand not found");
+  }
+}
+bool is_nullable(cf_file f, cf_typ t) {
+  switch t {
+  case Option(t): return true;
+  case Named(n):
+    string name = n.1;
+    return 
+      (Dict::member(f.structs, name) 
+       && Dict::lookup(f.structs, name).possibly_null)
+      ||
+      (Dict::member(f.abstracts, name)
+       && Dict::lookup(f.abstracts, name).possibly_null);
+  default: return false;
+  }
+}
+cf_operand localoperand(int i) {
+  return ^cf_operand.Local(i);
+}
+cf_operand constoperand(int i) {
+  return ^cf_operand.Const(i);
+}
+int cf_block_cmp(cf_block a, cf_block b) {
+  return a.num - b.num;
+}
+
+int cf_template_cmp(cf_template a,cf_template b) {
+  if(a!=null && b!=null) return Id::id_compare(a.name,b.name);
+  if(a!=null) return 1;
+  if(b!=null) return -1;
+  return 0;
+}
+
+int cf_operand_cmp(cf_operand op1, cf_operand op2) {
+  // only makes sense for operands in same function
+  int n1 = cf_operand2int(op1);
+  int n2 = cf_operand2int(op2);
+  if(n1 != n2) return n1-n2;
+  switch op1 {
+  case Const(x):  return x-op2.Const;
+  case Local(x):  return x-op2.Local;
+  case Global(i): return Id::id_compare(i,op2.Global);
+  }
+}  
+int cf_operand2int(cf_operand op) {
+  switch op {
+  case Const(x):  return 1;
+  case Local(x):  return 2;
+  case Global(x): return 3;
+  }
+}
+int cf_typcmp(cf_typ t1, cf_typ t2) {
+  // with sharing a la Shao, this could be pointer equality rather than deep
+  // compare
+  // for building hash cons table, recursive calls would become ptr equalities
+  // i.e. a shallow compare
+  int i1 = cf_typ2int(t1);
+  int i2 = cf_typ2int(t2);
+  if (i1 != i2) return i1-i2;
+  int x;
+  switch t1 {
+  case Num(n1):      return cf_numcmp(n1, t2.Num);
+  case Bool:         return 0;
+  case Float:        return 0;
+  case Double:       return 0;
+  case Exn:          return 0;
+  case Array(a1):    
+    *(<int>Opt,cf_typ) a2 = t2.Array;
+    if(a1.1 == null) {
+      if(a2.1 != null) return 1;
+    }
+    else {
+      if(a2.1 == null) return -11;
+      int res = a1.1.v - a2.1.v;
+      if(res!=0) return res;
+    }
+    return cf_typcmp(a1.2,a2.2);
+  case Sing(s1):     return cf_singcmp(s1, t2.Sing);
+  case ExnName(i1):  return Id::id_compare(i1,t2.ExnName);
+  case Var(v1):      return Core::strcmp(v1,t2.Var);
+  case Fn(f1):
+    *(cf_convention,<cf_var>list,<cf_typ>Opt,<cf_typ>list) f2 = t2.Fn;
+    if(f1.1 != f2.1) {
+      switch f1.1 {
+      case Stdcall: return -1;
+      case Cdecl: return 1;
+      }
+    }
+    x = cmp_list(Core::strcmp,f1.2,f2.2); if (x != 0) return x;
+    x = cmp_opt(cf_typcmp, f1.3, f2.3);   if (x != 0) return x;
+    return cmp_list(cf_typcmp, f1.4, f2.4);
+  case UnpackedArray(a1):
+    *(cf_sing,cf_typ) a2 = t2.UnpackedArray;
+    x = cf_singcmp(a1.1,a2.1); if (x != 0) return x;
+    return cf_typcmp(a1.2,a2.2);
+  case Named(n1):
+    *(cf_typname, <cf_typ>list) n2 = t2.Named;
+    x = Core::strcmp(n1.1, n2.1); if (x != 0) return x;
+    return cmp_list(cf_typcmp, n1.2, n2.2);
+  case Tuple(p1):
+    cf_field p2[] = t2.Tuple;
+    int len1 = size(p1);
+    int len2 = size(p2);
+    if (len1 != len2) return len1-len2;
+    for(int i=0; i < len1; ++i) {
+      _ f1 = p1[i];
+      _ f2 = p2[i];
+      x = cf_typcmp(f1.typ, f2.typ); if (x!=0) return x;
+      x = cf_capcmp(f1.cap, f2.cap); if (x!=0) return x;
+      x = f1.offset - f2.offset;     if(x!=0) return x;
+    }
+    return 0;
+  case Option(t3):
+    _ t4 = t2.Option;
+    return cf_typcmp(t3,t4);
+
+    // Cyclone +
+  case CodeRgn(i1):
+    _ i2 = t2.CodeRgn;
+    return (i1 - i2);
+  case TemplPtr(i1):
+    _ i2 = t2.TemplPtr;
+    return (i1 - i2);
+    // Cyclone -
+  }
+}
+int cf_typ2int(cf_typ t) {
+  switch t {
+  case Exn:              return  1;
+  case ExnName(_):       return  2;
+  case Var(_):           return  4;
+  case Num(_):           return  5;
+  case Bool:             return  6;
+  case Float:            return  7;
+  case Double:           return  8;
+  case Fn(_):            return  9;
+  case Array(_):         return 10;
+  case UnpackedArray(_): return 11;
+  case Sing(_):          return 12;
+  case Named(_):         return 13;
+  case Tuple(_):         return 14;
+  case Option(_):        return 15;
+    // Cyclone +
+  case CodeRgn(_):       return 16;
+  case TemplPtr(_):      return 17;
+    // Cyclone -
+  }
+}
+int cf_numcmp(cf_numtype n1, cf_numtype n2) {
+  if(n1.is_signed && !n2.is_signed) return 1;
+  if(n2.is_signed && !n1.is_signed) return -1;
+  switch n1.s {
+  case B1: switch n2.s { case B1: return 0; default: return 1;}
+  case B2: 
+    switch n2.s { case B1: return -1; case B2: return 0; case B4: return 1;}
+  case B4: switch n2.s { case B4: return 0; default: return -1; }
+  }
+}
+int cf_singcmp(cf_sing s1, cf_sing s2) {
+  switch s1 {
+  case Var(v1): 
+    switch s2 { case Var(v2): return Core::strcmp(v1,v2); default: return 1; }
+  case Int(i1):
+    switch s2 { case Int(i2): return i1-i2; default: return -1; }
+  }
+}
+int cf_capcmp(cf_capability c1, cf_capability c2) {
+  switch c1 {
+  case Read:       switch c2 { case Read: return 0;  default: return 1; }
+  case ReadWrite:  switch c2 { case Read: return -1; default: return 0; }
+  }
+}
+
+int cmp_list<a>(int comp(a,a), <a>list l1, <a>list l2) {
+  // this could go in the list module
+  for(; l1 != null; l1=l1.tl, l2=l2.tl) {
+    if(l2 == null) return 1;
+    int x = comp(l1.hd,l2.hd);
+    if (x != 0) return x;
+  }
+  if(l2 != null) return -1;
+  return 0;
+}
+int cmp_opt<a>(int comp(a,a), <a>Opt v1, <a>Opt v2) {
+  // this could go in the core module
+  if (v1 == null && v2 == null) return 0;
+  if (v1 == null && v2 != null) return 1;
+  if (v1 != null && v2 == null) return -1;
+  return comp(v1.v, v2.v);
+}
+
+void add_edge(cf_block src, cf_block dest) {
+  Xarray::add(src.succ,  dest);
+  Xarray::add(dest.pred, src);
+}
+cf_typ typ_subst(<*(cf_var,cf_typ)>list inst, cf_typ t) {
+  // things like this should convince us to share types!!!
+  if (inst == null)
+    return t; // ad hoc common case for non-polymorphic datatypes
+  switch t {
+  case Var(v):
+    try 
+      return List::assoc_cmp(Core::strcmp,inst,v);
+    handle y switch y {
+    case Core::Not_found: return t;
+    }
+  case Fn(x):
+    for(<var>list p = x.2; p != null; p = p.tl)
+      inst = ^list(^(p.hd,^cf_typ.Var(p.hd)),inst);
+    return ^cf_typ.Fn(^(x.1,x.2, 
+			x.3 == null ? null : ^Opt(typ_subst(inst,x.3.v)),
+			List::map_c(typ_subst,inst,x.4)));
+  case Array*(sz,p):
+    return ^cf_typ.Array(^(sz,typ_subst(inst,p)));
+  case UnpackedArray(x):
+    return ^cf_typ.UnpackedArray(^(x.1, typ_subst(inst,x.2)));
+  case Named(x):
+    return ^cf_typ.Named(^(x.1, List::map_c(typ_subst,inst,x.2)));
+  case Tuple(x):
+    if (size(x) == 0) return t;
+    cf_field ans [] = new_array(size(x), x[0]);
+    for(int i=0; i<size(x); ++i) {
+      _ f = x[i];
+      ans[i] = ^cf_field(typ_subst(inst,f.typ), f.cap, f.offset);
+    }
+    return ^cf_typ.Tuple(ans);
+  case Option(t):
+    return ^cf_typ.Option(typ_subst(inst,t));
+
+  default: return t;
+  }
+}
+
+static *(int,cf_typ) typ_subst_variant(<*(cf_var,cf_typ)>list inst, 
+                                        *(int,cf_typ) v) {
+  return ^(v.1, typ_subst(inst, v.2));
+}
+
+int sizeof_typ(cf_typ t) {
+  switch t {
+  case Num(n):
+    switch n.s {
+    case B1: return 1;
+    case B2: return 2;
+    case B4: return 4;
+    }
+  case Double: return 8;
+  default: return 4;
+  }  
+}
+
+cf_typ  u_int = ^.Num(^cf_numtype(^.B4,false));
+cf_typ  s_int = ^.Num(^cf_numtype(^.B4,true));
+cf_typ u_char = ^.Num(^cf_numtype(^.B1,false));
+
+// Is the operand a float.
+bool is_fp_op(cf_function f, cf_operand o) {
+  switch operand_type(f,o) {
+  case Double: return true;
+  case Float: return true;
+  default: return false;
+  }
+}
+
+// Primop takes a floating point argument.
+bool is_fp_primop(Popsyntax::primop p) {
+  switch p {
+  case ItoF:;
+  case ItoD:;
+  case FtoI:;
+  case DtoI:;
+  case FtoD:;
+  case DtoF:;
+  case PlusF:;
+  case MinusF:;
+  case TimesF:;
+  case DivF:;
+  case EqF:;
+  case NeqF:;
+  case GtF:;
+  case GteF:;
+  case LtF:;
+  case LteF:;
+  case PiF: ;
+  case Log2_eF: ;
+  case Log2_10F: ;
+  case Log10_2F: ;
+  case Loge_2F: ;
+  case OneF: ;
+  case ZeroF: ;
+  case CosF: ;
+  case SinF: ;
+  case TanF: ;
+  case SqrtF: ;
+  case F2xm1F: ;
+  case FabsF: ;
+  case FroundF: ;
+  case AtanF: ;
+  case FremF: ;
+  case Fyl2xF: ;
+  case Fyl2xp1F: ;
+  default: return false;
+  }
+  return true;
+}
+
+bool is_restricted_fp_binop(Popsyntax::primop p) {
+  switch p {
+  case AtanF:;
+  case FremF:;
+  case Fyl2xF:;
+  case Fyl2xp1F:;
+  default: return false;
+  }
+  return true;
+}
+
+bool is_fp_relop(Popsyntax::primop p) {
+  switch p {
+  case EqF:  return true;
+  case NeqF: return true;
+  case GtF:  return true;
+  case GteF: return true;
+  case LtF:  return true;
+  case LteF: return true;
+  default:   return false;
+  }
+}
+// One argument is float or double.
+bool is_partial_fp_primop(Popsyntax::primop p) {
+  switch p {
+  case ItoF:;
+  case ItoD:;
+  case FtoI:;
+  case DtoI:;
+  default: return is_fp_relop(p);
+  }
+  return true;
+}
+
+// Any instruction with at least one floating point operand.
+bool is_fp_inst(cf_function f, cf_instruction i) {
+  switch i {
+  case Copy*(o1,o2):         return (is_fp_op(f,o1));
+  case Nullop *(p,_):        return (is_fp_primop(p));
+  case Unop*(p,_,_):         return (is_fp_primop(p));
+  case Binop *(p,_,_,_):     return (is_fp_primop(p));
+  case SelectField *(_,o,_): return (is_fp_op(f,o));
+  case AssignField *(_,_,o): return (is_fp_op(f,o));
+  case ArraySub *(o,_,_):    return (is_fp_op(f,o));
+  case ArrayUpd *(_,_,o):    return (is_fp_op(f,o));
+  default: return false;
+  }
+}
+
+// Instructions with some floating point, and some non-floating point 
+// operands.
+bool is_partial_fp_inst(cf_function f, cf_instruction i) {
+  switch i {
+  case Nullop*(p,_):         return false;
+  case Unop*(p,_,_):         return (is_partial_fp_primop(p));
+  case Binop *(p,_,_,_):     return (is_partial_fp_primop(p));
+  case SelectField *(_,o,_): return (is_fp_op(f,o));
+  case AssignField *(_,_,o): return (is_fp_op(f,o));
+  case ArraySub *(o,_,_):    return (is_fp_op(f,o));
+  case ArrayUpd *(_,_,o):    return (is_fp_op(f,o));
+  default: return false;
+  }
+}
+

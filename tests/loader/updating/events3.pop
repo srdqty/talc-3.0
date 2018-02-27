@@ -1,0 +1,97 @@
+#include "string.h"
+#include "list.h"
+#include "fileop.h"
+open String;
+open List;
+
+/* structure that defines events understandable by the program */
+
+/* unfortunately have to change the type name */
+
+union event2 {
+  void Tick;          /* some amount of time has passed */
+  string Load;        /* load the given file from the filesystem */
+  *(string,int) Call; /* call integer function from symtab */
+}
+
+string event2string (event2 e) {
+  string s;
+  switch e {
+  case Tick:
+    s = "Tick";
+  case Load(filename):
+    s = strconcat_l(cons("Load: ",cons(filename,null)));
+  case Call *(sym,arg):
+    s = strconcat_l(cons("Call: ",
+			 cons(sym,
+			      cons("(",
+				   cons(Core::string_of_int(arg),
+					cons(")",null))))));
+  }
+  return s;
+}
+
+/* breaks a string into a list of strings, as determined by whitespace */
+<string>list string_to_list(string s) {
+  int idx = 0, ofs;
+  int len = size(s);
+  <string>list strs = null;
+
+  while (idx < len) {
+    /* skip whitespace */
+    while (idx < len) {
+      if (s[idx] == ' ' ||
+	  s[idx] == '\n' ||
+	  s[idx] == '\t' ||
+	  s[idx] == '\r') {
+	idx++;
+      }
+      else {
+	break;
+      }
+    }
+    ofs = idx;
+
+    /* get the token */
+    while (idx < len) {
+      if (s[idx] == ' ' ||
+	  s[idx] == '\n' ||
+	  s[idx] == '\t' ||
+	  s[idx] == '\r') {
+	break;
+      }
+      else {
+	idx++;
+      }
+    }
+    if ((idx-ofs) != 0) {
+      string s = substring(s,ofs,idx-ofs);
+      strs = cons(s,strs);
+    }
+  }
+
+  /* tokens are in reverse order, so reverse them */
+  strs = imp_rev(strs);
+  return strs;
+}
+
+exception Bad_Event_String;
+
+event2 string2event (string s) {
+  event2 e;
+  <string>list tokens = string_to_list(s);
+  try {
+    if (strncmp(hd(tokens),"Tick",4) == 0) {
+      e = ^event2.Tick;
+    }
+    else if (strncmp(hd(tokens),"Load",4) == 0) {
+      e = ^event2.Load(hd(tl(tokens)));
+    }
+    else {
+      raise (^Bad_Event_String());
+    }
+  } handle e {
+    raise (^Bad_Event_String());
+  }
+  return e;
+}

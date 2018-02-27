@@ -1,0 +1,212 @@
+// Main file of simp -- mips-like architecture simulator.
+
+#include "core.h"
+#include "sim.h"
+#include "loader.h"
+#include "spec.h"
+#include "mem.h"
+#include "interp.h"
+#include "syscall.h"
+
+open Core;
+prefix Simp {
+
+  exception Failure(string);
+  exception Exit(int);
+
+  FILE log_file = null;
+  string log_file_name = "verbose_simp.out";
+
+  string prog_name = "";
+
+}
+
+int pop_main() {
+  _ args = std_args();
+  _ num_flags = 0;
+  if(size(args) < 2) {
+    printf("usage: simp [-i] <image> [arguments to image]\n");
+    printf("Too few arguments.\n");
+    return 1;
+  }
+
+  _ use_interpreter=false;
+  if(strcmp(args[1],"-i") == 0) {
+    if(size(args) < 3) {
+      printf("Too few arguments.\n");
+      return 1;
+    }
+    use_interpreter=true;
+    num_flags++;
+  }
+
+  _ sim_prog = args[num_flags+1];
+  _ sim_args = new_array(size(args) - (num_flags + 1), sim_prog);
+  for(_ i = 0; i < size(sim_args); i++) {
+    sim_args[i] = args[i + num_flags + 1];
+  }
+
+  Simp::prog_name = sim_args[0];
+
+  fprintf(tal_stderr,"Loading %s...\n",sim_args[0]);
+  fflush(tal_stdout);
+
+  _ initial_state = Loader::load(sim_args,std_env());
+  _ rf = Sim::new_register_file();
+  FILE out_file = tal_stdout;
+
+  rf.pc.1 = initial_state.initial_pc;
+  rf.gp[|R_SP|].1 = initial_state.initial_sp;
+
+  Mem::text_start = initial_state.text_base;
+  Mem::text_end = initial_state.text_base + initial_state.text_size;
+
+#define LOG_EXECUTION
+#ifdef  LOG_EXECUTION
+  try {
+  Simp::log_file = file_open(Simp::log_file_name,"w");
+  } handle y {
+    printf("Log file open failed.  No logging will take place.\n");
+    Simp::log_file = null;
+  }
+#endif
+
+  Syscall::init();
+
+  if(use_interpreter) {
+
+    printf("Entering interpreter loop.\n");
+    while(true) {
+      printf("\n> ");
+      
+      _ action = Interp::get_command(tal_stdin);
+      switch action {
+      case PrintRegs:
+	Sim::print_register_file(tal_stdout,rf);
+      case PrintGp(i):
+	printf("r%d = %x",i,rf.gp[|i|].1);
+      case PrintFp(i):
+	printf("f%d = %x",i,rf.fp[|i|].1);
+      case PrintPc:
+	printf("pc = %x",rf.pc.1);
+      case DumpMem *(a,n): 
+	Mem::dump(out_file,a,n);
+      case DumpStrMem *(a,n): printf("DumpStrMem unimplemented.");
+      case Disassemble *(a,n): disassemble(tal_stdout,a,n,rf);
+      case DisassemblePc (n): disassemble(tal_stdout,rf.pc.1,n,rf);
+      case RunN(n): execute(rf,n);
+      case RunVerboseN(n): execute_verbose(out_file,rf,n);
+      case Run: 
+	while(true) {
+	  _ return_code = execute(rf,100000);
+	  if(return_code != null) break;
+	}
+      case Exit: return 0;
+      case Nop: ;
+      case Error(s): printf("ERROR: %s",s);
+      case SetOutputFile(fname):
+	printf("Setting output file to %s\n",fname);
+	try {
+	  if(strcmp(fname,"stdout") == 0) out_file = tal_stdout;
+	  else {
+	    _ fptr = file_open(fname,"w");
+	    out_file = fptr;
+	  }
+	} handle y {
+	  printf("File open failed.\n");
+	}
+	
+      }
+    }
+  }
+  else {
+    _ i = 0;
+
+    try {
+      for(i = 0; true; i++) {
+	Sim::execute_n(rf,100000);
+      }
+    } handle y switch y {
+    case Simp::Exit(j): 
+      fprintf(tal_stderr,"Simulated program exited with %d.\n",j);
+    case Simp::Failure(s):
+      fprintf(tal_stderr,"Simulated program failed after %d iterations.\n",i);
+      fflush(tal_stdout);
+    default: 
+      raise(y);
+    }
+  }
+
+  Syscall::print_call_count(tal_stderr);
+
+  if(Simp::log_file != null) file_close(Simp::log_file);
+
+  return 0;
+}
+<int>Opt execute(Sim::register_file rf, int num_insts) {
+  try {
+    Sim::execute_n(rf,num_insts);
+  } handle y switch y {
+  case Simp::Exit(i): 
+    printf("Simulated program exited with exit code %d.\n",i);
+    return ^Opt(i);
+  case Simp::Failure(s):
+    printf("Simulated program failed.\n");
+    fflush(tal_stdout);
+    return(null);
+  default: 
+    Mem::stats(tal_stdout);
+    printf("Register file:\n");
+    Sim::print_register_file(tal_stdout,rf);
+    fflush(tal_stdout);
+    fflush(tal_stderr);
+    raise(y);
+  }
+
+  return null;
+}
+
+<int>Opt execute_verbose(FILE f, Sim::register_file rf, int num_insts) {
+  try {
+    for(_ i = 0; i < num_insts; i++) {
+      disassemble(f,rf.pc.1,1,rf);
+      Sim::execute_n(rf,1);
+    }
+  } handle y switch y {
+  case Simp::Exit(i): 
+    printf("Simulated program exited with exit code %d.\n",i);
+    return ^Opt(i);
+  case Simp::Failure(s):
+    printf("Simulated program failed.\n");
+    return null;
+  default: 
+    Mem::stats(tal_stdout);
+    printf("Register file:\n");
+    Sim::print_register_file(tal_stdout,rf);
+    fflush(tal_stdout);
+    fflush(tal_stderr);
+    raise(y);
+  }
+
+  return null;
+}
+
+void disassemble(FILE f,ptr a, int n, Sim::register_file rf) {
+  for(_ i = 0; i < n; i++) {
+    if(Mem::is_allocated(a) && Mem::is_allocated(a+4)) {
+      _ inst_a = Mem::r_word(a);
+      _ inst_b = Mem::r_word(a+4);
+      fprintf(f,"%x : ", a);
+      Sim::print_insn(f,inst_a,inst_b,rf,a);
+      fprintf(f," (%x : %x) ",inst_a,inst_b);
+    } else {
+      fprintf(f,"\t????");
+    }
+    fprintf(f,"\n");
+    a+=8;
+  }
+}
+
+
+
+

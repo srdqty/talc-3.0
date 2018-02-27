@@ -1,0 +1,38 @@
+; TAL INTERFACE loader
+	TYPE	<?arr = fn c:T . Exist[?sz:Sint].^*[S(?sz)^r,(^*[array(?sz,c^rw)])^r]>
+	TYPE	<?str = Exist[?sz:Sint].^*[S(?sz)^r,(^*[array(?sz,B1^rw)])^r]>
+	TYPE	<?exnname = fn c$0:Tm . ^T^rw(c$0)*[B4^rw]>
+	TYPE	<?exn = Exist[c$0:Tm].^*[(?exnname c$0)^r,?str^r,c$0]>
+	TYPE	<?H = fn s:Ts e:Tcap . code {cap: e,EAX: ?exn,ESP: sptr s}>
+	TYPE	<?E = fn s:Ts e:Tcap . (?H s e)::s>
+	TYPE	<?S = fn ?ret:T4 ?s1:Ts ?s2:Ts ?e1:Tcap ?e2:Tcap . (code {cap: &[?e1,?e2],EAX: ?ret,EBP: sptr (?E ?s2 ?e2),ESP: sptr ?s1#(?E ?s2 ?e2)})::?s1>
+	TYPE	<?Sv = fn ?s1:Ts ?s2:Ts ?e1:Tcap ?e2:Tcap . (code {cap: &[?e1,?e2],EBP: sptr (?E ?s2 ?e2),ESP: sptr ?s1#(?E ?s2 ?e2)})::?s1>
+	TYPE	<?Sf = fn ?s1:Ts ?s2:Ts ?e1:Tcap ?e2:Tcap . (code {cap: &[?e1,?e2],ST0,EBP: sptr (?E ?s2 ?e2),ESP: sptr ?s1#(?E ?s2 ?e2)})::?s1>
+	TYPE	<?Ha = fn ?s1:Ts ?s2:Ts ?e1:Tcap ?e2:Tcap . (sptr (?E ?s2 ?e2))::(?s1#(?E ?s2 ?e2))>
+	
+	TYPE 	<Opt = fn a :Tm . ^T(0)*[a]>
+
+;        VAL     _tal_load,<All[a:T4 s1:Ts e1:Tcap e2:Tcap ]. code \
+;		  {cap: &[e1,e2], \
+;		  ESP: sptr  \
+;		    (code \
+;		      {cap: &[e1,e2], \
+;		       EAX:(Opt (a^rw)), \
+;		       ESP:sptr (?str::?str::(^*[Rep (type a)])::s1)}):: \
+;		    ?str::?str::(^*[Rep(type a)])::s1}>
+
+;	VAL	_tal_cast,<All[a:T4 b:T4 s1:Ts e1:Tcap e2:Tcap ].   \
+;		code {cap: &[e1,e2], ESP: sptr  \
+;		(code {cap: &[e1,e2],EAX:(Opt (b^rw)),  \
+;		ESP:sptr (a::(^*[Rep (type a)])::(^*[Rep (type b)])::s1)}) \
+;		::a::(^*[Rep (type a)])::(^*[Rep (type b)])::s1}>
+
+;; a -> Rep(a) -> Rep(b) -> b opt
+	VAL	_tal_cast,<All[va:T4 vb:T4 s1:Ts s2:Ts e1:Tcap e2:Tcap].code {cap: &[e1,e2],EBP: sptr (?E s2 e2),ESP: sptr (?S (Opt (vb^rw)) va::(^*[Rep(type va)])::(^*[Rep(type vb)])::s1 s2 e1 e2)#(?E s2 e2)}>
+
+; TAL type for _tal_load  All[a:Tm]. Rep(a) -> str -> str -> a option
+	VAL	_tal_load,<All[va:T4 s1:Ts s2:Ts e1:Tcap e2:Tcap].code {cap: &[e1,e2],EBP: sptr (?E s2 e2),ESP: sptr (?S (Opt (va^rw)) ?str::?str::(^*[Rep(type va)])::s1 s2 e1 e2)#(?E s2 e2)}>
+
+;; Rep(a) -> ()
+	VAL	_tal_print_typerep,<All[va:T4 s1:Ts s2:Ts e1:Tcap e2:Tcap].code {cap: &[e1,e2],EBP: sptr (?E s2 e2),ESP: sptr (?Sv (^*[Rep(type va)])::s1 s2 e1 e2)#(?E s2 e2)}>
+

@@ -1,0 +1,63 @@
+#include "top.h"
+#include "core.h"
+open Core;
+
+#include "math.h"
+open Math;
+
+prefix Point;
+open Point;
+
+struct point { FP x; FP y; FP z; }
+
+void print(point p) {
+  print_string("(");
+  print_float(p.x);
+  print_string(", ");
+  print_float(p.y);
+  print_string(", ");
+  print_float(p.z);
+  print_string(")");
+}
+
+point add(point p1, point p2) {
+  return ^point(p1.x + p2.x,p1.y + p2.y, p1.z + p2.z);
+}
+
+FP dot(point p1, point p2) {
+  return p1.x * p2.x + p1.y * p2.y + p1.z * p2.z;
+}
+
+point neg(point p) {
+  return ^point(-1.0f * p.x, -1.0f * p.y, -1.0f * p.z);
+}
+
+point sub(point p1, point p2) {
+  return ^point(p1.x - p2.x, p1.y - p2.y, p1.z - p2.z);
+}
+
+point mul(point p1, point p2) {
+  return ^point(p1.x * p2.x, p1.y * p2.y, p1.z * p2.z);
+}
+
+point inv(point p) {
+  return ^point(1.0f/p.x, 1.0f/p.y, 1.0f/p.z);
+}
+
+point scale(FP s, point p) {
+  return ^point(s * p.x, s * p.y, s * p.z);
+}
+
+point shift(FP s, point p) {
+  return ^point(s + p.x, s + p.y, s + p.z);
+}
+
+point normalize(point p) {
+  FP len = length(p);
+
+  return scale(1.0f / len, p);
+}
+
+FP length(point p) {
+  return sqrt(dot(p,p));
+}

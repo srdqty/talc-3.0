@@ -1,0 +1,229 @@
+/* Popcorn Language Stuff
+ *
+ * Copyright Greg Morrisett, Neal Glew, Dan Grossman
+ *   January 1999, all rights reserved
+ *
+ */
+
+/* Now hacked by Dan and Fred for more informative debugging */
+
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+
+extern void **tal_args;
+
+extern void *GC_malloc(int);
+extern void GC_free(void *);
+
+typedef char *Cstring;
+typedef struct str_internal {int size; char *chars;} *string;
+Cstring string_to_Cstring(string);
+extern FILE* tal_stderr;
+
+extern void fprint_string(FILE *,string);
+extern void fprint_int(FILE *,int);
+
+/********************* For debugging malloc *********************/
+/* #define DO_MALLOC_DEBUG */
+#ifdef DO_MALLOC_DEBUG
+
+extern void GC_generate_random_backtrace(void);
+extern void *GC_debug_malloc(int,char *,int);
+
+static struct str_internal dummy = { 0, 0 };
+string _current_file =  &dummy;                /* file that called malloc */
+int _current_line = 0;                         /*   at this line # */
+
+#define CACHED_FILENAMES_SZB 10000
+static char cached_filenames[CACHED_FILENAMES_SZB]; /* null-terminated
+						       filenames */
+static int cached_filenames_end = 0;
+void *debug_malloc(int sz) {
+  /* First, map the Popcorn string to a C string */
+#ifndef NOTDEF
+  char *cstr = NULL;
+  if (_current_file->size == 0)
+    cstr = "";
+  else {
+    int i;
+    for (i=0; i<cached_filenames_end; 
+	 i = i + strlen(&cached_filenames[i]) + 1 /* null term */) {
+      if (!strncmp(_current_file->chars,
+		   &cached_filenames[i],
+		   _current_file->size)) {
+	cstr = &cached_filenames[i];
+	break;
+      }
+    }
+    /* if it isn't already mapped, add it */
+    if (cstr == NULL) {
+      if ((cached_filenames_end + _current_file->size + 1) < 
+	  CACHED_FILENAMES_SZB) /* have enough room */ {
+	strncpy(&cached_filenames[cached_filenames_end],
+		_current_file->chars,_current_file->size);
+	cached_filenames[cached_filenames_end+_current_file->size] = '\0';
+	cstr = &cached_filenames[cached_filenames_end];
+	cached_filenames_end =
+	  cached_filenames_end+_current_file->size+1;
+      }
+      else {
+	fprintf(stderr,"Debug malloc could not store string!\n");
+	exit(1);
+      }
+    }
+  }
+  return GC_debug_malloc(sz,cstr,_current_line);
+#else
+  return GC_malloc(sz);
+#endif
+}
+#endif /* DO_DEBUG_MALLOC */
+
+/* Call stack related externs */
+
+typedef struct cstk_struct { string hd; struct cstk_struct *tl; } cstk;
+
+/* Type cstk is defined in prelude.tal
+   Exn variable __zzzz_active_exn is defined in prelude.tal */
+cstk *__zzzz_global_cstk;
+cstk *__zzzz_active_cstk;
+
+
+static void cstk_dump(FILE *fd) {
+  cstk *x = __zzzz_active_cstk;
+  string current;
+  int counter;
+  fprintf(fd, "Call stack (only instrumented functions).\n");
+  while(x!=NULL) {
+    current = x->hd;
+    counter=0;
+    x=x->tl;
+    while(x!=NULL) {
+      if(current == x->hd) counter++;
+      else break;
+      x=x->tl;
+    }
+
+    if(counter>0) fprintf(fd,"(%d)\t",counter+1);
+    else fprintf(fd,"\t");
+    fprint_string(fd,current);
+    fprintf(fd,"\n");
+  }
+
+  fprintf(fd,".\n");
+}
+
+void pop_never_null()
+{
+  fprintf(stderr, "Null pointer exception. \n\n");
+  exit(255);
+}
+
+void pop_debug_never_null(int i,string s) {
+  fprintf(stderr,"Null pointer exception: ");
+  fprint_string(tal_stderr,s);
+  fprintf(stderr,", char ");
+  fprint_int(tal_stderr,i);
+  exit(255);
+}
+
+typedef struct {
+  void *id;
+  string info;
+  void *value;
+} * exn_ptr;
+
+void pop_exn_info(FILE *fd, exn_ptr exn) {
+  fprintf(fd, "exception: %p\n",exn);
+  fprintf(fd, "Originating at: ");
+  fprint_string(fd, exn->info);
+  fprintf(fd, "\n");
+
+  if(__zzzz_active_cstk != NULL) cstk_dump(fd);
+}
+
+void pop_exn_handler(exn_ptr exn) {
+  fprintf(stderr,"Uncaught ");
+  pop_exn_info(stderr,exn);
+  exit(255);
+}
+
+void pop_exn_handler_verbose(void* exn)
+{
+  /*  string msg; */
+
+ fprintf(stderr, "Uncaught exception: %p\n",exn);
+  // callStackDump();
+
+ fprintf(stderr, "Recovering exception name and location.\n");
+ fprintf(stderr, "May cause a crash if code not compiled with verbose exceptions.\n\n");
+
+ fflush(stderr);
+
+ /* Temporarily disabled. -- changing memory format of exceptions.
+ msg = (((exn_ptr) exn)->packet->s);
+
+ fprint_string(tal_stderr,msg);
+ fprintf(stderr, "\n");
+ */
+
+ exit(255);
+}
+
+void array_bounds_error(void)
+{
+  fprintf(stderr, "\narray bounds error!\n");
+  exit(255);
+}
+
+void division_by_zero_error(void)
+{
+  fprintf(stderr, "\ndivision by zero error!\n");
+  exit(255);
+}
+
+/**************************************************************************/
+
+/* Symbol registration for "trusted" symbols needed by dynamic loading */
+
+#ifdef __linux__
+#define SYMNAME(s) s
+#else
+#define SYMNAME(s) "_" ## s
+#endif
+
+/* symbols to register from the prelude */
+extern long ArrayBounds_pkt;
+extern long NullPointer_pkt;
+extern long UnionVariant_pkt;
+extern long __zzzz_active_exn_pkt;
+
+void 
+pop_runtime_init_loader_syms(void (*register_sym)(long,long))
+{
+  register_sym((long)pop_exn_handler,(long)SYMNAME("pop_exn_handler"));
+  register_sym((long)pop_never_null,(long)SYMNAME("pop_never_null"));
+  register_sym((long)array_bounds_error,(long)SYMNAME("array_bounds_error"));
+  register_sym((long)division_by_zero_error,
+	       (long)SYMNAME("division_by_zero_error"));
+  register_sym((long)&__zzzz_global_cstk,(long)SYMNAME("__zzzz_global_cstk"));
+  register_sym((long)&__zzzz_active_cstk,(long)SYMNAME("__zzzz_active_cstk"));
+  register_sym((long)cstk_dump,(long)SYMNAME("cstk_dump"));
+#ifdef DO_DEBUG_MALLOC
+  register_sym((long)&_current_file,(long)SYMNAME("_current_file"));
+  register_sym((long)&_current_line,(long)SYMNAME("_current_line"));
+  register_sym((long)debug_malloc,(long)SYMNAME("debug_malloc"));
+#endif
+
+  /* stuff from prelude */
+  register_sym((long)&ArrayBounds_pkt,(long)SYMNAME("ArrayBounds_pkt"));
+  register_sym((long)&NullPointer_pkt,(long)SYMNAME("NullPointer_pkt"));
+  register_sym((long)&UnionVariant_pkt,(long)SYMNAME("UnionVariant_pkt"));
+  register_sym((long)&__zzzz_active_exn_pkt,
+	       (long)SYMNAME("__zzzz_active_exn_pkt"));
+}
+
+typedef struct rep_internal {int size; char chars[1];} *rep;
+
+/* EOF: pop_runtime.c */

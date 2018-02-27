@@ -1,0 +1,61 @@
+#include "core.h"
+#include "dlpop.h"
+
+open Core;
+
+struct bstruct { int i; int j; }
+
+bstruct b;
+
+static <handle_t>Opt h;
+
+int func(int i) {
+  *(int) c = dlsym(h.v,"c",repterm@<*(int)>);
+  return i + c.1;
+}
+
+void pop_main () {
+  print_string("-----\nTest: gen_call\n-----\n");
+  b.i = 3;
+  b.j = 4;
+  try {
+    h = ^Opt(dlopen("gen"));
+//    print_table();
+    print_string("func is ");
+    print_int(func(1));
+    print_string("\n");
+
+    void foo() = dlsym(h.v, "foo",repterm@<void ()>);
+    print_string ("b.j is:"); print_int (b.j); print_string("\n");
+    foo();
+    print_string ("b.j is:"); print_int (b.j); print_string("\n");
+
+    
+//    print_table();
+    print_string("func is ");
+    print_int(func(1));
+    print_string("\n");
+    
+  } handle y {
+    switch y {
+    case WrongType(s): {
+      print_string ("Wrong type for symbol : ");
+      print_string (s);
+    }
+    case SymbolNotFound(s): {
+      print_string ("Can't find symbol : ");
+      print_string (s);
+    }
+    case FailsTypeCheck: {
+      print_string ("File doesn't type-check");
+    }
+    case Core::FileOpenError(s): {
+      print_string ("Can't open file : ");
+      print_string (s);
+    }
+    default:
+      print_string ("Exception Raised");
+    }
+    print_string ("\n");
+  }
+}

@@ -1,0 +1,20 @@
+(* ping with timing support *)
+fun ack(start_usec) =
+  let val now = gettimeofday()
+      val diff = (snd now) - start_usec in
+    (print("round trip time "); 
+     if (diff > 0) then
+       print(diff)
+     else
+       print(diff+1000000); (* rollover *)
+     print("\n"))
+  end
+
+fun ping (source, destination, start_usec) =
+  if (thisHostIs (destination)) then
+    OnRemote (|ack| (start_usec), source, getRB (), defaultRoute)
+  else 
+    let val start_time = gettimeofday() in
+      OnRemote (|ping| (source, destination, (snd start_time)), 
+                destination, getRB (), defaultRoute)
+    end

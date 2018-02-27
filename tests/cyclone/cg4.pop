@@ -1,0 +1,30 @@
+#include "core.h"
+open Core;
+
+int cg_test(int w)
+{
+  int i = 3 + 4;
+
+  int f(int) = 
+      codegen(int spec(int a)
+	    {
+	      int res = a;
+	      
+	      res += fill( (i==7) ? 6 : 2 );
+
+	      return res;
+	    });
+  i += f(w);
+
+  return i;
+}
+
+void pop_main()
+{
+  print_string("This tests whether labels in holes are typed right\n");
+  print_string("The result of the invocation should be 17\n");
+  print_string("The result of the invocation is ");
+  print_int(cg_test(4));
+  print_string("\n");
+}
+

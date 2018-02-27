@@ -1,0 +1,23 @@
+#include "absyn.h"
+#include "env.h"
+#include "svc.h"
+#include "core.h"
+open Core;
+
+/* dynamic service */
+value HelloWorld(<value> List::list vl, pop_pkt ppkt)
+{
+  printf("Hello world\n");
+
+  return(^value.Unit);
+}
+
+/* Called when the file is loaded */
+static void init () {
+  printf("Adding service: HelloWorld()\n");
+  Svc::svc_env = ^List::list(^("HelloWorld", HelloWorld),Svc::svc_env);
+  return;
+}
+
+
+

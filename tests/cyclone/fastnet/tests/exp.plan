@@ -1,0 +1,39 @@
+(*
+ *             Exp  done?
+ *             ---  -----
+ *             Val  x
+ *             Var  x
+ *          ETuple  x
+ *             App  x
+ *              If  x
+ *           Raise  x
+ *             Try  
+ *             Let  x
+ *            Unop  x
+ *           Binop  x
+ *          EChunk  x
+ *        Onremote  x
+ *      Onneighbor  
+ * Retransonremote  
+ *           Foldr  
+ *           Foldl  
+ *)
+
+fun ack(count:int) : unit = 
+  (print (count); print (" : "); print (count))
+
+fun f(i : int, j: int) : unit =
+  if (i < j) then
+    (1, i, j)
+  else
+  	 (ack(1234);       	
+	  (j+j))
+(* output: ( -1, ( 1, ( [ 2; 3 ], ( 4, false ) ) ) ) *)
+fun g() : unit = 
+  let val x:((int*int)*int) = ((1,2),4)
+      val m:int list = [1;2;3]
+  in
+      (~(fst (fst x)),(hd m,(tl m,(snd x,not true))))
+  end 
+
+fun main() : unit = (f(2, 3), f(3, 2), g())

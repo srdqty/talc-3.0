@@ -1,0 +1,55 @@
+
+// These features are only supported by the optimizing compiler!!!!
+
+#include<core.h>
+
+int g?[|10|] = {| 1,2,3,4,5,6,7,8,9,10|};
+
+int h?[|3|];
+int k[|3|];
+
+int m[|10|]?[|3|];
+
+void test_nonopt(int x[|5|]) {
+  x[|2|]++;
+  x[|3|] = 100;
+
+  for(_ i = 0; i < 5; i++) {
+    printf("%d ", x[|i|]);
+  }
+
+  printf("\n");
+
+  g[|3|] = -1;
+  for(_ i = 0; i < 10; i++) {
+    printf("%d ", g[|i|]);
+  }
+
+  printf("\n");
+}
+
+void test_opt(int x?[|5|]) {
+
+  if(x!=null) {
+    x[|3|] = x[|2|];
+
+    for(_ i = 0; i < 5; i++) 
+      printf("%d ", x[|i|]);
+    printf("\n");
+  }
+  
+}
+
+int pop_main() {
+
+  int x[|5|] = {| 1,2,3,4,5 |};
+
+  test_nonopt(x);
+  test_opt(x);
+  return 0;
+}
+
+
+
+
+

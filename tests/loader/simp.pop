@@ -1,0 +1,38 @@
+#include "core.h"
+open Core;
+
+/* Imported from simple_call.pop */
+extern exception Foo;
+extern exn a;
+extern int b;
+extern int func2(int);
+
+/* To be looked up by simple_call.pop */
+int c = 0;
+void foo() {
+  try {
+    c = 6;
+    b = func2(0);
+  } handle e {
+    switch (e) {
+      case Foo: {
+        b = 7;
+      }
+    }
+  }
+} 
+
+exception Bar;
+exn d = new Bar();
+
+/* Called when the file is loaded */
+static void init () {
+  print_string("-------------\n");
+  print_string("in simp.o:init()\n");
+  print_string("-------------\n");
+  c = 5;
+  exn e = new Foo();
+  a = e;
+  return;
+}
+

@@ -1,0 +1,657 @@
+/////////////////////////////////////////////////////////////////////////////
+// Poptypeenv.pop:  
+// Defines environments for type-checking popcorn code, error utilities,
+// and a few miscellaneous functions.
+// Table of contents:
+// 1. Error processing routines: terr, exp_err, impossible
+// 2. Utilities: string_list_assoc, get_switch_arm_field
+// 3. Global environments:
+//      type definition
+//      routines for adding a top-level declaration to an environment
+//      initial_global_env
+// 4. Opening a prefix in an environment
+// 5. Environments local to a function (f_env)
+// 6. Cyclone environments for layering codegen, cut, fill, splice, etc.
+/////////////////////////////////////////////////////////////////////////////
+#include "core.h"
+#include "list.h"
+#include "set.h"
+#include "dict.h"
+#include "popsyntax.h"
+#include "poperr.h"
+#define location Gcdfec::seg
+
+open Core;
+open Popsyntax;
+open List;
+
+prefix Poptypeenv;
+open Poptypeenv;
+
+/////////////////////////////////////////////////////////////////////////////
+// 1. Error processing
+/////////////////////////////////////////////////////////////////////////////
+// used to indicate a type error and then continue
+void terr(location loc,string s) {
+  Gcdfec::post_error
+    (Gcdfec::mk_err_elab
+     (loc,
+      Poperr::error_message
+      (^Poperr::errorb.Etypecheck(^Poperr::tcError.TypeError(s)))));
+}
+
+void terr2(location loc,string s1,string s2) {
+  terr(loc,strconcat(s1,s2));
+}
+void terr3(location loc,string s1,string s2,string s3) {
+  terr2(loc,s1,strconcat(s2,s3));
+}
+void terr4(location loc,string s1,string s2,string s3,string s4) {
+  terr3(loc,s1,s2,strconcat(s3,s4));
+}
+void terr5(location loc,string s1,string s2,string s3,string s4,
+		  string s5) {
+  terr4(loc,s1,s2,s3,strconcat(s4,s5));
+}
+
+// used to post an error and return a "dummy" type so that we can continue
+// type-checking.
+f_exp_synth exp_err(location loc,string msg) {
+  terr(loc,msg);
+  return ^f_exp_synth(new_evar(^var_class.Any), 
+		      false, 
+		      ^f_exp_unassigned.Always(mt_varset_g.v),
+		      null);
+}
+f_exp_synth exp_err2(location loc,string s1,string s2) {
+  return(exp_err(loc,strconcat(s1,s2)));
+}
+f_exp_synth exp_err3(location loc,string s1,string s2,string s3) {
+  return(exp_err2(loc,s1,strconcat(s2,s3)));
+}
+f_exp_synth exp_err4(location loc,string s1,string s2,string s3,string s4) {
+  return(exp_err3(loc,s1,s2,strconcat(s3,s4)));
+}
+f_exp_synth exp_err5(location loc,string s1,string s2,string s3,string s4, 
+		     string s5) {
+  return(exp_err4(loc,s1,s2,s3,strconcat(s4,s5)));
+}
+f_exp_synth exp_err6(location loc,string s1,string s2,string s3,string s4,
+		     string s5,string s6) {
+  return(exp_err5(loc,s1,s2,s3,s4,strconcat(s5,s6)));
+}
+
+// used when a supposedly impossible situation arises
+a impossible<a>(string s) {
+  fprintf(tal_stderr,"Poptype::%s",s);
+  raise Failure(s);
+}
+
+/////////////////////////////////////////////////////////////////////////////
+// 2. Utilities
+/////////////////////////////////////////////////////////////////////////////
+// association lists where the keys are strings
+a string_list_assoc<a>(string x,<*(string,a)>list lis) {
+  while (lis != null) {
+    if (strcmp(lis.hd.1,x) == 0)
+      return(lis.hd.2);
+    else 
+      lis = lis.tl;
+  }
+  raise Not_found();
+}
+// returns null if p is not a prefix of n, otherwise returns the rest of n.
+static <string>Opt has_prefix(string p,string n) {
+  int pLen = size(p);
+
+  if (String::strncmp(p,n,pLen) == 0)
+    return ^Opt(String::substring(n,pLen+1,size(n) - pLen - 1));
+  else
+    return null;
+}
+field_name get_switch_arm_field(switch_arm s) {
+  return s.field;
+}
+// Computes a function type from a function declaration
+typ fd_type(fndecl fd) {
+  return ^typ.FnType(^(fd.convention,fd.tyvars,fd.ret_type,
+		       List::map(snd@<var,typ>,fd.args)));
+}
+
+/////////////////////////////////////////////////////////////////////////////
+// 3. Global Environments
+/////////////////////////////////////////////////////////////////////////////
+union type_use { void Unused, Mentioned, Destructed; }
+struct global_env { 
+  // struct definitions in scope
+  <type_name,*(structdecl,type_use)> Dict::dict structs; 
+  // union definitions in scope
+  <type_name,*(uniondecl, type_use)> Dict::dict unions;   
+  // abstype definitions in scope
+  <type_name,*(absdecl,   type_use)> Dict::dict abstypes;
+  // external abstract types in scope -- the var list is the type parameters 
+  // and the bool indicates whether the type is possibly null
+  // obviously the type_use can't be destructed
+  <type_name,*(<var>list,bool,type_use)> Dict::dict abstracts;
+  // Dictionary of union field names in scope.  Used to automatically
+  // expand new when it is not ambiguous.
+  // Invalid field names are not in the dictionary.  Ambiguous field names
+  // are mapped to null. 
+  <field_name, <uniondecl>Opt> Dict::dict union_fs;
+  // global (value) variables in scope -- The bool is initially false
+  // for external globals but set to true if the variable is ever 
+  // looked up indicating a use.  The bool is true for internal globals.
+  // Thus, the external globals can be trimmed by looking at the bools.
+  <var,*(typ,bool)> Dict::dict globals;
+  // global exceptions in scope
+  // the bool indicates use
+  <var,*(typ,scope,bool)> Dict::dict exceptions;
+  // type names that have been opened that are in scope -- maps to the
+  // fully qualified name (i.e., with the prefix)
+  <type_name,type_name> Dict::dict open_typs;
+  // value names that have been opened that are in scope -- maps to the
+  // fully qualified name (i.e., with the prefix)
+  <var,var> Dict::dict open_vals;
+}
+
+static global_env copy_global_env(global_env g) {
+  return ^global_env(g.structs,g.unions,g.abstypes,
+		     g.abstracts,g.union_fs,g.globals,g.exceptions,
+		     g.open_typs,g.open_vals);
+}
+
+// used when adding "inner" functions to the global environment
+void add_global(global_env g,var x,typ t) {
+  g.globals = Dict::insert(g.globals,x,^(t,true));
+}
+
+// externed types are initially unused but may be destructively updated later
+static type_use initial_type_use(scope s) {
+  switch s {
+  case Extern: return ^type_use.Unused;
+  default:     return ^type_use.Destructed;
+  }
+}
+
+static void check_type_param_number(location loc, type_name n,
+				    <var>list v1, <var>list v2) {
+  if(List::length(v1) != List::length(v2))
+    terr2(loc,n, 
+	  " is declared previously with a different number of type parameters");
+}
+static void check_abstract_nullness(location loc, type_name n,
+				    bool abstract_null, bool transparent_null) {
+  if(abstract_null && !transparent_null) 
+    terr2(loc,n,
+      " is declared abstractly an a ? type but transparently as a non ? type");
+}
+
+static void add_structdecl(global_env g,location loc,structdecl sd) {
+  type_name n = sd.name;
+
+  // Can't declare a struct and a union or abstype with the same name.
+  if (Dict::member(g.unions,n))
+    terr2(loc,n," is declared as both a union and a struct type");
+  if (Dict::member(g.abstypes,n))
+    terr2(loc,n," is declared as both an abstype and a struct type");
+  // Can't declare a struct twice -- even though the old system supported it
+  if (Dict::member(g.structs,n))
+    terr2(loc,n," is declared twice");
+  // We can declare a struct as both abstract and transparent as long
+  // as the definitions are consistent.  The transparent one
+  // overrides the abstract one. 
+  _ ainfo_opt = Dict::lookup_opt(g.abstracts,n);
+  if (ainfo_opt != null) {
+    _ vs       = ainfo_opt.v.1;
+    _ nullable = ainfo_opt.v.2;
+    check_abstract_nullness(loc,n,nullable,sd.possibly_null);
+    check_type_param_number(loc,n,vs,sd.tyvars);
+    g.abstracts = Dict::delete_present(g.abstracts,n);
+  }
+  g.structs = Dict::insert(g.structs,n,^(sd,initial_type_use(sd.scope)));
+}
+
+static void add_uniondecl(global_env g,location loc,uniondecl ud) {
+  type_name n = ud.name;
+
+  // Can't declare a union and a struct or abstype with the same name.
+  if (Dict::member(g.structs,n))
+    terr2(loc,n," is declared as both a struct and a union type");
+  if (Dict::member(g.abstypes,n))
+    terr2(loc,n," is declared as both an abstype and a union type");
+  // Can't declare a union twice -- even though the old system supported
+  // this, I decided it's a bad idea.
+  if (Dict::member(g.unions,n))
+    terr2(loc,n," is declared twice");
+  // We can declare a union as both abstract and transparent as long
+  // as the definitions are consistent.  The transparent definition
+  // overrides the abstract one if so. 
+  _ ainfo_opt = Dict::lookup_opt(g.abstracts,n);
+  if (ainfo_opt != null) {
+    _ vs       = ainfo_opt.v.1;
+    _ nullable = ainfo_opt.v.2;
+    check_abstract_nullness(loc,n,nullable,false);
+    check_type_param_number(loc,n,vs,ud.tyvars);
+    g.abstracts = Dict::delete_present(g.abstracts,n);
+  }
+  g.unions = Dict::insert(g.unions,n,^(ud,initial_type_use(ud.scope)));
+
+  // Now insert all the field names for reverse lookup.
+  _ name = ud.name;
+  _ union_fs = g.union_fs;
+  for(_ x = ud.fields; x!=null; x=x.tl) {
+    _ f = x.hd.1;
+    _ u = Dict::lookup_opt(union_fs,f);
+    if(u==null) {
+      union_fs = Dict::insert(union_fs,f,^Opt(ud));
+    } else {
+      if(u.v == null) continue; // Present but already ambiguous.
+      _ ud2 = u.v.v;
+      if(strcmp(ud2.name, ud.name)==0) continue; // Present unambiguous, same union
+      union_fs = Dict::insert(union_fs,f,null); // Became ambiguous.
+    }
+  }
+  g.union_fs = union_fs;
+}
+
+static void add_absdecl(global_env g,location loc,absdecl ad) {
+  type_name n = ad.name;
+
+  // Can't declare a union and a struct or abstype with the same name.
+  if (Dict::member(g.structs,n))
+    terr2(loc,n," is declared as both a struct and an abstype");
+  if (Dict::member(g.unions,n))
+    terr2(loc,n," is declared as both an abstype and a union type");
+  // Can't declare an abstype twice
+  if (Dict::member(g.abstypes,n))
+    terr2(loc,n," is declared twice");
+  // We can declare an abstype as both abstract and transparent as long
+  // as the definitions are consistent.  The transparent definition
+  // overrides the abstract one if so. 
+  _ ainfo_opt = Dict::lookup_opt(g.abstracts,n);
+  if (ainfo_opt != null) {
+    _ vs       = ainfo_opt.v.1;
+    _ nullable = ainfo_opt.v.2;
+    check_abstract_nullness(loc,n,nullable,false);
+    check_type_param_number(loc,n,vs,ad.all_tyvars);
+    g.abstracts = Dict::delete_present(g.abstracts,n);
+  }
+  g.abstypes = Dict::insert(g.abstypes,n,^(ad,initial_type_use(ad.scope)));
+}
+
+static void add_abstract(global_env g,location loc, 
+			 type_name n, <var>list vs, bool nullable) {
+
+  if (Dict::member(g.abstracts,n))
+    terr2(loc,n," is declared twice");
+  _ sdopt = Dict::lookup_opt(g.structs,n);
+  if (sdopt != null) {
+    structdecl sd = sdopt.v.1;
+    check_abstract_nullness(loc,n,nullable,sd.possibly_null);
+    check_type_param_number(loc,n,vs,sd.tyvars);
+  } else { 
+    _ udopt = Dict::lookup_opt(g.unions,n);
+    if (udopt != null) {
+      uniondecl ud = udopt.v.1;
+      check_abstract_nullness(loc,n,nullable,false);
+      check_type_param_number(loc,n,vs,ud.tyvars);
+    } else {
+      _ adopt = Dict::lookup_opt(g.abstypes,n);
+      if (adopt != null) {
+	absdecl ad = adopt.v.1;
+	check_abstract_nullness(loc,n,nullable,false);
+	check_type_param_number(loc,n,vs,ad.all_tyvars);
+      } else 
+	g.abstracts=Dict::insert(g.abstracts,n,^(vs,nullable,^type_use.Unused));
+    }
+  }
+}
+
+static void add_exceptiondecl(global_env g,location loc, var n, scope s, typ t){
+  if (Dict::member(g.exceptions,n) ||
+      Dict::member(g.globals,   n))
+    terr3(loc,"exception name ",n," has already been declared");
+  bool not_extern;
+  switch s {
+  case Extern: not_extern = false;
+  default:     not_extern = true;
+  }
+  g.exceptions = Dict::insert(g.exceptions,n,^(t,s,not_extern));
+}
+
+static void add_externval(global_env g,location loc,var n, typ t) {
+  if (Dict::member(g.exceptions,n) ||
+      Dict::member(g.globals,n))
+    terr3(loc,"value identifier ",n," has already been declared");
+  // add the global with flag set to false -- this will be set to true
+  // if the global is ever referenced, allowing us to prune out the
+  // ones that are not referenced.
+  g.globals = Dict::insert(g.globals,n,^(t,false));
+}
+
+static void add_globaldecl(global_env g, location loc, 
+			   scope s, var n, typ t, <exp>Opt eo) {
+  if (Dict::member(g.exceptions,n) ||
+      Dict::member(g.globals,n))
+    terr3(loc,"value identifier ",n," has already been declared");
+  // add the global -- leave the flag true -- if it's static, then
+  // we could set it to false.
+  g.globals = Dict::insert(g.globals,n,^(t,true));
+}
+
+static void add_fundecl(global_env g,location loc,fndecl fd) {
+  var n = fd.name;
+  typ t = fd_type(fd);
+  if (Dict::member(g.exceptions,n) ||
+      Dict::member(g.globals,n))
+    terr3(loc,"function identifier ",n," has already been declared");
+  // add the global -- leave the flag true -- if it's static, then
+  // we could set it to false.
+  g.globals = Dict::insert(g.globals,n,^(t,true));
+}
+
+static void add_globals_env(global_env g,<top_decl>list ds) {
+  while (ds != null) {
+    location loc = ds.hd.loc;
+    switch ds.hd.raw_top_decl {
+    case FunDecl   (fd): add_fundecl   (g,loc,fd);
+    case StructDecl(sd): add_structdecl(g,loc,sd);
+    case UnionDecl (ud): add_uniondecl (g,loc,ud);
+    case AbsDecl   (ad): add_absdecl   (g,loc,ad);
+    case ExceptionDecl*(n,s,t):         add_exceptiondecl(g,loc,n,s,t);
+    case ExternType   *(n,vs,nullable): add_abstract     (g,loc,n,vs,nullable);
+    case ExternVal    *(n,t):           add_externval    (g,loc,n,t);
+    case GlobalDecl   *(s,v,t,eo):      add_globaldecl   (g,loc,s,v,t,eo);
+    case OpenDecl     *(n,ds):          add_globals_env  (g,ds);
+    case PrefixDecl(_):
+      impossible("Poptype::add_global_env: prefix should be gone");
+    }
+    ds = ds.tl;
+  }
+}
+
+global_env initial_global_env(<top_decl>list ds) {
+  mt_varset_g  = ^Opt(Set::empty(strcmp));
+  jump_synth_g = ^Opt(^f_stmt_synth{does_jmp = true, 
+				    unassigned = mt_varset_g.v });
+
+  <string,a>Dict::dict string_dict<a>() {return Dict::empty(strcmp);};
+
+  _ g = ^global_env{structs    = string_dict(), 
+		    unions     = string_dict(), 
+		    abstypes   = string_dict(), 
+		    abstracts  = string_dict(), 
+		    union_fs   = string_dict(),
+		    globals    = string_dict(), 
+		    exceptions = string_dict(), 
+		    open_typs  = string_dict(), 
+		    open_vals  = string_dict()}; 
+
+  add_globals_env(g,ds);
+  return g;
+}
+
+/////////////////////////////////////////////////////////////////////////////
+// 4. Opening a prefix in a global environment
+/////////////////////////////////////////////////////////////////////////////
+
+// Given a global environment g, and a prefix p, open p by generating
+// a new environment with the opened identifiers arranged appropriately.
+// Note that we must copy the environment because the open may have a
+// local scope.
+global_env open_prefix(global_env g,string p) {
+
+  // For each identifier x in d, check to see if name is a prefix of
+  // x and if so, add the appropriate entry to the opened dict. 
+  <var,var>Dict::dict process_dict<a>(string name,
+				      <var,var>Dict::dict opened,
+				      <var,a>Dict::dict d) {
+    // If id = name::foo, then add foo -> name::foo to opened
+    <var,var>Dict::dict process_elt<a>(string name, var id, a elt,
+				       <var,var>Dict::dict opened) {
+      <string>Opt id2 = has_prefix(name,id);
+      if (id2 == null) return opened;
+      else return Dict::insert(opened,id2.v,id);
+    };
+
+    return Dict::fold_c(process_elt@<a>,name,d,opened);
+  };
+
+  // Process an opened dictionary by adding mappings to the opened dictionary
+  // corresponding to the prefix name.  
+  <var,var>Dict::dict process_opened(string name,
+				     <var,var>Dict::dict opened,
+				     <var,var>Dict::dict d) {
+    // If id = name::foo and name::foo -> bar is in opened, then add 
+    // foo->bar to opened.
+    <var,var>Dict::dict process_opened_elt(string name, var id, var id2,
+					   <var,var>Dict::dict opened) {
+      <string>Opt id3 = has_prefix(name,id);
+      if (id3 == null) return opened;
+      else return Dict::insert(opened,id3.v,id2);
+    };
+
+    return Dict::fold_c(process_opened_elt,name,d,opened);
+  };
+
+  _ open_typs = process_opened(p,g.open_typs,g.open_typs);
+  _ open_vals = process_opened(p,g.open_vals,g.open_vals);
+  _ g2 = copy_global_env(g);
+  open_typs = process_dict(p,open_typs,g.structs);
+  open_typs = process_dict(p,open_typs,g.unions);
+  open_typs = process_dict(p,open_typs,g.abstypes);
+  open_typs = process_dict(p,open_typs,g.abstracts);
+  open_vals = process_dict(p,open_vals,g.globals);
+  open_vals = process_dict(p,open_vals,g.exceptions);
+  g2.open_typs = open_typs;
+  g2.open_vals = open_vals;
+  return(g2);
+}
+
+/////////////////////////////////////////////////////////////////////////////
+// 5. Environment and Synthesis local to a function 
+/////////////////////////////////////////////////////////////////////////////
+struct f_env0 { // same throughout function
+  var              name;     // the function's name
+  convention       convention; // Calling convention for the function.
+  <var>list        tyvars;   // the names of type parameters
+  <*(var,typ)>list args;     // the names and types of value parameters
+  typ              ret_type; // the return type
+}
+struct f_env {
+  f_env0           f_env0;        
+  <var>list        local_tyvars;  // as introduced by with
+  <*(var,typ)>list locals;        // the local variables 
+  bool             inloop;        // whether we're in a loop or not
+  <var>list        labels;        // labels that are in scope
+  <var>Set::set    un_before;     // variables not definitely assigned
+}
+union f_exp_unassigned {
+  <var>Set::set                  Always;  // unassigned after expression
+  *(<var>Set::set,<var>Set::set) Boolean; // unassigned when true, when false
+}
+struct f_exp_synth {
+  typ              typ;
+  bool             does_raise;
+  f_exp_unassigned unassigned;
+  <var>list        assigned_to; // a list b/c we expect it to be very small
+}
+struct f_stmt_synth {
+  bool          does_jmp;
+  <var>Set::set unassigned;
+}
+
+// set in initial_global_env
+<<var>Set::set>Opt mt_varset_g  = null;
+<f_stmt_synth>Opt  jump_synth_g = null;
+
+static f_env copy_fenv(f_env f) {// does not make a new f_env0
+  return ^f_env(f.f_env0,f.local_tyvars,f.locals,f.inloop,f.labels,f.un_before);
+}
+f_env fndecl2f_env(fndecl fd) {
+  return ^f_env(^f_env0(fd.name,fd.convention,fd.tyvars,fd.args,fd.ret_type),
+                null, fd.args, false, null, mt_varset_g.v);
+}
+
+f_env bogus_f_env() {
+  return ^f_env(^f_env0("*BOGUS*",default_convention,null,null,^typ.VoidType),
+                null, null, false, null, mt_varset_g.v);
+}
+
+static f_env f_env_set_inloop(f_env x) {
+  _ y = copy_fenv(x);
+  y.inloop = true;
+  return y;
+}
+static f_env f_env_clear_inloop(f_env x) {
+  _ y = copy_fenv(x);
+  y.inloop = false;
+  return y;
+}
+static f_env f_env_add_label(f_env fenv, var x) {
+  _ y = copy_fenv(fenv);
+  y.labels = ^list(x,fenv.labels);
+  return y;
+}
+static f_env f_env_add_tyvars(f_env f, location loc, <var>list vs) {
+  _ local_vs = f.local_tyvars;
+  _ fun_vs   = f.f_env0.tyvars;
+  for (; vs!=null; vs=vs.tl) {
+    if (List::mem(strcmp, local_vs, vs.hd) 
+	|| List::mem(strcmp, fun_vs, vs.hd))
+      terr3(loc,"type variable ",vs.hd," is already declared");
+    else 
+      local_vs = ^list(vs.hd,local_vs);
+  }
+  return ^f_env(f.f_env0, local_vs, f.locals, f.inloop, f.labels, f.un_before);
+}  
+static f_env f_env_add_var_init(f_env fenv,var x,typ t) {
+  _ y = copy_fenv(fenv);
+  y.locals    = ^list(^(x,t),y.locals);
+  y.un_before = Set::delete(y.un_before,x);
+  return y;
+}
+static f_env f_env_add_var_uninit(f_env fenv,var x,typ t) {
+  _ y = copy_fenv(fenv);
+  y.locals    = ^list(^(x,t),fenv.locals);
+  y.un_before = Set::insert(fenv.un_before,x);
+  return y;
+} 
+static f_env f_set_unassigned(f_env f, <var>Set::set un) {
+  // avoid allocation in common case of no change
+  if(f.un_before == un) 
+    return f;
+  _ y = copy_fenv(f);
+  y.un_before = un;
+  return y;
+}
+
+static typ f_env_retType(f_env f) {
+  return f.f_env0.ret_type;
+}
+static <var>list f_env_tyvars(f_env f) { 
+  // only inefficient when local tyvars are in scope (b/c of with)
+  return List::append(f.f_env0.tyvars, f.local_tyvars);
+}
+
+<var>Set::set un_after_exp(f_exp_synth exp_synth) {
+  switch exp_synth.unassigned {
+  case Always(s):       return s;
+  case Boolean*(s1,s2): return Set::union_two(s1,s2);
+  }
+}
+*(<var>Set::set,<var>Set::set) un_after_bool(f_exp_synth exp_synth) {
+  switch exp_synth.unassigned {
+  case Always(s):   return impossible("called un_after_bool on non-bool");
+  case Boolean(pr): return pr;
+  }
+}
+
+/////////////////////////////////////////////////////////////////////////////
+// Cyclone environments -- essentially a non-empty list of f_env's.
+// Starting with a top-level function, we have an Outermost f_env and
+// all variables are looked up in this f_env.  When we enter a Codegen 
+// context, we layer on a new Frame -- variables are looked up in the
+// newly layered f_env.  Fill, Cut, and Splice change a Frame to hidden
+// causing us to crawl up the list of frames to find bindings (instead
+// of looking in the current f_env.)  
+/////////////////////////////////////////////////////////////////////////////
+union c_env {
+  f_env          Outermost;
+  *(f_env,c_env) Frame;
+  *(f_env,c_env) Hidden;
+}
+
+static f_env fenv_of_cenv(c_env c) {
+  while (true) {
+    switch c {
+    case Outermost(f):  return f;
+    case Frame*(f,_):   return f;
+    case Hidden*(_,c2): c = c2;
+    }
+  }
+  return impossible("fenv_of_cenv");
+}
+
+static c_env put_fenv(c_env c,f_env f) {
+  switch c {
+  case Outermost(_):  return ^c_env.Outermost(f);
+  case Frame*(_,c):   return ^c_env.Frame(^(f,c));
+  case Hidden*(f2,c):  return ^c_env.Hidden(^(f2,put_fenv(c,f)));
+  }
+}
+
+bool inloop(c_env c) {
+  return fenv_of_cenv(c).inloop;
+}
+bool label_bound(c_env c, var x) {
+  return List::mem(strcmp, fenv_of_cenv(c).labels, x);
+}
+<var>list tyvars(c_env cenv) {
+  return(f_env_tyvars(fenv_of_cenv(cenv)));
+}
+typ retType(c_env cenv) {
+  return(f_env_retType(fenv_of_cenv(cenv)));
+}
+<var>Set::set unassigned(c_env cenv) {
+  return(fenv_of_cenv(cenv).un_before);
+}
+
+c_env set_inloop(c_env c) {
+  return put_fenv(c,f_env_set_inloop(fenv_of_cenv(c)));
+}
+c_env set_outloop(c_env c) {
+  return put_fenv(c,f_env_clear_inloop(fenv_of_cenv(c)));
+}
+c_env add_label(c_env c, var x) {
+  return put_fenv(c,f_env_add_label(fenv_of_cenv(c),x));
+}
+c_env add_tyvars(c_env c, location loc,<var>list vs) {
+  return put_fenv(c,f_env_add_tyvars(fenv_of_cenv(c),loc,vs));
+}
+c_env add_var_init(c_env c, var x, typ t) {
+  return put_fenv(c,f_env_add_var_init(fenv_of_cenv(c),x,t));
+}
+c_env add_var_uninit(c_env c, var x, typ t) {
+  return put_fenv(c,f_env_add_var_uninit(fenv_of_cenv(c),x,t));
+}
+c_env set_unassigned(c_env c, <var>Set::set un) {
+  return put_fenv(c,f_set_unassigned(fenv_of_cenv(c),un));
+}
+
+typ lookup(c_env cenv,var id) {
+  _ fenv = fenv_of_cenv(cenv);
+
+  if (strcmp(fenv.f_env0.name,id) == 0)
+    return ^typ.FnType(^(fenv.f_env0.convention,
+			 fenv.f_env0.tyvars,fenv.f_env0.ret_type,
+			 List::map(snd@<var,typ>,fenv.f_env0.args)));
+  else 
+    return string_list_assoc(id,fenv.locals);
+}
+
+c_env mk_env(f_env f) {
+  return ^c_env.Outermost(f);
+}
+
+

@@ -1,0 +1,36 @@
+// fact.pop
+// Simple factorial.
+
+#include "core.h"
+open Core;
+
+int pop_main() 
+{
+  string s[] = std_args();
+  if (size(s)!=2) 
+    {
+      print_string(s[0]);
+      print_string(": usage: <num>");
+      print_newline();
+    } 
+  else 
+    {
+      int i = int_of_string(s[1]);
+      print_int(fact(i));
+      print_newline();
+    }
+
+  return 0;
+}
+
+int fact(int n) 
+{
+  int a = 1;
+  
+  while (n > 1) 
+    {
+      a = a * n;
+      n--;
+    }
+  return(a); 
+}

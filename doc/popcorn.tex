@@ -1,0 +1,2904 @@
+\documentclass[titlepage,10pt]{article}
+\setlength{\oddsidemargin}{0cm}
+\setlength{\evensidemargin}{0cm}
+\setlength{\topmargin}{.5in}
+\setlength{\headheight}{0cm}
+\setlength{\headsep}{0cm}
+\setlength{\textwidth}{6.5in}
+\setlength{\textheight}{9in}
+\setlength{\parindent}{0cm}
+\setlength{\parskip}{6pt}
+\usepackage{amsmath}
+%\usepackage{makeindex}
+%\makeindex
+%\renewcommand\contentsname{Table of Contents}
+%\numberwithin{subsubsection}{subsection}
+
+
+
+\begin{document}
+
+\title{Popcorn Reference Manual \\ \textsc{DRAFT}}
+\date{November 1999}
+\author{Greg Morrisett et al.}
+
+\maketitle
+
+\tableofcontents
+
+\newpage
+
+%%%<ul>
+%%%  <li><a href="#overview">Overview</a> </li>
+%%%  <li><a href="#examples">Examples</a></li>
+%%%  <li><a href="#language">Language</a></li>
+%%%  <ul>
+%%%    <li><a href="#language">Pre-processor, namespaces, lexical conventions</a> </li>
+%%%    <li><a href="#types">Types</a></li>
+%%%    <li><a href="#declarations">Declarations</a></li>
+%%%    <li><a href="#expressions">Expressions</a></li>
+%%%    <li><a href="#statements">Statements</a></li>
+%%%    <li><a href="#programs">Programs</a></li>
+%%%  </ul>
+%%%  <li><a href="#library">Library</a></li>
+%%%  <li><a href="#tools">Tools</a></li>
+%%%  <ul>
+%%%    <li> <a href="#lex">popocamllex</a></li>
+%%%    <li> <a href="#bison">bison</a></li>
+%%%  </ul>
+%%%</ul>
+
+\section{Overview\label{overview}}
+
+Popcorn is a research prototype programming language that we (and
+others) are using to explore various issues in type-safe language
+design, type-directed compilation, proof carrying code, safe runtime
+code generation, and other issues that arise in modern language design
+and implementation.  Syntactically, Popcorn resembles a mix of C, C++,
+and Java and most of the control constructs and scoping mechanisms are
+lifted directly from these languages.  With respect to type and type
+structure, Popcorn is more akin to the ML family of languages, in that
+it provides support for parametric polymorphism, some type inference,
+algebraic datatypes with pattern matching, etc.  In practice, it is
+relatively straightforward to port C code to Popcorn.   Porting ML code
+is also straightforward though the syntax and emphasis on imperative
+aspects makes this a bit more involved.  In the near future, we are
+planning support for various kinds of objects, classes and subtyping,
+perhaps along the lines of LOOM [?], Cecil [?], or Moby [?] with the
+goal of being able to port code from C++, Java, or these OO-based
+languages relatively easily. 
+
+Smoothly integrating all of these facilities is extremely difficult and
+we view Popcorn as a vehicle for exploring tradeoffs.  Consequently, we
+expect the definition of the language to evolve quite rapidly over time.
+To limit the scope of exploration, we have a determined a set of (loose)
+goals that we wish to follow as the language evolves.  In particular,
+Popcorn should be: 
+
+\begin{description}
+
+\item [Type Safe] The benefits of type safety are overwhelming (we take
+this as an axiom and the prime directive).  We believe that advanced,
+static type systems provide the best linguistic mechanism to build and
+organize the abstractions needed to for large, reliable, secure, and
+high-performance systems.
+
+\item [Close to C] Though this goal seems in direct conflict with the
+previous goal, our aim is to make it easy for C programmers to port or
+write Popcorn code.  As such, we hope for the Popcorn type system to
+enable more idioms from C as long as they continue to be type-safe.
+Already, we have ported some tools (e.g., bison) from C to Popcorn and
+have found this to be relatively easy.  A major long-term goal is to
+make it easy to reason about the run-time costs of Popcorn code -- a
+programmer should be able to determine the big-O space and time
+complexity of Popcorn code relatively easy.  Currently, this is not the
+case because of the reliance on a (conservative) garbage collector but
+part of our research is aimed at getting rid of, or replacing the
+collector with some more explicit mechanism without sacrificing type
+safety.
+
+\item [Easy to Interface] One of the best things about C code is that it
+is relatively easy to interface it to existing standards (including
+libraries written in C!).  By standards, I mean things like COM or
+CORBA, device drivers, Tk, Unix, Win32, sockets etc.  Most if not all of
+these ``standard tools'' provide interfaces that are easy to access
+using C type definitions and function calls.   Popcorn should also make
+it easy to work with and use these existing tools to the best degree
+possible.  In contrast, type-safe languages such as Java, ML, or Scheme
+make it hard to interface to such facilities without writing a lot of
+``glue'' and often this glue must be written in a language like C.  In
+part, this is because such languages do not provide explicit facilities
+for invoking C code, and in part because they do not provide facilities
+for defining and manipulating a rich set of data representations.
+
+\item [Easy to Compile] Our research is primarily in type systems, not
+advanced compiler optimizations.  As such, we wish to take advantage of
+compilation techniques that have been or are being developed by the rest
+of the language and compiler communities.  If by changing the Popcorn
+language, we can make it easier to generate good, high-performance code,
+then we should as long as the change does not conflict with the other
+goals.
+
+\end{description}
+
+
+As it stands, Popcorn fails to achieve all of these goals in a nice way
+(thankfully -- that's why there's work to do!) but goes pretty far in
+comparison to other languages.   As such, we think it can be used today
+to build interesting systems and would encourage anyone to try it and
+give us feedback about the design and/or implementation.   Some good
+questions for us to answer are: 
+
+
+\begin{description}
+
+\item [Why shouldn't you just use Java?] Though Java shares with Popcorn
+many syntactic and control-flow constructs, the type system of Java is
+relatively weak.   There is no support for parametric or F-bounded
+polymorphism, sub-typing is confused with sub-classing, there is little
+or no support for modules, algebraic datatypes, etc.  Though we think
+Java is a relatively clean and simple design, Popcorn allows us to
+explore alternatives that we think are equally interesting and useful.
+Furthermore, compiling Java to good code is extremely difficult because
+the memory model is so constrained, and the synchronization/thread model
+is in our opinion fairly poor.
+
+\item [Why shouldn't you just use ML?] Though ML provides many of the
+same typing facilities as Popcorn (and in some ways more), the syntax
+and shift to a functional paradigm have, in my opinion, alienated many
+programmers who would otherwise enjoy such a language.  Interfacing ML
+systems to C libraries and code is do-able, but not completely
+transparent.  Compiling ML to good code is also doable, but in my
+opinion, requires a much more sophisticated compiler.  I think the Ocaml
+project at Inria has demonstrated the benefits of evolving a language
+rapidly to incoporate facilities that, while of little interest to the
+language theory community, in practice, provide real benefit to users.
+So, to a large degree, we are hoping to emulate and provide some of the
+benefits of the Ocaml project but in the context of a (largely)
+imperative language.
+
+\item [Why shouldn't you just use Modula-3 or Eiffel?] Part of the issue
+is a simple one of syntax -- it's relatively easy for a C, C++, or Java
+programmer to pick up the syntax of Popcorn and get going immediately.
+Part of the issue is library design -- again, it's easy to use existing
+libraries written in C.  And part of the issue is a desire to further
+explore typing issues that are not covered by these languages.
+
+\item [Why shouldn't you just use C?] C is no where near type safe.
+Though it is possible to insert lots of extra dynamic checks, and lots
+of extra state to achieve an implementation that allows standard C code
+to execute, the truth of the matter is that C is a lousy language for
+building abstractions because it provides no mechanism for enforcing
+abstractions.  You basically get functions and blocks of memory and
+that's about it.
+
+\end{description}
+
+This document is meant to give you a brief overview of the syntax,
+type-system, dynamic semantics, and tools that currently make up the
+Popcorn language.  We have tried to detail the strengths and weaknesses
+of the language here and to point out areas where we expect the language
+to improve (or at least change in some substantial way.)  We would
+appreciate any criticism, comments, suggestions, etc. from users.
+
+\subsection{Popcorn and Typed Assembly Language}
+
+Originally, Popcorn was developed as a vehicle for showing that
+type-safe, high level languages could be compiled to \textit{Typed
+Assembly Language} (TAL).   Thus, to understand some of the design
+issues of Popcorn, it is useful to know a little bit about TAL.
+
+Like the Java Virtual Machine Language (JVML), TAL is a
+\textit{statically typed} low-level language intended to serve as the
+output of a compiler for a type-safe high-level language.  Such
+languages are extremely useful in security contexts where we wish to
+ensure that a number of ``bad'' things cannot happen when code is
+executed.  In particular, type-safety (in the TAL sense) at least
+implies address space isolation, so it is not necessary to use
+hardware-enforced address translation to ensure that a TAL program does
+not read or write locations in memory that are not in its conceptual
+address space.  As with JVML, the type system of TAL ensures many
+stronger safety properties, including the fact that ``private'' fields
+of data structures cannot be read or written, all functions are passed
+the right number (and type) of arguments, stack frames from a caller are
+protected from a callee reading or writing local variables, etc.
+
+But unlike the JVML, TAL instructions correspond to real Intel 80x86
+instructions instead of virtual machine instructions. Consequently,
+there is no overhead for interpretation, and we can use a fully
+optimizing compiler to produce our TAL code, but still be able to
+type-check.  Indeed, for critical loops, it is possible to code directly
+in TAL to achieve the best possible performance (subject to the
+limitations of the type system.)   Thus, TAL seems like a more
+attractive target for systems such as the PLAN Active Networks project
+at the University of Pennsylvania [?] that need safe but highly
+efficient code to achieve their goals.
+
+Furthermore, the TAL type system provides a set of general type
+constructors which may be used to encode typing abstractions for a
+number of type-safe, high-level languages such as SML, Scheme, or
+Modula-3.  In contrast, the JVML type system is closely related to the
+Java source language and is not very well suited to compiling other
+languages.  For instance, it is not possible to eliminate tail-calls to
+another method using JVML, but it is trivial to do so in TAL.  This is
+because the JVML design bakes in a fixed notion of method, calling
+conventions, etc., whereas TAL provides a set of general-purpose type
+constructors that can be used to build custom procedural abstractions,
+custom calling conventions, etc.  As another example, it is difficult to
+compile high-level languages such as SML that provide parametric
+polymorphism or higher-order type constructors to JVML because the type
+system of JVML does not have such facilities.  Rather, a compiler must
+insert additional run-time checks (downcasts) to convince the JVML
+static verifier to pass the code, and these run-time checks can hurt
+performance.  Again, because TAL provides support for features like
+parametric polymoprhism, it is not necessary to insert run-time checks
+to get such code past the verifier.
+
+Popcorn was designed as a relatively simple, type-safe language that
+could be easily compiled to TAL in order to demonstrate all of these
+claims about the advantages of TAL.  For more information on TAL, please
+refer to the following publications:
+
+\begin{itemize}
+
+\item Greg Morrisett, Karl Crary, Neal Glew, Dan Grossman, Richard
+Samuels, Frederick Smith, David Walker, Stephanie Weirich, and Steve
+Zdancewic, \textbf{TALx86: A Realistic Typed Assembly Language}
+submitted to the \textit{1999 ACM SIGPLAN Workshop on Compiler Support
+for System Software}.
+
+    \begin{itemize}
+    \item abstract: $<$http://www.cs.cornell.edu/talc/papers/talx86-wcsss-abstract.html$>$
+    \item dvi: $<$http://www.cs.cornell.edu/talc/papers/talx86-wcsss.dvi$>$
+    \item pdf: $<$http://www.cs.cornell.edu/talc/papers/talx86-wcsss.pdf$>$
+    \end{itemize}
+
+\item Neal Glew and Greg Morrisett. \textbf{Type-Safe Linking and
+Modular Assembly Language} \textit{Twenty-Sixth Symposium on Principles
+of Programming Languages (POPL '99),} pages 250-261, San Antonio,
+January 1999.
+
+    \begin{itemize}
+    \item abstract: $<$http://www.cs.cornell.edu/talc/papers/mtal-abstract.html$>$
+    \item dvi: $<$http://www.cs.cornell.edu/talc/papers/mtal.dvi$>$
+    \item pdf: $<$http://www.cs.cornell.edu/talc/papers/mtal.pdf$>$
+    \end{itemize}
+
+\item Karl Crary, David Walker, and Greg Morrisett. \textbf{Typed Memory
+Management in a Calculus of Capabilities.} \textit{Twenty-Sixth
+Symposium on Principles of Programming Languages (POPL '99), }pages
+262-275, San Antonio, January 1999.
+
+    \begin{itemize}
+    \item abstract: $<$http://www.cs.cornell.edu/talc/papers/capabilities-abstract.html$>$
+    \item dvi: $<$http://www.cs.cornell.edu/talc/papers/capabilities.ps.gz$>$
+    \item pdf: $<$http://www.cs.cornell.edu/talc/papers/capabilities.dvi$>$
+    \end{itemize}
+
+\item Karl Crary, Stephanie Weirich, and Greg Morrisett.
+\textbf{Intensional Polymorphism in Type-Erasure Semantics.}
+\textit{1998 International Conference on Functional Programming,} pages
+301-312, Baltimore, September 1998.
+
+    \begin{itemize}
+    \item abstract: $<$http://www.cs.cornell.edu/talc/papers/typepass-abstract.html$>$
+    \item dvi: $<$http://www.cs.cornell.edu/talc/papers/typepass.ps.gz$>$
+    \item pdf: $<$http://www.cs.cornell.edu/talc/papers/typepass.dvi$>$
+    \end{itemize}
+
+\item Greg Morrisett, Karl Crary, Neal Glew, and David Walker.
+\textbf{Stack-Based Typed Assembly Language.} \textit{1998 Workshop on
+Types in Compilation.} Published in Xavier Leroy and Atsushi Ohori,
+editors, \textit{Lecture Notes in Computer Science}, volume 1473, pages
+28-52. Springer-Verlag, 1998.
+
+    \begin{itemize}
+    \item abstract: $<$http://www.cs.cornell.edu/talc/papers/stal-abstract.html$>$
+    \item dvi: $<$http://www.cs.cornell.edu/talc/papers/stal.ps.gz$>$
+    \item pdf: $<$http://www.cs.cornell.edu/talc/papers/stal.dvi$>$
+    \end{itemize}
+
+\item Greg Morrisett, David Walker, Karl Crary, and Neal Glew.
+\textbf{From System F to Typed Assembly Language.} In
+\textit{Twenty-Fifth ACM Symposium on Principles of Programming
+Languages,} pages 85-97, San Diego, January 1998.
+
+    \begin{itemize}
+    \item abstract: $<$http://www.cs.cornell.edu/talc/papers/tal-abstract.html$>$
+    \item dvi: $<$http://www.cs.cornell.edu/talc/papers/tal.ps.gz$>$
+    \item pdf: $<$http://www.cs.cornell.edu/talc/papers/tal.dvi$>$
+    \end{itemize}
+
+\end{itemize}
+
+or visit the TAL project homepage at $<$http://www.cs.cornell.edu/talc$>$.
+
+
+\section{Some Popcorn Examples\label{examples}}
+
+
+\section{The Popcorn Language Reference\label{language}}
+
+
+\subsection{Pre-processor}
+
+Popcorn's syntax is (grudgingly) designed so that it passes through the
+C pre-processor without confusion.  We think of the pre-processor as
+separate from the Popcorn language, but in practice the Popcorn compiler
+first passes source files through the C pre-processor.  Thus we provide
+the same conveniences (and pitfalls!) provided by the macro facilities
+of C.  Large Popcorn programs generally use header files and
+\texttt{\#include} directives much as in C.  There are some important
+differences and caveats, however: 
+
+\begin{itemize}
+
+\item In C, a type declaration (such as a struct) may be made multiple
+times.  This is not true in Popcorn.  Hence a struct declaration in a
+header file will generally have the \texttt{extern} qualifier whereas
+the coresponding implementation file must have the same declaration
+without the qualifier.  The header file should \textit{not} be included
+by the corresponding implementation file, even indirectly.
+
+\item Because the ``semantics'' of \#include is textual substitution, it
+is unwise to the semicolon forms of prefix and open in a header file.
+These forms extend their scope over the rest of the file, where ``rest
+of the file'' refers to the file \textit{after} pre-processing.
+
+\end{itemize}
+
+Given these differences, the standard idiom for a header file looks like this:
+
+%-%\texttt{
+%-%\begin{tabular}{|l|} \hline 
+%-%\#ifndef FOO{\_}H
+%-%\#define FOO{\_}H
+%-%
+%-%// other includes here, for example:
+%-%\#include "bar.h"
+%-%
+%-%prefix Foo \{
+%-%open   Foo \{
+%-%  // declarations for public members of the Foo namespace here
+%-%\}
+%-%\}
+%-%\#endif
+%-%\hline
+%-%\end{tabular}
+%-%}
+
+\begin{verbatim}
+#ifndef FOO_H 
+#define FOO_H 
+
+// other includes here, for example: 
+#include "bar.h" 
+
+prefix Foo { 
+open   Foo { 
+  // declarations for public members of the Foo namespace here 
+} 
+} 
+#endif
+\end{verbatim}
+
+Then the implementation of the Foo namespace could be in a file foo.pop
+with this idiom:
+
+%-%\texttt{
+%-%\begin{tabular}{|l|} \hline
+%-%// this prevents foo.h from being included here, even if other header
+%-%files include it: \\
+%-%\#define FOO{\_}H \\
+%-%\\
+%-%// other includes, for example: \\
+%-%\#include ``bar.h'' \\
+%-%\\
+%-%prefix Foo; // semicolon form okay because we won't include this file
+%-%elsewhere \\
+%-%open Foo; \\
+%-%\\
+%-%// implementation here \\
+%-%\hline
+%-%\end{tabular}
+%-%}
+
+\begin{verbatim}
+// this prevents foo.h from being included here, even if other 
+// header files
+include it: 
+#define FOO_H 
+
+// other includes, for example: 
+#include "bar.h" 
+
+prefix Foo; // semicolon form okay because we won't include this file
+elsewhere 
+open Foo; 
+
+// implementation here
+\end{verbatim}
+
+Note that if there are not cycles among header files, then the
+\texttt{\#define} in the implementation file is unncessary.
+
+
+\subsection{Lexical Conventions}
+
+To do:  similar to C and Java.  Key thing to note, comments can be
+either C-style (/* ... */) or C++/Java style (// ...). Upper/lower case
+is significant, etc.
+
+Also note certain name conflicts with the runtime (for example,
+\texttt{GC{\_}Malloc}) are not caught until link-time.
+
+\textbf{Reserved Words}:
+
+%-%\texttt{\textbf{
+%-%abstract abstype array bool break byte case catch char chr \newline
+%-%const continue default do else exn exception extern finally \newline
+%-%for fprintf handle if int new new{\_}array new{\_}string null \newline
+%-%open ord prefix printf public raise return short signed size \newline
+%-%sprintf static string struct switch try union unsigned void while with
+%-%}}
+
+\begin{verbatim}
+abstract abstype array bool break byte case catch char chr 
+const continue default do else exn exception extern finally 
+for fprintf handle if int new new_array new_string null open
+ord prefix printf public raise return short signed size 
+sprintf static string struct switch try union unsigned void 
+while with
+\end{verbatim}
+
+
+\subsection{Namespaces}
+
+To do:  similar to C++.  Use Foo::bar where Foo is the ``name space''
+(think structure or module).  You can write prefix Foo \{
+$<$top-level-decls$>$ \} to cause the Foo:: to be implicitly appended to the
+front of identifiers defined within the braces.  You can write open Foo
+\{ ... \} in a context where you don't want to have to write Foo::bar
+all the time and just want to write bar.   The forms prefix Foo; and
+open Foo; are the same except that the rest of the file is considered to
+be ``within the braces.''   Scoping and shadowing at the namespace level
+works as follows.  If an identifier \texttt{bar} is in scope without any
+namespace prefix, then that binding is used.  Else the innermost opened
+namespace that defines \texttt{bar} is used to bind the identifier.
+
+
+\subsection{Type Expressions\label{types}}
+
+Note: We will soon go to a Java-style definite assignment rule in which
+case the ``default values'' described in this section are no longer
+relevant.
+
+Popcorn provides a number of primitive types and type constructors
+similar to that of ML.  In particular, the language defines a void type
+(similar to ML's unit type except there is no value of type void),
+various integer types (signed and unsigned), string and array types,
+(polymorphic) function types, (polymorphic) struct and union types,
+abstract types, and exception types.  In this section, we detail the
+syntax and informal semantics of type expressions and declarations.
+
+%-%\texttt{
+%-%\begin{tabular}{lrl}
+%-%<type-exp>      & ::= & <prim-type> <type-modifiers> \\
+%-%<prim-type>     & ::= & \parbox[t]{5in}{
+%-%                        <type-var> | \textbf{void} | <integer-type> | 
+%-%                        \textbf{bool} | \textbf{char} | \textbf{string}
+%-%                        | *(<type-exp>,...,<type-exp>) | \textbf{exn} |
+%-%                        [<<type-exp>,...,<type-exp>>]<id> |
+%-%                        <type{\_}exp>\textbf{array} } \\
+%-%<type-var>      & ::= & [a-zA-Z{\_}][a-zA-Z0-9{\_}]* \\
+%-%<integer-type>  & ::= & \parbox[t]{5in}{
+%-%			[\textbf{unsigned}] \textbf{int} |
+%-%                        [\textbf{unsigned}] \textbf{short} |
+%-%                        [\textbf{unsigned}] \textbf{byte} } \\
+%-%<type-modifiers> & ::= & \parbox[t]{5in}{
+%-%			<empty> | [] <type-modifiers> |
+%-%                        <fntype-modifier> <type-modifiers> } \\
+%-%<fntype-modifier> & ::= & \parbox[t]{5in}{
+%-%			[<id>][<<type-var>,...,<type-var>>]
+%-%                        (<type-exp>,...,<type-exp>) }
+%-%\end{tabular}
+%-%}
+
+\begin{verbatim}
+<type-exp> ::= <prim-type> <type-modifiers>
+<prim-type> ::= <type-var> | void | <integer-type> | bool | char | 
+                string | *(<type-exp>,...,<type-exp>) | exn | 
+                [<<type-exp>,...,<type-exp>>]<id> | <type_exp>array
+<type-var> ::= [a-zA-Z_][a-zA-Z0-9_]*
+<integer-type> ::= [unsigned] int | [unsigned] short | [unsigned] byte
+<type-modifiers> ::= <empty> | [] <type-modifiers> |
+                     <fntype-modifier> <type-modifiers>
+<fntype-modifier> ::= [<id>][<<type-var>,...,<type-var>>](<type-exp>,...,<type-exp>)
+\end{verbatim}
+
+\subsubsection{Type Variables}
+
+%-%\texttt{a, b, foo}
+
+\begin{verbatim}
+a, b, foo
+\end{verbatim}
+
+Type variables are written as identifiers.  Type variables are used
+within polymorphic type expressions (e.g., the types of polymorphic
+functions) or within declarations of polymorphic type constructors
+(e.g., structs, unions, and abstypes).  Currently, not all types may be
+used to instantiate a given type variable.  Intuitively, only types
+whose size is a word (4 bytes) may be used to instantiate a type
+variable, and void may not be used to instantiate a variable.
+
+The type variable lists for function types, struct declarations, union
+declarations, and abstype declarations are binding occurrences which
+shadow type names already in scope, including struct and union names.
+In practice this rarely occurs since programmers tend to use different
+identifiers for type variables and type names.
+
+\subsubsection{The Void Type}
+
+%-%\texttt{\textbf{void}}
+
+\begin{verbatim}
+void
+\end{verbatim}
+
+The void type is used to indicate that a function returns no values or
+that a union data constructor (or exception) carries no values.  It is
+illegal to instantiate a type variable with void.  It is expected that
+this restriction will be lifted at some point in the future.  There are
+no values of type void.
+
+\subsubsection{Integer Types}
+
+%-%\texttt{
+%-%[\textbf{unsigned}] \textbf{int} \newline
+%-%[\textbf{unsigned}] \textbf{short} \newline
+%-%[\textbf{unsigned}] \textbf{byte}
+%-%}
+
+\begin{verbatim}
+[unsigned] int
+[unsigned] short 
+[unsigned] byte
+\end{verbatim}
+
+There are 6 types corresponding to integers:  int, unsigned int, short,
+unsigned short, byte, and unsigned byte.  The int type represents a
+signed, 32-bit integer value.  The short type represents a signed,
+16-bit value, and the byte type represents a signed, 8-bit value.
+Clearly, the unsigned qualifier represents the unsigned 32, 16, or 8-bit
+value space.  We expect to add support for long and unsigned long
+(64-bit integer values) as well as floats and doubles in the near
+future.   Arithmetic on these types should work the same as under C, and
+operators such as +,-,*, etc. are overloaded as appropriate.  Note that
+the C semantics for performing arithmetic on mixed-size objects requires
+that the values be cast up to the largest appropriate size.  See the C
+reference manual for details.
+
+Decimal-based integer constants are written as in C.  Popcorn also
+supports hexadecimal (e.g., 0xfeedface), octal and binary.
+
+The default initial value for variables of the integer types is 0 (zero).
+
+\subsubsection{The Boolean Type}
+
+%-%\texttt{\textbf{bool}}
+
+\begin{verbatim}
+bool
+\end{verbatim}
+
+The type bool represents the type of boolean values.  The constants true
+and false are used to create boolean values.  Most comparison operations
+(e.g., ``=='', ``$<$='', ``!='', etc.) return a boolean value and both
+the conditional expression and conditional statement expect boolean
+expressions as their first argument.
+
+The default initial value for variables of type bool is false.
+
+\subsubsection{The Character Type}
+
+%-%\texttt{\textbf{char}}
+
+\begin{verbatim}
+char
+\end{verbatim}
+
+The type char is distinct from the integer types but one may convert
+chars to and from integers via ord() and chr().  Currently, chars are
+8-bit, ASCII representations of characters.  At some point, we may have
+a separate type for unicode characters or change char to unicode.
+Character literals are as in C (e.g., 'a', 'b', '$\backslash$n')
+including escaped characters.  Switch expressions can perform a match on
+character expressions and some simple arithmetic (may be?) is supported
+on characters.
+
+The default initial value for variables of type char is
+'$\backslash$000'.
+
+\subsubsection{The String Type}
+
+%-%\texttt{\textbf{string}}
+
+\begin{verbatim}
+string
+\end{verbatim}
+
+Strings are like arrays of chars, but they are not the same.  Unlike
+Java, they are mutable and unlike C or C++, strings are not
+$\backslash$000 terminated and come with their own size.   String
+subscript and update are written in a style analogous to array subscript
+and update (e.g., s[i] = s[i+1]).  Operations on strings, as with
+arrays, check that the index is in bounds before proceeding and raise
+the ArrayBoundsExceptions exception if the index is out of bounds.
+(Actually, this currently causes program termination, but this should
+change soon.)  String literals are written as in C (e.g., "foobar",
+"baz$\backslash$n") including escaped characters.  New
+($\backslash$000-filled) strings may be created by using the
+new{\_}string function defined in the core library.  The library also
+provides other string manipulation functions similar to the C standard
+library (e.g., strcmp, strcopy, etc.).
+
+The string type is distinct from the type of character arrays.  Hence
+none of the following are well-typed Popcorn statements: 
+
+%-%\texttt{
+%-%\begin{tabular}{l}
+%-%string x   = \{'a', 'b'\}; \\
+%-%char   y[] = ``ab''; \\
+%-%x = y; 
+%-%\end{tabular}
+%-%}
+
+\begin{verbatim}
+string x   = {'a', 'b'};
+char   y[] = "ab";
+x = y;
+\end{verbatim}
+
+but the following is well-formed:
+
+%-%\texttt{
+%-%\begin{tabular}{l}
+%-%string x   = ``ab''; \\
+%-%char   y[] = \{'c', 'd'\}; \\
+%-%x[0] = y[0];
+%-%\end{tabular}
+%-%}
+
+\begin{verbatim}
+string x   = "ab"; 
+char   y[] = {'c', 'd'}; 
+x[0] = y[0]; 
+\end{verbatim}
+
+The default initial value for variables of type string is the empty
+string ("").
+
+We expect to add more built-in operations on strings including some
+forms of pattern matching.
+
+\subsubsection{The Array Type}
+
+%-%\texttt{
+%-%\begin{tabular}{ll}
+%-%\textbf{int}[]   & \textit{// an array of integers} \\
+%-%\textbf{char}[]  & \textit{// an array of characters} \\
+%-%\textbf{int}[][] & \textit{// an array of an array of integers} \\
+%-%<\textbf{int}> \textbf{array} & \textit{// alternative syntax for array
+%-%    types}
+%-%\end{tabular}
+%-%}
+
+\begin{verbatim}
+int[]   // an array of integers
+char[]  // an array of characters
+int[][] // an array of an array of integers
+<int>array // alternative syntax for array types
+\end{verbatim}
+
+
+As in C, array types are declared by putting a pair of brackets ([])
+after a type expression.   You can specify the size of an array in the
+type, but this is discouraged and is only provided for ease of porting
+C. Unlike C, you cannot specify multi-dimensional arrays directly.  In
+this respect, the arrays of Popcorn are more like Java arrays.
+Association of [] is to the left.  As a convenience and to avoid
+confusion when combining array types with function types, Popcorn
+provides the alternative syntax $<$t$>$array.
+
+Arrays literals, as in C, are created using \{exp1,...,expn\}.  Empty
+arrays (arrays of size 0) have a special syntax:  \{:$<$type-exp$>$\} so
+that the type-checker can easily identify the type of the expression.
+Array subscript and update are written as in C (e.g., x[i] = x[i+1]) and
+the indices are always checked to see if they are in bounds.  Currently,
+an out of bound index causes program termination, but in the near future
+we expect to raise the pre-defined ArrayBoundsException exception
+instead.  New arrays may be created by calling the polymorphic
+new{\_}array function which takes an initial element of the appropriate
+type and an integer size (greater than or equal to 0).  An array with
+elements of an integer type may be created either with new{\_}array or
+with new{\_}array4.  The latter does not require an initial element and
+may be more efficient.
+
+The default initial value for variables of type array is a 0-sized array
+unless the size appears in the type.  In the latter case, the default
+initial value is an array of the appropriate size with elements equal to
+the default initial value of the element type.  If the element type has
+no default initial value then neither does the array type with size
+included.
+
+\subsubsection{Tuple Types}
+
+%-%\texttt{
+%-%\begin{tabular}{ll}
+%-%*(\textbf{int},\textbf{int}) & \textit{// the type of a pair of
+%-%    integers} \\
+%-%*(\textbf{int},\textbf{string},\textbf{char}) & \textit{// a triple of
+%-%    an int, string, and character} \\
+%-%*(\textbf{int}[],\textbf{int} f()) & \textit{// a pair of an integer
+%-%    array, function}
+%-%\end{tabular}
+%-%}
+
+\begin{verbatim}
+*(int,int)         // the type of a pair of integers
+*(int,string,char) // a triple of an int, string, and character
+*(int[],int f())   // a pair of an integer array, function
+\end{verbatim}
+
+Tuples are ordered n-tuples of their respective component types.  Tuples
+are particularly useful for returning multiple values or for packaging
+up multiple values within a union, especially since Popcorn requires
+that you name your struct types (i.e., does not support anonymous
+structs.)   If e is an expression of type type, then the components of e
+may be accessed by writing ``e.1'', ``e.2'', ``e.3'', etc.  New tuples
+may be created by writing ``\^{} *($<$exp$>$,...,$<$exp$>$)'' or ``new
+*($<$exp$>$,...,$<$exp$>$)''.
+
+Currently, tuples are mutable but we might change this or might allow
+additional qualifiers to declare whether a field is mutable or not.  We
+expect to add tuple pattern support in the near future.
+
+The default initial value for variables of tuple type is a tuple of the
+default initial values of the respective component types.
+
+\subsubsection{Function Type Expressions}
+
+%-%\texttt{
+%-%\begin{tabular}{ll}
+%-%\textbf{int} f(\textbf{short},\textbf{short})
+%-%& \textit{// a function that takes two shorts and returns an int} \\
+%-%\textbf{int} (\textbf{short},\textbf{short})
+%-%& \textit{// also a function that takes two shorts and returns an int} \\
+%-%\textbf{int} (\textbf{short} x,\textbf{short} y) 
+%-%& \textit{// ditto -- you can also name arguments} \\
+%-%\textbf{int}[] (\textbf{char}) 
+%-%& \textit{// takes a char and returns an integer array} \\
+%-%\textbf{int} length<a>(<a>list)
+%-%& \textit{// for all types a, takes an <a>list and} \\
+%-%& \textit{// returns an int} \\
+%-%\textbf{int} <a>(<a>list x)
+%-%& \textit{// same as previous} \\
+%-%\textbf{int} <a>(<a>list)
+%-%& \textit{// same as previous} \\
+%-%b <a,b>(b f(a,b), <a>list, b accum) 
+%-%& \textit{// takes three arguments, the first is a function from a} \\
+%-%& \textit{// and b to b, the second is an <a>list, and the third}  \\
+%-%& \textit{// is a b.  The entire function returns a b value.} \\
+%-%\textbf{int} (\textbf{int})[]
+%-%& \textit{// an array of functions from int to int} \\
+%-%<\textbf{int} (\textbf{int})>\textbf{array}
+%-%& \textit{// an array of functions from int to int}
+%-%\end{tabular}
+%-%}
+
+\begin{verbatim}
+int f(short,short) // a function that takes two shorts and returns an int
+int (short,short)  // also a function that takes two shorts and returns an int
+int (short x,short y)  // ditto -- you can also name arguments
+int[] (char)           // takes a char and returns an integer array
+int length<a>(<a>list) // for all types a, takes an <a>list and 
+                       // returns an int
+int <a>(<a>list x)     // same as previous
+int <a>(<a>list)       // same as previous
+b  <a,b>(b f(a,b), <a>list, b accum) 
+    // takes three arguments, the first is a function from a and b to
+    // b, the second is an <a>list, and the third is a b.  The entire
+    // function returns a b value.
+int (int)[]            // an array of functions from int to int
+<int (int)>array       // an array of functions from int to int
+\end{verbatim}
+
+Function type syntax is by far the most confusing because C
+fundamentally gets this wrong.  However, porting C code with a different
+notation for types is quite difficult so we have attempted to keep the C
+syntax as much as possible.
+
+For monomorphic, first-order functions, the syntax is essentially the
+same as in C:  the result type comes first, followed by an [optional]
+identifier, then a left parenthesis, followed by a comma-separated list
+of argument types, and then a right parenthesis.   In addition, the
+arguments can be given an optional identifier for a name.  Optional
+identifiers for the function name and the argument names are ignored by
+the type system, so ``int f(short x,short y)'' is equivalent to ``int
+(short,short)''.
+
+For polymorphic functions, the type parameters must be explicit.   As in
+C++, these are enclosed by ``$<$'' and ``$>$'' and are comma separated
+type variables.   So, for instance, ``a id$<$a$>$(a)'' is the type of
+the polymorphic identity function and is equivalent to ``a (a)''.
+Declaring a function and its type is detailed in Section [?].  There is
+no default value for variables of function type -- that is, programmers
+must explicitly supply such a value.
+
+\subsubsection{The Exception Type}
+
+%-%\texttt{\textbf{exn}}
+
+\begin{verbatim}
+exn
+\end{verbatim}
+
+
+Exception values are created with a new expression by applying an
+exception constructor to a value of the appropriate type.  The resulting
+value has type exn and may be used by a raise expression.  When a
+try/handle expression is executed, if the body of the try block raises
+an exception, then the handle is given an exn value.  The handle
+expression typically performs a switch on the exn value to determine
+which exception was raised and to extract any value(s) placed in the exn
+data structure.  In this respect, exn values are much like ML's exn
+type.  New exception constructors are declared using the exception
+declaration (see Section [?]).
+
+There is no default value for variables of exn type.
+
+\subsubsection{Type Constructor Expressions}
+
+%-%\texttt{
+%-%\begin{tabular}{ll}
+%-%bar
+%-%& \textit{// the bar type takes no arguments} \\
+%-%<\textbf{int}>list
+%-%& \textit{// the list type takes one argument -- int in this case} \\
+%-%<\textbf{int},\textbf{string}>dict
+%-%& \textit{// the dict type takes two arguments: int \& string here} \\
+%-%<\textbf{int}[]>list
+%-%& \textit{// a list of integer arrays} \\
+%-%<\textbf{<int}>\textbf{array}>list
+%-%& \textit{// a list of integer arrays}
+%-%\end{tabular}
+%-%}
+
+\begin{verbatim}
+bar                // the bar type takes no arguments
+<int>list          // the list type takes one argument -- int in this case
+<int,string>dict   // the dict type takes two arguments: int & string here
+<int[]>list        // a list of integer arrays
+<<int>array>list   // a list of integer arrays
+\end{verbatim}
+
+Type constructors are, as in ML, applied to type arguments to produce a
+type expression.  Also as in ML, the application occurs on the left.  As
+in C++, the arguments to the constructor are placed in ``$<$'' and
+``$>$'' brackets and are comma-separated.
+
+Type constructors are created either through a struct declaration (see
+Section [?]), a union declaration (see Section [?]), or an abstype
+declaration (see Section[?]).  In the examples above, let us assume that
+we have declared the following struct declarations:
+
+%-%\texttt{
+%-%\begin{tabular}{l}
+%-%\textbf{struct} bar
+%-%    \{\textbf{int} x; \textbf{int} y; \textbf{int} z; \} \\
+%-%?\textbf{struct} <a>list \{ a hd; <a>list tl; \} \\
+%-%\textbf{struct} <a,b>dict 
+%-%    \{ \textbf{int} comp(a,a); <*(a,b)>list contents; \}
+%-%\end{tabular}
+%-%}
+
+\begin{verbatim}
+struct bar {int x; int y; int z; }
+?struct <a>list { a hd; <a>list tl; }
+struct <a,b>dict { int comp(a,a); <*(a,b)>list contents; }
+\end{verbatim}
+
+Then bar is declared as a type constructor with no arguments, list is a
+type constructor with one argument, and dict is a type constructor with
+two arguments.   Using the type expression ``$<$int$>$list'' is similar to
+writing the following monomorphic struct declaration and using it
+instead:
+
+%-%\texttt{
+%-%?struct int{\_}list \{ \textbf{int} hd; int{\_}list tl; \}
+%-%}
+
+\begin{verbatim}
+?struct int_list { int hd; int_list tl; }
+\end{verbatim}
+
+However, the type system treats ``$<$int$>$list'' and ``int{\_}list'' as
+different types.
+
+The default initial value of a ?struct type is null (similar to Java
+objects).  The default initial value of a struct type is the value of
+that type with fields containing the default initial values of the field
+types of the struct declaration.  If any field type has no default
+initial value, then neither does the struct type.  The default initial
+value of a union type depends entirely on the first variant of the type
+declaration.  If the variant has type void, the default value of the
+untion type is a value with this variant.  Else the default value of the
+union type is a value with this variant and its corresponding value
+being the default value of the variant's type.  If this type has no
+default value, then the union type has no default value.
+
+Note: Default values may go away in the future.
+
+
+\subsection{Declarations\label{declarations}}
+
+\subsubsection{Top-Level Variable Declarations}
+
+%-%\texttt{
+%-%<top-var-decl> ::= [<scope>]<type-exp> <qid><type-modifiers>[= <const-exp>];
+%-%}
+%-%
+%-%\texttt{
+%-%\begin{tabular}{ll}
+%-%\textbf{static int} x;
+%-%& \textit{// a top-level, private variable x of type int} \\
+%-%\textbf{int} x = 1;
+%-%& \textit{// a top-level, public variable x of type int, initial value 1} \\
+%-%\textbf{int} x,y=3,z;
+%-%& \textit{// x, y, and z all public of type int, y has initial value 3} \\
+%-%\textbf{static int}[] a;
+%-%& \textit{// a is a private array of integers} \\
+%-%\textbf{static int} a[];
+%-%& \textit{// same as previous} \\
+%-%\textbf{extern int }x;
+%-%& \textit{// x is an externally-defined integer variable} \\
+%-%\textbf{extern string} z;
+%-%& \textit{// z is an externally-defined string variable}
+%-%\end{tabular}
+%-%}
+
+\begin{verbatim}
+<top-var-decl> ::= [<scope>]<type-exp> <qid><type-modifiers>[= <const-exp>];
+
+static int x; // a top-level, private variable x of type int
+int x = 1;    // a top-level, public variable x of type int, initial value 1
+
+int x,y=3,z;    // x, y, and z all public of type int, y has initial value 3
+static int[] a; // a is a private array of integers
+static int a[]; // same as previous
+
+extern int x;     // x is an externally-defined integer variable
+extern string z;  // z is an externally-defined string variable
+\end{verbatim}
+
+Top-level declarations for variables are prefixed with an optional scope
+modifier (either ``extern'' or ``static''), followed by a type and then
+the variable named, followed by an optional initial value.  Multiple
+variable definitions may be collapsed if they have the same scope and
+type.  Initial values for top-level expressions must be ``constant''
+expressions and may not include function calls.  Constant expressions
+are detailed in Section [?], but roughly speaking consist of integer
+constants, string and array constants, new expressions (where the
+arguments are constants), null, and a few other expressions.  Top-level
+variables are not allowed to be polymorphic, though they may contain
+values that refer to polymorphic functions.
+
+To support C-style declarations of variables of array type or functional
+type, it is possible to move part of the type expression onto the
+variable being declared.  For instance, we may write ``int x[]'' to
+declare x to be an array of integers.
+
+The static qualifier defines a variable whose scope is the current
+compilation unit (usually a file).  That is, the variable is only
+accessible to those functions defined in the same compilation unit.
+
+The extern qualifier claims that such a variable is defined by some
+other compilation unit with the associated type.  Obviously, only one of
+static or extern may apply to a given definition.
+
+If no initializer is provided for the variable, then the compiler
+implicitly inserts an initializer.  Not all types admit a default
+initial value and so programmers must provide them.  Refer to Section
+[?] which describes types to see which types admit default initial
+values and if so, what those values are.
+
+In the future, we expect additional qualifiers including ``const''
+(immutable variables).  The restriction that all variables must be
+initialized is a painful one, especially with top-level variables of
+abstract type and we hope to lift this restriction some day.  However,
+the TAL module system only supports primitive data values (much like a
+standard assembler) and does not support function calls for initializing
+variables, hence the restriction.  In the meantime, it is relatively
+easy to work around the restriction.  For example, if you wish to define
+a variable x of abstract type FOO but don't have an initial value of
+type FOO, then you can instead define x to have type $<$FOO$>$Opt where
+Opt is a struct defined as:
+
+%-%\texttt{
+%-%?\textbf{struct} <a>Opt \{ a v; \}
+%-%}
+
+\begin{verbatim}
+struct <a>Opt { a v; }
+\end{verbatim}
+
+(For ML users, Opt is similar to the option datatype.)  Initially, x
+will have value null.  The value may then be later initialized (e.g., in
+main()) as follows:  If e is the expression that computes the initial
+FOO value, we assign:   ``x = \^{} Opt(e)''  (i.e., x gets new Opt(e)).  To
+extract or modify the value from x, it is necessary to write ``x.v''
+instead of just ``x''.   Note that the use of ``x.v'' causes an implicit
+check for null to be inserted by the compiler which is necessary to
+ensure that the variable is not used before it is initialized.  Finally,
+note that the Opt constructor is defined as above in $<$core.h$>$.
+
+Top-level variables may not currently have a function type.  This
+(somewhat rare) inconvenience can be circumvented with a level of
+indirection such as with the Opt type.
+
+\subsubsection{Local Variable Declarations}
+
+%-%\texttt{
+%-%<var-decl> ::= <type-exp> <id>[<type-modifiers>][= <exp>];
+%-%}
+
+\begin{verbatim}
+<var-decl> ::= <type-exp> <id>[<type-modifiers>][= <exp>];
+\end{verbatim}
+
+Similar to top-level declarations except that there are no scope
+qualifiers.  Unlike Java, we require all variables to be initialized (or
+else insert an implicit initialization to the default value for the
+variable's type.)  We expect to lift this restriction someday, by
+performing a simple flow-insensitive dataflow analysis (a la JVML) to
+ensure that variables are initialized before they are used.
+
+\subsubsection{Struct Declarations}
+
+%-%\texttt{
+%-%\begin{tabular}{lrl}
+%-%<struct-decl>   & ::= & [<scope>] [?] \textbf{struct}
+%-%                        [<<type-var>,...,<type-var>>]
+%-%                        \{ <struct-field>;+ \} \\
+%-%<struct-field>  & ::= & [\textbf{const}] <type-exp> <id>
+%-%                        <type-modifiers>
+%-%\end{tabular}
+%-%}
+%-%
+%-%\texttt{
+%-%\begin{tabular}{ll}
+%-%\textbf{struct} point \{\textbf{int} x; \textbf{int} y; \}
+%-%& \textit{// a record of two integer fields, x \& y} \\
+%-%\textbf{struct} point \{\textbf{const} \textbf{int} x; \textbf{const}
+%-%    \textbf{int} y; \}
+%-%& \textit{// same but x and y are immutable} \\
+%-%?\textbf{struct} point \{\textbf{int} x; \textbf{int} y; \}
+%-%& \textit{// same as above but point values can be null} \\
+%-%?\textbf{struct} pointlist \{point p; pointlist next; \}
+%-%& \textit{// lists of points} \\
+%-%\textbf{static} \textbf{struct} point \{\textbf{int} x,y;\}
+%-%& \textit{// the type declaration is private} \\
+%-%\textbf{abstract} \textbf{struct} point \{\textbf{int} x,y; \}
+%-%& \textit{// the type declaration is exported abstractly} \\
+%-%?\textbf{struct} <a>list \{a hd; <a>list tl; \}
+%-%& \textit{// polymorphic lists} \\
+%-%?\textbf{struct} <a,b,c>triple \{a x; b y; c z; \}
+%-%& \textit{// polymorphic triple} \\
+%-%\textbf{extern} \textbf{struct} point \{\textbf{int} x; \textbf{int}
+%-%    y;\}
+%-%& \textit{// point is defined publicly elsewhere} \\
+%-%\textbf{extern} point;
+%-%& \textit{// point is defined (perhaps abstractly) elsewhere} \\
+%-%\textbf{extern} ?point;
+%-%& \textit{// point is an ? struct defined elsewhere}
+%-%\end{tabular}
+%-%}
+
+\begin{verbatim}
+<struct-decl> ::= [<scope>] [?] struct [<<type-var>,...,<type-var>>] { <struct-field>;+ }
+<struct-field>::= [const] <type-exp> <id> <type-modifiers>
+
+struct point {int x; int y; }  // a record of two integer fields, x & y
+struct point {const int x; const int y; } // same but x and y are immutable 
+?struct point {int x; int y; } // same as above but point values can be null
+?struct pointlist {point p; pointlist next; } // lists of points
+static struct point {int x,y;} // the type declaration is private
+abstract struct point {int x,y; } // the type declaration is exported abstractly
+?struct <a>list {a hd; <a>list tl; } // polymorphic lists
+?struct <a,b,c>triple {a x; b y; c z; } // polymorphic triple
+
+extern struct point {int x; int y;} // point is defined publicly elsewhere
+extern point;                       // point is defined (perhaps abstractly) elsewhere
+extern ?point;                      // point is an ? struct defined elsewhere
+\end{verbatim}
+
+Struct declarations are essentially type declarations for ``pointers to
+records of values''.  If no question mark appears before the struct
+declaration, then values of that type are always valid pointers to
+records (i.e., never null).  If a question mark appears before the type
+(so-called option-structs), then the pointer may be null.  When
+dereferencing an option-struct value, the compiler inserts implicit
+checks for null and raises the NullPointerException exception if the
+value is found to be null.  Hence, before setting or reading a field in
+a struct, a programmer should always check to see whether the value is
+null.
+
+Before the struct declaration, one can write an optional scope
+qualifier.  Lack of a qualifier indicates that the type declaration is
+to be fully exported to the outside world.  The qualifier static
+indicates that the type declaration is to be fully hidden to the outside
+world.  The qualifier abstract indicates that the name of the type
+constructor, the number of type arguments it takes, and whether it is an
+option-struct  is exported to the outside world, but the definition is
+not.  The extern qualifier is used when some other compilation unit
+defines the struct (and exports it at least in part).  There is
+currently no way to export a struct without revealing whether or not it
+is an option-struct.
+
+The fields of the struct are given types and names as identifiers and
+may be optionally prefixed with ``const'' to indicate that the field is
+immutable.  Fields are accessed using the ``dot'' notation.  For
+example, to access the x component of a point  p we would write ``p.x''.
+To create a struct value, we write ``new
+$<$struct-name$>$($<$exp1$>$,...,$<$expn$>$)'' or ``\^{}
+$<$struct-name$>$($<$exp1$>$,...,$<$expn$>$)'' where the expression
+arguments are used as the initial values of the fields.  Thus, it is
+impossible to create a struct value with uninitialized fields.
+
+Alternatively, one may create a struct value by writing ``new
+$<$struct-name$>$\{$<$field1$>$ =
+$<$exp1$>$,...,$<$fieldn$>$=$<$expn$>$\}'' or more commonly, ``\^{}
+$<$struct-name$>$\{$<$field1$>$=$<$exp1$>$,...,$<$fieldn$>$=$<$expn$>$\}''.
+Unlike the notation above, the expressions need not be listed in the
+order that the fields are declared.
+
+Structs may be recursive as in the pointlist and list examples above.
+Thus, the scope of a struct name includes its definition.  In fact, the
+scope of a struct name is an entire compilation unit (except where
+shadowed by a type variable), so mutually recursive struct definitions
+can be made without the acrobatics required by languages such as C.
+
+Structs may also be polymorphic in any number of type arguments.  For
+parsing reasons, we placed the type parameters to the left of the
+constructor instead of the right.  This allows us to easily determine
+type expressions from polymorphic function declarations.  In the list
+example above, a value of type $<$int$>$list is either null, or a pointer to
+a struct that contains an int in its hd field, and an $<$int$>$list in its
+tail field.  Any type but void may be used to instantiate the type
+variables.
+
+There is no need (and in fact, no way) to explicitly instantiate the
+type variables of a polymorphic struct.  Rather, the type checker
+automatically determines the instantiation through unification in a
+style similar to ML type inference.  Similarly, when one writes
+``null'', it can represent any option-struct -- there is no need to
+explicitly say which type.  We expect that sometime in the future, we
+will provide syntax for explicitly instantiating a polymorphic type
+constructor and for explicitly writing at which type null is meant to
+be.  As a simple example, the following polymoprhic function calculates
+the length of a list:
+
+%-%\texttt{
+%-%\textbf{int} list{\_}length<a>(<a>list x) \{ \newline
+%-%~~\textbf{int} len = 0; \newline
+%-%\newline
+%-%~~\textbf{while} (x != \textbf{null}) \{ \newline
+%-%~~~~len++; \newline
+%-%~~~~x = x.tl; \textit{// implicit check for null here} \newline
+%-%~~~~\} \newline
+%-%~~\textbf{return}(len) \newline
+%-%\}
+%-%}
+
+\begin{verbatim}
+int list_length<a>(<a>list x) {
+  int len = 0;
+
+  while (x != null) {
+    len++;
+    x = x.tl;  // implicit check for null here
+  }
+  return(len)
+}
+\end{verbatim}
+
+Notice that the code is able to calculate the length regardless of the
+type of the components in the list.  Notice also that we explicitly
+check for null before dereferencing the list.  Currently, the popcorn
+compiler inserts an implicit check for null at the point where ``x.tl''
+is dereferenced, but as the optimizations in the compiler are improved,
+we expect this overhead to disappear.  As another example, the following
+code computes and returns a list of the first n integers:
+
+%-%\texttt{
+%-%<\textbf{int}>list f(\textbf{int} n) \{ \newline
+%-%~~<\textbf{int}>list r; \textit{// implicitly initialized to null} \newline
+%-%\newline
+%-%~~\textbf{while} (n != 0) \{ \newline
+%-%~~~~r = \^{} list(n,r); \textit{// new list struct created here} \newline
+%-%~~~~r = \^{} list\{tl=r,hd=n\}; \textit{// equivalent to previous line}
+%-%    \newline
+%-%~~~~n--; \newline
+%-%~~\} \newline
+%-%~~\textbf{return}(r); \newline
+%-%\}
+%-%}
+
+\begin{verbatim}
+<int>list f(int n) {
+  <int>list r;  // implicitly initialized to null
+
+  while (n != 0) {
+    r = ^list(n,r);  // new list struct created here
+    r = ^list{tl=r,hd=n};  // equivalent to previous line
+    n--;
+  }
+  return(r);
+}
+\end{verbatim}
+
+Notice that the variable r is implicitly initialized to the value null.
+In practice, implicit initialization like this is not a good idea, and
+one should write ``$<$int$>$list r = null'' to make the code more clear.
+Notice also that in the body of the while loop, a new list node is
+created using ``\^{} list(n,r)''.  One could also write ``new list(n,r)''
+to make the code appear a bit more like Java (at the price of more
+keystrokes).  Alternatively, we may write ``\^{} list\{tl=r,hd=n\}'' or
+``new \{hd=n,tl=r\}'' as in ML.  Using the explicit field names means
+that we don't have to worry about getting the order of the fields right.
+
+Type equivalence on structs is not done structurally as in Standard ML
+or in C.  Rather, struct equivalence is by name.  Thus, if one defines:
+
+%-%\texttt{
+%-%\textbf{struct} point1 \{\textbf{int} x; \textbf{int} y;\} \newline
+%-%\textbf{struct} point2 \{\textbf{int} x; \textbf{int} y;\} \newline
+%-%\newline
+%-%\textbf{int} f(point1 p) \newline
+%-%~~\{ \textbf{return}(p.x + p.y) \}
+%-%}
+
+\begin{verbatim}
+struct point1 {int x; int y;}
+struct point2 {int x; int y;}
+
+int f(point1 p) 
+{ return(p.x + p.y) }
+\end{verbatim}
+
+Then one may pass a point1 value to f, but not a point2 value.  The
+decision to use name equivalence instead of structural equivalence makes
+supporting recursive struct definitions easier at the TAL level and it
+makes it easier to build a type-preserving compiler, because we need not
+expand type definitions eagerly.   However, it interferes with the
+addition of several desirable features including sub-typing so this
+decision will perhaps be re-visited in the future.
+
+There is no current support for ``flattening'' one struct into another,
+nor for creating arrays of flattened structs.  Rather, as in Java,  we
+are forced to manipulate pointers (or references) to the record.  Though
+TAL supports flattened records and structs, we have not yet found a
+simple, elegant way to export this functionality to a source language
+like Popcorn but hope to some day.
+
+\subsubsection{Union Declarations}
+
+%-%\texttt{
+%-%\begin{tabular}{lrl}
+%-%<union-decl> & ::= & [<scope>]
+%-%                     \textbf{union}[<<type-var>,...,<type-var>>] \{
+%-%                     <type-exp> <id> <type-modifiers>; ... <type-exp>
+%-%                     <id> <type-modifiers>; \}
+%-%}
+%-%
+%-%\texttt{
+%-%\textbf{union} <a>list \{ \textbf{void} Null; *(a,<a>list) Cons; \}
+%-%    \newline
+%-%\textit{
+%-%~~~~// the list declaration above is similar to the ?struct \newline
+%-%~~~~// declaration given in the previous section, and approximates
+%-%    \newline
+%-%~~~~// the ML datatype:  datatype 'a list = Nil | Cons of 'a*'a list
+%-%    \newline
+%-%~~~~// however, the union approach requires an extra level of
+%-%    indirection \newline
+%-%~~~~// for each Cons cell. \newline
+%-%}
+%-%\newline
+%-%\textbf{union} exp \{ \textbf{string} Var; *(\textbf{string},exp)
+%-%Lambda; *(exp,exp) App; \} \newline
+%-%~~~~\textit{// a recursive tagged union representing lambda expressions}
+%-%}
+
+\begin{verbatim}
+<union-decl> ::= [<scope>] union[<<type-var>,...,<type-var>>] {
+                <type-exp> <id> <type-modifiers>; ... <type-exp> <id> <type-modifiers>; }
+
+union <a>list { void Null; *(a,<a>list) Cons; }
+  // the list declaration above is similar to the ?struct 
+  // declaration given in the previous section, and approximates
+  // the ML datatype:  datatype 'a list = Nil | Cons of 'a*'a list
+  // however, the union approach requires an extra level of indirection
+  // for each Cons cell.
+
+union exp { string Var; *(string,exp) Lambda; *(exp,exp) App; }
+  // a recursive tagged union representing lambda expressions
+\end{verbatim}
+
+Unions in Popcorn are more like ML datatypes than like C unions.   That
+is, union values are fundamentally disjoint or tagged sums.  The tag is
+necessary so that we can dynamically determine the actual type carried
+by the union value.   As with structs (and ML-style datatypes), unions
+can be recursive and polymorphic, and their visibility can be controlled
+via public, static, abstract, and extern qualifiers.  (See Section [?].)
+
+The field names of a union are used as the datatype constructors.  To
+create a value of a union type we write
+``\^{} $<$union-name$>$.$<$field-name$>$($<$arg1$>$,...,$<$argn$>$)'' (or
+use the keyword ``new'' instead of ``\^{}''.)  For example, to create an
+exp value representing the variable x, we would write
+``\^{} exp.Var("x")''.
+
+Union fields are not mutable.
+
+When we have a value x of some union type, then we can use a switch
+expression to determine what its tag and underlying value is, similar to
+the case-expression and pattern matching constructs of SML.  For
+instance, the following function prints out exp values:
+
+%-%\texttt{
+%-%\textbf{void} print{\_}exp(exp e) \{ \newline
+%-%~~\textbf{switch} (e) \{ \newline
+%-%~~~~\textbf{case} Var(x):  \textbf{printf}("\%s",x); \newline
+%-%~~~~\textbf{case} Lam(p):  \textbf{printf}("(lambda \%s ",p.1); \newline
+%-%~~~~~~~~~~~~~~~~~~print{\_}exp(p.2); \newline
+%-%~~~~~~~~~~~~~~~~~~\textbf{printf}(")"); \newline
+%-%~~~~\textbf{case} App(p):  \textbf{printf}("("); print{\_}exp(p.1);
+%-%    \textbf{printf}(" "); \newline
+%-%~~~~~~~~~~~~~~~~~~print{\_}exp(p.2); \textbf{printf}(")"); \newline
+%-%~~\} \newline
+%-%\}
+%-%}
+
+\begin{verbatim}
+void print_exp(exp e) {
+  switch (e) {
+    case Var(x):  printf("%s",x);
+    case Lam(p):  printf("(lambda %s ",p.1);
+                  print_exp(p.2);
+                  printf(")");
+    case App(p):  printf("("); print_exp(p.1); printf(" ");
+                  print_exp(p.2); printf(")");
+  }
+}
+\end{verbatim}
+
+A switch on a union type requires cases for each of the fields (or else
+a default: case).  Each field's case also defines a local variable (or
+more generally a pattern) that has the type of the field which may be
+used locally within the switch-case-clause.  For instance, in the
+example above, the Var field has type string, so the x variable
+associated with the Var case has type string within the block of code
+corresponding to that case.  The Lam field has type *(string,exp) (a
+tuple of a string and expression) so p is assigned this type within the
+Lam case.  Finally, the App field has type *(exp,exp) so p is assigned
+this type within the App case.  Cases for void variants do not define
+local variables.  Notice that unlike C, switch cases do \textit{not}
+implicitly fall through to the next case, primarily because the scope of
+variables bound within the cases does not extend across cases.
+Correspondingly, break does \textit{not} cause control to be transferred
+out of the switch but rather out of the nearest enclosing loop.  In the
+future, we may change this by forcing programmers to explicitly write
+``break'' to make it easier to port C code.
+
+It is also possible to deconstruct a union value by simply using the
+``dot'' notation.  For instance, we can write ``e.Var'' and this is
+equivalent to writing ``switch (e) \{ case Var(x): return(x); default:
+raise UnionVariantException;\}''.
+
+Wildcards (``{\_}'') and tuple-patterns (``*(x1,...,xn)'') may also be
+used within a switch to provide a bit more pattern matching a la ML.  In
+particular, the switch expression above may be rewritten as follows:
+
+%-%\texttt{
+%-%\textbf{switch} (e) \{ \newline
+%-%~~\textbf{case} Var(x):  printf("\%s",x); \newline
+%-%~~\textbf{case} Lam*(var,body):  \textit{// var and body form a
+%-%  tuple-pattern} \newline
+%-%~~~~~~~~~~~~~~~~printf("(lambda \%s ",var); \newline
+%-%~~~~~~~~~~~~~~~~print{\_}exp(body); \newline
+%-%~~~~~~~~~~~~~~~~printf(")"); \newline
+%-%~~\textbf{case} App*(fn,arg):    \textit{// fn and arg form a
+%-%  tuple-pattern} \newline
+%-%~~~~~~~~~~~~~~~~printf("("); print{\_}exp(fn); printf(" "); \newline
+%-%~~~~~~~~~~~~~~~~print{\_}exp(arg); printf(")"); \newline
+%-%\}
+%-%}
+
+\begin{verbatim}
+  switch (e) {
+    case Var(x):  printf("%s",x);
+    case Lam*(var,body):  // var and body form a tuple-pattern
+                  printf("(lambda %s ",var);
+                  print_exp(body);
+                  printf(")");
+    case App*(fn,arg):    // fn and arg form a tuple-pattern
+                  printf("("); print_exp(fn); printf(" ");
+                  print_exp(arg); printf(")");
+  }
+\end{verbatim}
+
+
+\subsubsection{Abstype Declarations}
+
+%-%\texttt{
+%-%\begin{tabular}{lrl}
+%-%<abstype-decl> & ::= & [<scope>] \textbf{abstype} 
+%-%                       [<<type-var>,...<type-var>>]id
+%-%                       [[<type-var>,...,<type-var>]] = <type-exp>;
+%-%\end{tabular}
+%-%}
+
+\begin{verbatim}
+<abstype-decl> ::= [<scope>] abstype 
+                   [<<type-var>,...<type-var>>]id
+                   [[<type-var>,...,<type-var>]] = <type-exp>;
+\end{verbatim}
+
+Abstypes are a form of first-class abstract data types, similar in many
+respects to a very primitive form of object type. They are particularly
+useful when one wants to manipulate heterogeneous data structures. Like
+a struct or union, an abstype can be polymorphic.  Unlike structs or
+unions, an abstype can \textit{abstract} or \textit{hide} certain types
+as well.  The typical use of an abstype is when we want to export some
+but not all information about a type.  For instance, when representing
+objects, we may want to hide the types of the instance variables but
+expose the types of the methods.  Furthermore, the methods should take
+the instance variables as extra arguments.  As another example, a
+\textit{closure} may be represented by an abstract environment and a
+function which, when given the environment and an argument, produces a
+result.
+
+Like structs and unions, abstype values are created by using the ``new''
+or ``\^{} '' construct.  To manipulate an abstype value, we must use the
+``with'' construct to open up the abstracted type in some scope.
+
+As a simple example, suppose we have two different representations for
+2-dimensional points, polar and caretesian, with appropriate operations
+defined on them:
+
+%-%\texttt{
+%-%\textbf{extern struct} polar \{\textbf{int} xcoord; \textbf{int}
+%-%    ycoord;\} \newline
+%-%\textbf{extern} polar add{\_}polar(polar x, polar y); \newline
+%-%\textbf{extern} polar sub{\_}polar(polar x, polar y); \newline
+%-%\textbf{extern} polar mul{\_}polar(polar x, polar y); \newline
+%-%\newline
+%-%\textbf{extern} \textbf{struct} cartesian \{\textbf{int} mag;
+%-%    \textbf{int} angle;\} \newline
+%-%\textbf{extern }cartesian add{\_}cart(cartesian x, cartesian y); \newline
+%-%\textbf{extern }cartesian sub{\_}cart(cartesian x, cartesian y); \newline
+%-%\textbf{extern }cartesian mul{\_}cart(cartesian x, cartesian y);
+%-%}
+
+\begin{verbatim}
+extern struct polar {int xcoord; int ycoord;}
+extern polar add_polar(polar x, polar y);
+extern polar sub_polar(polar x, polar y);
+extern polar mul_polar(polar x, polar y);
+
+extern struct cartesian {int mag; int angle;}
+extern cartesian add_cart(cartesian x, cartesian y);
+extern cartesian sub_cart(cartesian x, cartesian y);
+extern cartesian mul_cart(cartesian x, cartesian y);
+\end{verbatim}
+
+Unfortunately, Popcorn does not allow one to mix polar and cartesian
+objects directly.  For example, it's impossible to have a list that
+mixes polar and cartesian points.  Now one could define a point union
+with a field for polars and a field for cartesians, and then manipulate
+lists of these unions.  But what if we want to add a third kind of
+point?  Abstypes allow us to abstract the particular representation of a
+type (in this case, whether a point is polar or cartesian) and package
+up the operations on values of those types.  For example, we might
+define a generic point object as follows:
+
+%-%\texttt{
+%-%\begin{tabbing}
+%-%\textbf{struct }<a>point{\_}rep \{ \=a data; \\
+%-%                                   \>a add{\_}point(a,a); \\
+%-%                                   \>a sub{\_}point(a,a); \\
+%-%                                   \>a mul{\_}point(a,a); \}; \\
+%-%\\
+%-%\textbf{abstype }point[p] = <p>point{\_}rep;
+%-%\end{tabbing}
+%-%}
+
+\begin{verbatim}
+struct <a>point_rep { a data; 
+                      a add_point(a,a);
+                      a sub_point(a,a);
+                      a mul_point(a,a); };
+
+abstype point[p] = <p>point_rep;
+\end{verbatim}
+
+This definition defines a new type point that hides or abstracts the
+representation of the field data (p) allowing us to mix different point
+representations.  For example, we might define:
+
+%-%\texttt{
+%-%\begin{tabbing}
+%-%point polar{\_}point(int mag, int angle) \{
+%-%~~<polar>point{\_}rep pol = \^{} point{\_}rep(\=\^{} polar(mag, angle), \\
+%-%                                             \>add{\_}polar,
+%-%                                               sub{\_}polar,
+%-%                                               mul{\_}polar); \\
+%-%~~\textbf{return} \^{} point(pol); \\
+%-%\}
+%-%\end{tabbing}
+%-%}
+%-%
+%-%\texttt{
+%-%\begin{tabbing}
+%-%point cartesian{\_}point(int x, int y) \{
+%-%~~<cartesian>point{\_}rep car = \^{} point{\_}rep(\=\^{} cartesian(x, y),
+%-%  \\
+%-%                                                 \>add{\_}cart,
+%-%                                                   sub{\_}cart,
+%-%                                                   mul{\_}cart); \\
+%-%~~\textbf{return} \^{} point(car); \\
+%-%\}
+%-%\end{tabbing}
+%-%}
+
+\begin{verbatim}
+point polar_point(int mag, int angle) {
+  <polar>point_rep pol = ^point_rep(^polar(mag, angle),
+                                    add_polar, sub_polar, mul_polar);
+  return ^point(pol); 
+}
+
+point cartesian_point(int x, int y) {
+  <cartesian>point_rep car = ^point_rep(^cartesian(x, y),
+                                        add_cart, sub_cart, mul_cart);
+  return ^point(car);
+}
+\end{verbatim}
+
+Notice that both function definitions return point values and that the
+return type makes no mention of whether the representation of the point
+is polar or cartesian.  Indeed, at the point where we create a point
+(\^{} point(pol) or \^{} point(car)), we've abstracted the representation.
+This is a lot like casting an object of a particular class in Java to
+one of the interface types that the class implements -- you lose the
+specific information about what kind of object it is and must manipulate
+it through its abstract interface.
+
+With these two definitions for creating points that are either polar or
+cartesian, we can define, for instance, a list that mixes both kinds of
+points:
+
+%-%\texttt{
+%-%<point>list points = \^{} list(polar{\_}point(10,15), \newline
+%-%~~~~~~~~~~~~~~~~~~~~~~~~~~~\^{} list(cartesian{\_}point(0,0), \newline
+%-%~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\^{} list(polar{\_}point(3,3),null)));
+%-%}
+
+\begin{verbatim}
+<point>list points = ^list(polar_point(10,15),
+                           ^list(cartesian_point(0,0),
+                                 ^list(polar_point(3,3),null)));
+\end{verbatim}
+
+We can then write a function to manipulate the list through the exposed
+interface.  A simple example follows:
+
+%-%\texttt{
+%-%<a>point{\_}rep double{\_}point{\_}rep<a>(<a>point{\_}rep pr) \{ \newline
+%-%~~a new{\_}data = pr.add{\_}point(pr.data,pr.data); \newline
+%-%~~\textbf{return}
+%-%  \^{} point{\_}rep(new{\_}data,pr.add{\_}point,pr.sub{\_}point,pr.mul{\_}point);
+%-%  \newline
+%-%\}
+%-%}
+%-%
+%-%\texttt{
+%-%point double{\_}point(point x) \{ \newline
+%-%~~\textbf{with} pr[p] = x \{ \newline
+%-%~~~~<p>point{\_}rep new{\_}pr = double{\_}point{\_}rep(pr); \newline
+%-%~~~~\textbf{return} \^{} point(new{\_}pr); \newline
+%-%~~\} \newline
+%-%\}
+%-%}
+%-%
+%-%\texttt{
+%-%List::map(double{\_}point, points);
+%-%}
+
+\begin{verbatim}
+<a>point_rep double_point_rep<a>(<a>point_rep pr) {
+   a new_data = pr.add_point(pr.data,pr.data);
+   return ^point_rep(new_data,pr.add_point,pr.sub_point,pr.mul_point);
+}
+
+point double_point(point x) {
+   with pr[p] = x {
+     <p>point_rep new_pr = double_point_rep(pr);
+     return ^point(new_pr);
+   }
+}
+
+List::map(double_point, points);
+\end{verbatim}
+
+
+In this example code, we first define a polymorphic function which, when
+given a point{\_}rep where the data has type a, we return a new point
+representation where the data has the same type.  We do so by simply
+adding the old point representation data to itself and packaging this up
+with the operations.  But this function manipulates $<$a$>$point{\_}rep
+values, not points.  The double{\_}point function does what we need to
+take a point with any representation and apply the
+double{\_}point{\_}rep function to that representation.
+
+The body of double{\_}point uses a \textit{with} statement to ``open
+up'' the abstract point x.  Within the scope of the \textit{with}
+statement, the variable pr is bound to the point representation and the
+type variable p is bound to the type of the point representation's data.
+That is, pr has type $<$p$>$point{\_}rep (for some type named by p) and
+can only be used within the scope of the \textit{with} body.  Within the
+body, we call the double{\_}point{\_}rep function on pr.  Given any type
+p, double{\_}point{\_}rep will take a $<$p$>$point{\_}rep and produce a
+$<$p$>$point{\_}rep, thus we get back a $<$p$>$point{\_}rep for a
+result.  We then abstract p again by placing the new $<$p$>$point{\_}rep
+value new{\_}pr in a point.  Finally, we return the new point as the
+result of the function.
+
+The \textit{with} statement allows us to unpack or open up an abstract
+data type within some scope.  All this really means is that it gives us
+a way to \textit{name} the type for a limited amount of code and to get
+to the underlying value.  Notice that if we open up two different
+points, then the type-checker forces us to use different names for the
+two points and thus, their respective point representation types cannot
+be treated as the same:
+
+%-%\texttt{
+%-%point point1,point2; \newline
+%-%\newline
+%-%\textbf{with} pr1[p1] = point1 \{ \newline
+%-%~~\textbf{with} pr2[p2] = point2 \{ \newline
+%-%~~~~pr2.add{\_}point(p1.data,p2.data); \textit{// fails to type-check!}
+%-%    \newline
+%-%~~\} \newline
+%-%\}
+%-%}
+
+\begin{verbatim}
+point point1,point2;
+
+with pr1[p1] = point1 {
+  with pr2[p2] = point2 {
+    pr2.add_point(p1.data,p2.data);  // fails to type-check!
+  }
+}
+\end{verbatim}
+
+In the above example, the attempt to add a point1's data and point2's
+data fails to type-check.  The reason is that point1's representation
+might be incompatible with point2's representation.  One might be
+tempted to rewrite the code so that we replace p2 with p1:
+
+%-%\texttt{
+%-%\textbf{with} pr1[p1] = point1 \{ \newline
+%-%~~\textbf{with} pr2[p1] = point2 \{ \textit{// fails to
+%-%  type-check!} \newline
+%-%~~~~pr2.add{\_}point(p1.data,p2.data);   \newline
+%-%~~\} \newline
+%-%\}
+%-%}
+
+\begin{verbatim}
+with pr1[p1] = point1 {
+  with pr2[p1] = point2 {     // fails to type-check!
+    pr2.add_point(p1.data,p2.data);  
+  }
+}
+\end{verbatim}
+
+but the Popcorn type-checker will reject this.  In general, Popcorn
+requires that you keep distinct type variables syntactically distinct
+(i.e., it does not implicitly alpha-vary them for you.)  This avoids a
+number of potential problems and keeps the language type-safe.
+
+Another simple example of using abstypes is to define closures.  A
+closure is a pair of some code (a function pointer) and an environment.
+The code is intended to take the environment and an argument and produce
+a result.  Different closures may want to have different types of
+environments, even though they take and return arguments and results of
+the same type.  Without abstypes, we'd have to assign such closures
+different types.  But in functional languages like ML, no such
+distinction is made in their type.  Fortunately, we can use abstypes to
+hide or abstract the type of the environment in a closure.  Furthermore,
+we can use Popcorn's polymorphism to build closures and operations on
+them once and for all.  The following code defines an abstype for
+closures and a polymorphic composition function which, when given a
+closure from a$\mapsto$b and a closure from b$\mapsto$c, produces a
+closure from a$\mapsto$c.  The code takes advantage of the ability to
+define local, static functions.
+
+%-%\texttt{
+%-%\textbf{abstype} <a,b>closure[c] = *(b code(env c,arg a), c); \newline
+%-%\newline
+%-%<a,c>closure compose<a,b,c>(<a,b>closure f1, <b,c>closure f2) \{ \newline
+%-%\newline
+%-%~~~~~c code<a,b,c>(*(<a,b>closure,<b,c>closure) env, a arg) \{ \newline
+%-%~~~~~~~\textbf{with} f1[d] = env.1 \{ \newline
+%-%~~~~~~~~~\textbf{with} f2[e] = env.2 \{ \newline
+%-%~~~~~~~~~~~b f1code(d,a) = f1.1; \newline
+%-%~~~~~~~~~~~c f2code(e,b) = f2.2; \newline
+%-%~~~~~~~~~~~d f1env = f1.2; \newline
+%-%~~~~~~~~~~~e f2env = f2.2; \newline
+%-%~~~~~~~~~~~\textbf{return} f2code(f2env,f1code(f1env,arg)); \newline
+%-%~~~~~~~~~\} \newline
+%-%~~~~~~~\} \newline
+%-%~~~~~\}; \newline
+%-%\newline
+%-%~~~~~\textbf{return }\^{} closure(code,\^{} (f1,f2)); \newline
+%-%\}
+%-%}
+
+\begin{verbatim}
+abstype <a,b>closure[c] = *(b code(env c,arg a), c);
+
+<a,c>closure compose<a,b,c>(<a,b>closure f1, <b,c>closure f2) {
+
+     c code<a,b,c>(*(<a,b>closure,<b,c>closure) env, a arg) {
+       with f1[d] = env.1 { 
+        with f2[e] = env.2 {
+          b f1code(d,a) = f1.1;
+          c f2code(e,b) = f2.2;
+          d f1env = f1.2;
+          e f2env = f2.2;
+          return f2code(f2env,f1code(f1env,arg));
+        }
+       }
+     };
+
+     return ^closure(code,^(f1,f2));
+}
+\end{verbatim}
+
+
+\subsubsection{Exception Declarations}
+
+%-%\texttt{
+%-%\begin{tabular}{lrl}
+%-%<exn-decl> & ::= & [<scope>] \textbf{exception} <qid>; | 
+%-%                   [<scope>]~\textbf{exception}~<qid>(<type-exp>);
+%-%\end{tabular}
+%-%}
+
+\begin{verbatim}
+<exn-decl>  ::= [<scope>] exception <qid>; | 
+                [<scope>] exception <qid>(<type-exp>);
+\end{verbatim}
+
+Exceptions may only be declared at the top-level.  As with identifiers
+and other values, the exception's scope can be controlled by an optional
+scope qualifier.  Exceptions can carry values of a specific type, in
+which case the second syntactic form should be used.
+
+\subsubsection{Function Declarations}
+
+Very similar to C except that there are provisions for polymorphism.
+
+
+\subsection{Expressions\label{expressions}}
+
+Most expressions have the same syntax and (intended) semantics as in C
+or Java.  We detail the various expression forms here for completeness
+and give examples.  The grammar for the abstract syntax of expressions
+is as follows:
+
+%-%\texttt{
+%-%\begin{tabular}{lrl}
+%-%<exp> & ::= & <const-exp> | <qid> | <if-exp> | <assign-exp> | <inst-exp>
+%-%              | <new-exp> | <dot-exp> | <subscript-exp> | <raise-exp> |
+%-%              <seq-exp> | <cast-exp> | <fun-call> | <fun-exp> |
+%-%              <sprintf-exp>
+%-%\end{tabular}
+%-%}
+
+\begin{verbatim}
+<exp> ::=  <const-exp> | <qid> | <if-exp> | <assign-exp> | <inst-exp> |
+           <new-exp> | <dot-exp> | <subscript-exp> | <raise-exp> | 
+           <seq-exp> | <cast-exp> | <fun-call> | <fun-exp> | <sprintf-exp>
+\end{verbatim}
+
+
+\subsubsection{Constant Expressions}
+
+%-%\texttt{
+%-%\begin{tabular}{lrl}
+%-%<const-exp> & ::= & \textbf{true} | \textbf{false} | <number> | <char> |
+%-%                    <string> | \textbf{null} | <fun-inst> |
+%-%                    \^{} *(<const-exp>,...,<const-exp>) |
+%-%                    \^{} <qid>[.<id>](<const-exp>,...,<const-exp>) |
+%-%                    \^{} <qid>\{<id>=<const-exp>,...,<id>=<const-exp>\} |
+%-%                    \{<const-exp>,...,<const-exp>\} | \{:<type-exp>\}
+%-%\end{tabular}
+%-%}
+
+\begin{verbatim}
+<const-exp> ::= true | false | <number> | <char> | <string> | null |
+                <fun-inst> |  ^*(<const-exp>,...,<const-exp>) | 
+                ^<qid>[.<id>](<const-exp>,...,<const-exp>) | 
+                ^<qid>{<id>=<const-exp>,...,<id>=<const-exp>} |
+                {<const-exp>,...,<const-exp>} | {:<type-exp>} 
+\end{verbatim}
+
+Constant expressions include boolean constants (true, false), integer
+constants (e.g., 345, 0xfeedface), character constants (e.g., 'a', 'b',
+'$\backslash$n', '$\backslash$000), string constants (e.g., ``foo'',
+``bar$\backslash$n''), and null.  Constructed constant expressions
+include tuples of constant expressions (e.g.,
+*($<$const-exp$>$,...,$<$const-exp$>$)), new structs and unions of
+constant expressions (e.g., list(3,null)), and array constant
+expressions (e.g., \{3,4,5,6\}).   The key use of constant expressions
+is to serve as initializers for top-level data structures.
+
+In the future, we may allow things like arithmetic on constant
+expressions and a few other forms.
+
+\subsubsection{Variables}
+
+%-%\texttt{
+%-%\begin{tabular}{lrl}
+%-%<qid> & ::= & [<id>::]<id> \\
+%-%<id>  & ::= & [a-zA-Z][a-zA-Z0-9{\_}]*
+%-%\end{tabular}
+%-%}
+
+\begin{verbatim}
+<qid> ::= [<id>::]<id>
+<id>  ::= [a-zA-Z][a-zA-Z0-9_]*
+\end{verbatim}
+
+Value variables are composed of a sequence of upper and lower-case
+letters, digits, and underscore, except that variables may not begin
+with an underscore.  Qualified identifiers are prefixed with an
+identifier (usually with the first-letter in uppercase) followed by
+``::'' (double-colon).   When used on the right-hand side of an
+expression, they denote the value contained in the variable.  When used
+as the left-hand-side of an assignment, they denote the location of the
+variable (as in C).
+
+\subsubsection{Conditional Expressions}
+
+%-%\texttt{
+%-%\begin{tabular}{lrl}
+%-%<if-exp> & ::= & <exp> ? <exp> : <exp>
+%-%\end{tabular}
+%-%}
+
+\begin{verbatim}
+<if-exp> ::= <exp> ? <exp> : <exp>
+\end{verbatim}
+
+The first expression must have type bool and the other two expressions
+must have the same type.  When evaluated, if the first-expression yield
+true, then the second expression is evaluated and the result is returned
+as the value of the entire expression.  Otherwise, when the
+first-expression yields false, the third expression is evaluated.
+
+\subsubsection{Assignment Expressions}
+
+%-%\texttt{
+%-%\begin{tabular}{lrl}
+%-%<assign-exp> & ::= & <lhs-exp> = <exp> | <lhs-exp> <arithop>= <exp> |
+%-%                     <lhs-exp>++ | <lhs-exp>-- | ++<lhs-exp> |
+%-%                     --<lhs-exp> \\
+%-%<lhs-exp>    & ::= & <qid> | <lhs-path> \\
+%-%<lhs-path>   & ::= & <exp>.<id> | <exp>.<num> | <exp>[<exp>] |
+%-%                     <lhs-path>.<id> | <lhs-path>[<exp>]</pre>
+%-%\end{tabular}
+%-%}
+
+\begin{verbatim}
+<assign-exp> ::= <lhs-exp> = <exp> | <lhs-exp> <arithop>= <exp> |
+                 <lhs-exp>++ | <lhs-exp>-- | ++<lhs-exp> | --<lhs-exp>
+<lhs-exp>    ::= <qid> | <lhs-path>
+<lhs-path>   ::= <exp>.<id> | <exp>.<num> | <exp>[<exp>] | 
+                 <lhs-path>.<id> | <lhs-path>[<exp>]
+\end{verbatim}
+
+The normal case of an assignment is of the form $<$id$>$ = $<$exp$>$ and simply
+evaluates the given expression and assigns the resulting value to the
+given variable.  The value of the assignment is the value placed into
+the variable as in C.   In general, the left-hand-side can be a field of
+a struct or tuple or some subscripted element of an array.  In addition,
+Popcorn supports a number of the shortcut assignment operators provided
+by C and Java.  For instance, the expressions ``x += 1'' and ``++x'' are
+both equivalent to ``x = x + 1''.
+
+\subsubsection{Function Calls}
+
+%-%\texttt{
+%-%\begin{tabular}{lrl}
+%-%<fun-call> & ::= & <exp>(<exp>,...,<exp>)
+%-%\end{tabular}
+%-%}
+
+\begin{verbatim}
+<fun-call> ::= <exp>(<exp>,...,<exp>)
+\end{verbatim}
+
+The first expression must evaluate to a function.  If the function is
+not polymorphic, then the argument expressions must have types equal to
+the formal argument types of the function, and the type of the entire
+expression is the result type of the function.  If the function is
+polymorphic, then there must exist some instantiation of the function's
+type variables such that the argument types match.   The same
+instantiation is used to calculate the result type.  For example, in a
+context where the function f has type a (*(a,b)) (a polymorphic function
+accepting 2-tuples with any pair of types returning something of the
+same type as the first component of the tuple), then the function call
+f(\^{} *(3,"foo")) is type-correct and has type int.
+
+Similar to ML, polymorphic functions are implicitly instantiated when
+they are called.  They are not instantiated in any other context unless
+done explicilty.
+
+\subsubsection{Instantiation Expressions}
+
+%-%\texttt{
+%-%\begin{tabular}{lrl}
+%-%<inst-exp> ::= <exp> @ <<type-exp>,...,<type-exp>>
+%-%\end{tabular}
+%-%}
+
+\begin{verbatim}
+<inst-exp> ::= <exp> @ <<type-exp>,...,<type-exp>>
+\end{verbatim}
+
+The expression must evaluate to a polymorphic function.  The function is
+instantiated with the given type parameters.  For instance, if f is a
+function that has type 'a $<$'a,'b$>$(*'a,'b), then the expression f @
+$<$int,string$>$ has type int (int,string) (i.e., a function from an int
+and a string to an int.)
+
+\subsubsection{New Expressions}
+
+%-%\texttt{
+%-%\begin{tabular}{lrl}
+%-%<new-exp> & ::= & <new>~<qid>[(<exp>,...,<exp>)]~|
+%-%                  <new>~<qid>.<id>(<exp>)~|
+%-%                  <new>~<qid>\{<id>=<exp>,...,<id>=<exp>\}~|
+%-%                  <new>~*(<exp>,...,<exp>) \\
+%-%<new>     & ::= & \textbf{new} | \^{} 
+%-%\end{tabular}
+%-%}
+
+\begin{verbatim}
+<new-exp> ::= <new> <qid>[(<exp>,...,<exp>)] | <new> <qid>.<id>(<exp>)
+              <new> <qid>{<id>=<exp>,...,<id>=<exp>} |
+              <new> *(<exp>,...,<exp>)
+
+<new> ::= new | ^ 
+\end{verbatim}
+
+
+New expressions are used to create struct, tuple, union, exn, and
+abstype values.  Either the keyword ``new'' or a carat (``\^{}'') may be
+used to start the expression.  The former makes it easier to port Java
+and C++ code, the latter is a lot less verbose.
+
+To create a new struct, one may either use the struct name, followed by
+a parenthesis-enclosed list of (unlabelled) expressions or else a
+brace-enclosed list of expressions labelled by field name.   The former
+implicitly associates the field names in the order in which they were
+declared in the struct definition with the given expressions.  The
+latter form ignores the order that the fields were declared in.  Both
+forms evaluate the expressions left-to-right.  I generally use the
+unlabelled form for small structs (e.g., lists) and the labelled form
+for larger structs where I can't remember in which order the fields go
+or where I feel like the reader may need more documentation.
+
+Creating tuples is similar to creating structs with the unlabelled form.
+The only difference is that one uses ``*'' instead of the name of the
+struct.
+
+For unions, new requires the name of the union followed by a period and
+the name of the field (i.e., the data constructor).  If the field
+carries void type, then no argument expression should be supplied.
+Otherwise, if the field carries type T, then an argument expression of
+type T should be applied.
+
+\subsubsection{Dot Expressions}
+
+%-%\texttt{
+%-%\begin{tabular}{lrl}
+%-%<dot-exp> & ::= & <exp>.<id>
+%-%\end{tabular}
+%-%}
+
+\begin{verbatim}
+<dot-exp> ::= <exp>.<id>
+\end{verbatim}
+
+A dot expression is used to extract a field from a struct or to
+implicitly check that a union value is of a particular type.  In the
+former case, $<$exp$>$ must be of a struct type with a field named by
+$<$id$>$.  The type of the resulting expression is the type of the
+associated field.  If the struct is an option-struct, then executing the
+dot-expression will cause the NullPointerException to be raised when the
+option-struct is null.  In the latter case, $<$exp$>$ must be of a union
+type with a field named by $<$id$>$.  The resulting expression has the
+type associated with the field in the union declaration.  When executed,
+the tag on the union value is tested and the underlying value is
+extracted and returned if the tag matches the field specified.
+Otherwise, the UnionVariantException is raised.  We discourage the use
+of dot-expressions for unions and encourage the use of switch statements
+instead.   However, the dot-notation is particularly convenient for
+porting C code.
+
+\subsubsection{Subscript Expressions}
+
+%-%\texttt{
+%-%\begin{tabular}
+%-%<subscript-exp> ::= <exp>[<exp>]
+%-%\end{tabular}
+%-%}
+
+\begin{verbatim}
+<subscript-exp> ::= <exp>[<exp>]
+\end{verbatim}
+
+The first expression must have an array type or be of type string, and
+the second expression should have type unsigned int.  (Note that signed
+integers are implicitly coerced to unsigned integers, and both shorts
+and bytes are implicitly coerced to ints.)  If the second expression
+evaluates to the integer i, then the ith value is extracted from the
+array or string, as long as i is between 0 and the size of the array or
+string.  Otherwise, the ArrayBoundsExcpetion is raised.  (Actually,
+currently the program is terminated, but this should change soon.)
+
+\subsubsection{Raise Expressions}
+
+%-%\texttt{
+%-%\begin{tabular}{lrl}
+%-%<raise-exp> & ::= & \textbf{raise}~<qid>([<exp>])~|
+%-%                    \textbf{raise}~(<exp>)
+%-%\end{tabular}
+%-%}
+
+\begin{verbatim}
+<raise-exp> ::= raise <qid>([<exp>]) | raise (<exp>)
+\end{verbatim}
+
+In the first syntax, the qualified identifier must be an exception name
+in scope.  If the optional expression is present and has type T, then
+the exception must have been declared to carry type T.  In the second
+syntax, $<$exp$>$ must have type exn.  As in Java, the semantics of a
+raise expression is to transfer control to the nearest (dynamically)
+enclosing try/handle statement.  The type of the raise expression is
+arbitrary.
+
+In the future,  we are also likely to make the application of an
+exception constructor a general expression form in which case, the first
+syntactic form will be unecessary.  Note that for parsing reasons,
+parentheses are required regardless as to whether an exception carries
+values or not.
+
+\subsubsection{Expression Sequences}
+
+%-%\texttt{
+%-%\begin{tabular}{lrl}
+%-%<seq-exp> & ::= & <exp> , <exp>
+%-%\end{tabular}
+%-%}
+
+\begin{verbatim}
+<seq-exp> ::= <exp> , <exp>
+\end{verbatim}
+
+As in C, the first expression is evaluated and its result is discarded.
+Then the second expression is evaluated and its result is returned as
+the value of the compound expression.  It is often necessary to insert
+parentheses around the expression to disambiguate the parsing in
+contexts that also use commas as a separator (e.g., tuple expressions or
+initialization arguments for structs or constant arrays.)
+
+\subsubsection{Cast Expressions}
+
+%-%\texttt{
+%-%\begin{tabular}{lrl}
+%-%<cast-exp> & ::= & (:<type-exp>)<exp>
+%-%\end{tabular}
+%-%}
+
+\begin{verbatim}
+<cast-exp> ::= (:<type-exp>)<exp>
+\end{verbatim}
+
+Cast expressions allow values of one type to be explicitly coerced to
+another type.  Currently, casting is only supported on integral types.
+We chose to require a colon before the type expression, unlike C, in
+order to simplify parsing.
+
+\subsubsection{Fun Expressions}
+
+%-%\texttt{
+%-%\begin{tabular}{lrl}
+%-%<fun-exp> & ::= & \textbf{fun }<type-exp>
+%-%                  <pid>[<<type-var>,...,<type-var>>] (<type-exp>
+%-%                  <id>,...,<type-exp> <id>) <block>
+%-%\end{tabular}
+%-%}
+
+% Odd indentation here, what's intended?
+\begin{verbatim}
+<fun-exp> ::= fun <type-exp> <pid>[<<type-var>,...,<type-var>>]
+                    (<type-exp> <id>,...,<type-exp> <id>) <block>
+\end{verbatim}
+
+Fun expressions are a convenient way to define a static function within
+the middle of some computation.  The syntax is pretty straightforward:
+Just use the keyword ``fun'' followed by a function declaration as at
+the top-level.  Unlike functional languages such as ML or Scheme, these
+expressions do not close over their free variables.  That is, the
+function cannot mention any local variables, type-variables, or
+arguments of the enclosing function.  In essence, the function is
+type-checked as if it was declared at the top-level.
+
+There is a short-cut for declaring a variable of function type and
+binding it to a function expression.  In particular, it is legal to
+write a function declaration like:
+
+%-%\texttt{
+%-%\textbf{int} foo(\textbf{int} x,\textbf{string} y) \{ \textbf{return}
+%-%    x+\textbf{ord}(y[3]); \};
+%-%}
+
+\begin{verbatim}
+int foo(int x,string y) { return x+ord(y[3]); };
+\end{verbatim}
+
+
+within another function.  This is equivalent to the following local
+declaration:
+
+%-%\texttt{
+%-%\textbf{int} foo(\textbf{int},\textbf{string}) = \textbf{fun}
+%-%    foo(\textbf{int} x,\textbf{string} y) \{ \textbf{return}
+%-%    x+\textbf{ord}(y[3]); \};
+%-%}
+
+\begin{verbatim}
+int foo(int,string) = fun foo(int x,string y) { return x+ord(y[3]); };
+\end{verbatim}
+
+
+\subsection{Statements\label{statements}}
+
+%-%\texttt{
+%-%\begin{tabular}{lrl}
+%-%<stmt> & ::= & <null-stmt> | <exp>; | <stmt> <stmt> | <if-stmt> |
+%-%               <return-stmt>; | <while-stmt> | <do-stmt> | <for-smt> |
+%-%               <break-stmt> | <continue-stmt> | <switch-stmt> |
+%-%               <try-stmt> | <labelled-stmt> | <block-stmt> |
+%-%               <printf-stmt>
+%-%\end{tabular}
+%-%}
+
+\begin{verbatim}
+<stmt> ::= <null-stmt> | <exp>; | <stmt> <stmt> | <if-stmt> |
+           <return-stmt>; | <while-stmt> | <do-stmt> | <for-smt> |
+           <break-stmt> | <continue-stmt> | <switch-stmt> | <try-stmt> |
+           <labelled-stmt> | <block-stmt> | <printf-stmt>
+\end{verbatim}
+
+\subsubsection{Null Statement}
+
+%-%\texttt{
+%-%\begin{tabular}{lrl}
+%-%<null-stmt> & ::= & ;
+%-%\end{tabular}
+%-%}
+
+\begin{verbatim}
+<null-stmt> ::= ;
+\end{verbatim}
+
+An empty (null, skip) statement is represented by a semi-colon.
+
+
+\subsubsection{Expression Statements}
+
+An expression may be used in any syntactic context for statements.   The
+value of the expression is discarded.
+
+
+\subsubsection{Compound Statements}
+
+Two adjacent statements are executed in sequential order.
+
+
+\subsubsection{Conditional Statements}
+
+%-%\texttt{
+%-%\begin{tabular}{lrl}
+%-%<if-stmt> & ::= & \textbf{if} (<exp>) <stmt> | \textbf{if} (<exp>)
+%-%                  <stmt> \textbf{else} <stmt>
+%-%\end{tabular}
+%-%}
+
+\begin{verbatim}
+<if-stmt> ::= if (<exp>) <stmt> | if (<exp>) <stmt> else <stmt>
+\end{verbatim}
+
+An if statement requires that the $<$exp$>$ argument have type bool.
+The expression is evaluated and if it results in true, then the first
+$<$stmt$>$ is executed.  In the first syntactic case, if the expression
+evaluates to false, then the statement has no (additional) effect.  In
+the second syntactic case, the second $<$stmt$>$ is executed.  Thus,
+``if (e) s'' is equivalent to ``if (e) s else ;''.  Nested
+if-expressions are disambiguated as in C.
+
+
+\subsubsection{Return Statements}
+
+%-%\texttt{
+%-%\begin{tabular}{lrl}
+%-%<return-stmt> & ::= & \textbf{return}; | \textbf{return} <exp>;
+%-%\end{tabular}
+%-%}
+
+\begin{verbatim}
+<return-stmt> ::= return; | return <exp>;
+\end{verbatim}
+
+Return is used to terminate execution of a function (immediately) and to
+optionally return a value to the caller.  If the enclosing function has
+result type void, then the first form must be used.  (Actually, for
+obscure reasons we allow the second form provided that the exception has
+type void.)  If the enclosing function has a type other than void, then
+the second form must be used and $<$exp$>$ must have that type.   The
+compiler attempts to ensure that along all control-flow paths within a
+function, there is a return statement.  However, the analysis is fairly
+simple and flow-insensitive so it is sometimes necessary for programmers
+to insert extra return or raise statements even when the programmer is
+sure that the return will never be executed.   In such situations, it is
+usual to raise an exception indicating that a purportedly impossible
+situation has arisen.
+
+\subsubsection{While Statements}
+
+%-%\texttt{
+%-%\begin{tabular}{lrl}
+%-%<while-stmt> & ::= & \textbf{while} (<exp>) <stmt>
+%-%\end{tabular}
+%-%}
+
+\begin{verbatim}
+<while-stmt> ::= while (<exp>) <stmt>
+\end{verbatim}
+
+The $<$exp$>$ must have type bool.  Execution of the statement proceeds
+by first evaluating the expression.  If it evaluates to true, then the
+body $<$stmt$>$ of the loop is executed, followed again by the entire
+while expression.   Thus, the statement is roughly equivalent to ``if
+($<$exp$>$) \{ $<$stmt$>$; while ($<$exp$>$) $<$stmt$>$ \}'' (ignoring
+break and continue.)
+
+
+\subsubsection{For Statements}
+
+%-%\texttt{
+%-%\begin{tabular}{lrl}
+%-%<for-stmt> & ::= & \textbf{for}~([<exp>];~[<exp>];~[<exp>])~<stmt> |
+%-%                   \textbf{for}~(<var-decl>~[<exp>];~[<exp>])~<stmt>
+%-%\end{tabular}
+%-%}
+
+\begin{verbatim}
+<for-stmt> ::= for ([<exp>] ; [<exp>]; [<exp>]) <stmt> |
+               for (<var-decl> [<exp>]; [<exp>]) <stmt>
+\end{verbatim}
+
+For-statements are meant to be as similar to C as possible, while
+admitting a certain convenience from Java for declaring a loop index
+variable within the statement.  As in C, the first expression (or
+variable declaration) is executed initially.  Then the second
+expression, which must have type bool, is evaluated.   If the result is
+false, then execution of the statement terminates.   Otherwise, the
+statement body is executed followed by the third expression.   Then the
+second test expression is evaluated again, followed if true by the body,
+etc.  Thus, the for statement ``for (e1;e2;e3) s'' is equivalent to
+``e1; while (e2) \{ s; e3 \}'' modulo break and continue issues.
+
+
+\subsubsection{Do Statements}
+
+%-%\texttt{
+%-%\begin{tabular}{lrl}
+%-%<do-stmt> & ::= & \textbf{do} <stmt> \textbf{while} (<exp>)
+%-%\end{tabular}
+%-%}
+
+\begin{verbatim}
+<do-stmt> ::= do <stmt> while (<exp>)
+\end{verbatim}
+
+Similar to the while statement, except that the body of the loop is
+executed before the test expression.  Thus, ignoring break and continue,
+the construct is equivalent to ``$<$stmt$>$; while (exp) $<$stmt$>$''.
+
+
+\subsubsection{Break Statements}
+
+%-%\texttt{
+%-%\begin{tabular}{lrl}
+%-%<break-stmt> & ::= & \textbf{break}; | \textbf{break} <id>;
+%-%\end{tabular}
+%-%}
+
+\begin{verbatim}
+<break-stmt> ::= break; | break <id>;
+\end{verbatim}
+
+Execution of a simple break statement causes control to be transferred
+out of the nearest lexically enclosing while, for, or do loop.  Control
+is transferred to the statement immediately succeeding the enclosing
+loop.  If the break does not occur within a loop, then an error will be
+signalled at compile time.  Note that break is \textit{not} used to
+transfer control out of switch statements as is done in C, C++, and
+Java.
+
+Execution of break $<$id$>$ causes control to be transferred to the
+statement labelled with the identifier $<$id$>$.  Control may only be
+transferred within the same block or to an outer block.  That is, it is
+impossible to jump into a block (which may potentially define new
+variables).
+
+
+\subsubsection{Continue Statements}
+
+%-%\texttt{
+%-%\begin{tabular}{lrl}
+%-%<continue> ::= \textbf{continue}; | \textbf{continue} <id>;
+%-%\end{tabular}
+%-%}
+
+\begin{verbatim}
+<continue> ::= continue; | continue <id>;
+\end{verbatim}
+
+Execution of a simple continue statement causes control to be
+transferred to the ``test'' portion of the nearest lexically enclosing
+loop.  If the continue does not occur within a loop, then an error will
+be signalled at compile time.
+
+Execution of continue $<$id$>$ causes control to be transferred to the
+statement labelled with the identifier $<$id$>$ and has restrictions
+similar to that of break $<$id$>$.  In fact, as I'm writing this, I'm
+not sure why we provide both labelled break and continue instead of just
+goto and expect that Fred will clear this up for me.
+
+
+\subsubsection{Switch Statements}
+
+%-%\texttt{
+%-%\begin{tabular}{lrl}
+%-%<switch-stmt>  & ::= & <int-switch> | <char-switch> | <union-switch> |
+%-%                       <exn-switch> \\
+%-%<int-switch>   & ::= &
+%-%    \begin{tabbing}
+%-%    \textbf{switch} (<exp>) \{ \=\textbf{case} <num>: <stmt> ... \\
+%-%                               \>\textbf{case} <num>: <stmt> \\
+%-%                               \>\textbf{default}: <stmt> \}
+%-%    \end{tabbing} \\
+%-%<char-switch>  & ::= &
+%-%    \begin{tabbing}
+%-%    \textbf{switch} (<exp>) \{ \=\textbf{case} <char>: <stmt> ... \\
+%-%                               \>\textbf{case} <char>: <stmt> \\
+%-%                               \>\textbf{default}: <stmt> \}
+%-%    \end{tabbing} \\
+%-%<union-switch> & ::= &
+%-%    \begin{tabbing}
+%-%    \textbf{switch} (<exp>) \{ \=\textbf{case} <id>[<pat>]: <stmt> ...
+%-%        \\
+%-%                               \>\textbf{case} <id>[<pat>]: <stmt> \\
+%-%                               \>[\textbf{default}: <stmt>] \}
+%-%    \end{tabbing} \\
+%-%<exn-switch>   & ::= &
+%-%    \begin{tabbing}
+%-%    \textbf{switch} (<exp>) \{ \= \textbf{case} <qid>[<pat>]: <stmt> ...
+%-%        \\
+%-%                               \>\textbf{case} <qid>[<pat>]: <stmt> \\
+%-%                               \>\textbf{default}: <stmt> \}
+%-%    \end{tabbing} \\
+%-%<pat>          & ::= & (~<prim-pat>~) | *(~<prim-pat>,...,<prim-pat>~) \\
+%-%<prim-pat>     & ::= & {\_} | <id>
+%-%\end{tabular}
+%-%}
+
+\begin{verbatim}
+<switch-stmt> ::= <int-switch> | <char-switch> | 
+                  <union-switch> | <exn-switch>
+<int-switch> ::= switch (<exp>) { case <num>: <stmt> ... 
+                                  case <num>: <stmt>
+                                  default: <stmt> }
+<char-switch> ::= switch (<exp>) { case <char>: <stmt> ...
+                                   case <char>: <stmt> 
+                                   default: <stmt> }
+<union-switch> ::= switch (<exp>) { case <id>[<pat>]: <stmt> ...
+                                    case <id>[<pat>]: <stmt>
+                                    [default: <stmt>] }
+<exn-switch> ::= switch (<exp>) { case <qid>[<pat>]: <stmt> ...
+                                  case <qid>[<pat>]: <stmt>
+                                  default: <stmt> }
+<pat> ::= ( <prim-pat> ) | *( <prim-pat>,...,<prim-pat> )
+<prim-pat> ::= _ | <id> 
+\end{verbatim}
+
+There are four different kinds of switch expressions.  The
+$<$int-switch$>$ is used to test integers, $<$char-switch$>$ to test
+characters, $<$union-switch$>$ to test values of union type and to
+extract the values carried by a data constructor, and the
+$<$exn-switch$>$ to test and extract values carried by an exception
+constructor.  The syntax for all four kinds of switches is quite similar
+and the semantics is close to, but subtly different than C.
+
+In particular, \textit{switch does not support implicit fall-through
+from one case to the next.}  Thus, it is as if an implicit C ``break''
+is inserted before each case or default label.  Furthermore, a break
+statement within a switch does not cause control to be transferred out
+of the nearest lexically enclosing switch, but rather the nearest
+lexically enclosing loop.  This was always a brain-damaged part of C
+(witness the AT\&T switch crash) and we are happy to drop it.  In
+addition, as explained in Section [?], cases for union switches and
+exception switches introduce bound variables whose scope is the
+associated case's $<$stmt$>$.   Supporting implicit fall-through would
+thus allow a statement to access an undefined variable.
+
+In all of the switch constructs, it is necessary for the cases to be
+disjoint and complete.  This constraint is enforced by the type-checker.
+A switch is disjoint is no case matches the same integer, character,
+union field, or exception constructor.  A switch is complete if every
+integer, character, union field, or exception has a case.  (Note, in
+fact one can leave the default off of an exception switch and the
+type-checker inserts a default case which raises the exception being
+tested.)
+
+Union switches allow a primitive form of pattern matching in the style
+of ML.  In particular, if the argument union expression evaluates to a
+value with a tag corresponding to field f, then the case for f will be
+selected when the switch is executed.  If f carries type void, then it
+is an error for the case to define the optional pattern.  If the field
+carries any type T besides void, then the case must include the optional
+pattern.  The pattern can either be a wild-card (underscore), a
+variable, or a tuple pattern.  Wild-card and variable patterns can be
+used for any type, but tuple-patterns may only be used for tuple-types.
+A tuple pattern provides either wild-card or variable sub-patterns for
+binding the components of the tuple.  Within the scope of the case's
+associated statement, the variables of the pattern (if any) are bound to
+the appropriate values.
+
+Exception switches are similar to union switches except that instead of
+matching on fields within a union, the switch takes an exn value and
+matches cases with exception constructor names.  As with unions, if an
+exception carries no type, then no optional pattern should be supplied.
+Otherwise, if the exception is declared to carray values of type T, then
+an optional pattern should be supplied.
+
+Note that integer and character cases require numbers or characters,
+which is slightly more restrictive than C which allows some expressions
+such as ``2+3''.  In the future, we expect to add more support for
+pattern matching, ``or-patterns'', ranges for character and integer
+switches, etc.
+
+\subsubsection{Try Statements}
+
+%-%\texttt{
+%-%\begin{tabular}{lrl}
+%-%<try-stmt> & ::= & \textbf{try} <stmt> \textbf{handle} <id> <stmt> | \\
+%-%           &     & \begin{tabbing}
+%-%                   \textbf{try} <stmt> \textbf{catch} \{
+%-%                       \=\textbf{case} <qid>[<pat>]: <stmt> ... \\
+%-%                       \>\textbf{case <}qid>[<pat>]: <stmt> \\
+%-%                       \>[\textbf{default: }<stmt>] \}
+%-%                   \end{tabbing}
+%-%\end{tabular}
+%-%}
+
+\begin{verbatim}
+<try-stmt> ::= try <stmt> handle <id> <stmt> | 
+               try <stmt> catch { case <qid>[<pat>]: <stmt> ...
+                                  case <qid>[<pat>]: <stmt>
+                                  [default: <stmt>] }
+\end{verbatim}
+
+In both forms, execution proceeds by evaluating the first statement.  If
+this does not cause an uncaught exception to be raised, then the
+statement terminates without executing the second clause.  If an
+exception is raised during evaluation of the first statement and is not
+caught by an intervening (dynamic) handler, then control is transferred
+to the second clause.  In the case of a try/handle statement, the
+exception value of type exn passed to raise is bound to the identifier
+$<$id$>$ within the scope of the second statement.   Typically, the second
+statement performs an exception switch on the identifier to determine
+what exception was raised and to take appropriate action.  This pattern
+is so frequent that we provide the more convenenient ``catch'' form as
+in Java which allows one to immediately start switching on the exception
+without having to name it.
+
+In the future, we expect to drop the try/handle form and to add
+try/finally and try/catch/finally similar to Java.
+
+
+\subsubsection{Labelled Statements}
+
+%-%\texttt{
+%-%\begin{tabular}{lrl}
+%-%<label-stmt> & ::= & <id> : <stmt>
+%-%\end{tabular}
+%-%}
+
+\begin{verbatim}
+<label-stmt> ::= <id> : <stmt>
+\end{verbatim}
+
+Labels are placed on statements to support easy break and continue to a
+specified location.
+
+
+\subsubsection{Block Statements}
+
+%-%\texttt{
+%-%\begin{tabular}{lrl}
+%-%<block-stmt> & ::= & \{ <var-decl> ... <var-decl> <stmt> \}
+%-%\end{tabular}
+%-%}
+
+\begin{verbatim}
+<block-stmt> ::= { <var-decl> ... <var-decl> <stmt> }
+\end{verbatim}
+
+A block statement supports both nested variable declarations and a way
+to disambiguate the parsing of certain statement patterns (e.g., the
+dangling else problem with if.)   Control may only be transferred into
+the beginning of a block (see break and continue).
+
+
+\subsubsection{Printf and Fprintf Statements and Sprintf Expressions}
+
+%-%\texttt{
+%-%\begin{tabular}{lrl}
+%-%<printf-stmt> & ::= & \textbf{printf}(<desc>,<exp>,...<exp>) | 
+%-%                      \textbf{fprintf}(<exp>,<desc>,<exp>,...,<exp>) \\
+%-%\\
+%-%<sprintf-exp> & ::= & \textbf{sprintf}(<desc>,<exp>,...<exp>)
+%-%\end{tabular}
+%-%}
+
+\begin{verbatim}
+<printf-stmt> ::= printf(<desc>,<exp>,...<exp>) | 
+                  fprintf(<exp>,<desc>,<exp>,...,<exp>)
+
+<sprintf-exp> ::= sprintf(<desc>,<exp>,...<exp>)
+\end{verbatim}
+
+The printf and fprintf statements are used for printing integers,
+strings, and characters to files or terminals, similar to the printf and
+frpintf functions of the C standard library.  The sprintf expression is
+similar but produces a string as a result instead of writing to some
+kind of stream.  The $<$desc$>$ argument must be a string literal and is
+parsed at compile time to determine the appropriate number and types of
+the additional arguments to printf.   In the case of fprintf, the first
+argument expression is meant to be a FILE value such as tal{\_}stdout.
+Descriptors follow the conventions of C.  So for instance, ``\%d'' is
+used for signed integers, ``\%u'' for unsigned, ``\%x'' for lower-case
+hex, ``\%s'' for strings, and ``\%c'' for characters. Currently, there
+is no support for precision in the output, other types, etc.   These
+statements were included purely to make porting C code easier and to
+simplify mundane output tasks.
+
+
+\subsection{Program Structure\label{programs}}
+
+
+\subsection{BNF Grammar}
+
+
+\section{The Popcorn Library\label{library}}
+
+For now, see the header files in the library directory of the
+distribution.  Note that Core exports some types and values that are
+actually defined in the runtime, such as the FILE type.
+
+
+\subsection{Core}
+
+For new{\_}array, the first expression should evaluate to an unsigned
+integer indicating the size of the array, and the second expression
+should be a value of the array type.  This value is used to initialize
+the contents of the array.
+
+For new{\_}string, the argument should evaluat to an unsigned integer
+indicating the desired size of the string.  The string is filled with
+unspecified values.
+
+
+\subsection{Id}
+
+
+\subsection{Set}
+
+
+\subsection{List}
+
+
+\subsection{Dict}
+
+
+\subsection{Queue}
+
+
+\subsection{Set}
+
+
+
+\section{The Popcorn Tools\label{tools}}
+
+
+\subsection{The popcorn Compiler}
+
+
+\subsection{The talc Type Checker and Assembler}
+
+
+\subsection{The poplex Lexer Generator\label{lex}}
+
+The developers of OCaml graciously allowed us to retarget their lexer
+generator to Pocporn.  That is, popocamllex is an ocaml program that
+given a lexer specification, produces a Popcorn file.  It is a modified
+version of the ocamllex program that we did not write.   Here is how to
+use popocamllex.
+
+Use popocamllex exactly as you would use ocamllex except: 
+
+\begin{itemize}
+
+\item Give your files extension .popl
+
+\item Result file will be .pop
+
+\item Make your header, trailer, and actions Popcorn code.
+
+\item // style comments aren't supported so be careful with them
+(basically don't put troubling characters like unmatched braces and " in
+them).  /*~*/ style  should be supported.
+
+\item Actions should \textit{return} a value of type int.  Yes, you
+should use the Popcorn keyword return.
+
+\item Files lexing.pop and lexing.h are in the Popcorn standard library
+and must be used with all generated lexers.  This recipe works:
+
+    \begin{enumerate}
+    \item Put ``\#include "lexing.h"'' in your .popl file.
+    \item Link in lexing.pop.
+    \end{enumerate}
+
+\end{itemize}
+
+Note that all of the lex-specific syntax (for rules, patters, etc) is as
+in ocamllex.
+
+Interfacing with popbison is exceptionally tricky since the two programs
+are not really on the same wavelength.  This should help: 
+
+\begin{enumerate}
+
+\item Have some main function create a lexbuf by calling the
+from{\_}function function in the lexing module.  Put the result in a
+global variable (use an Opt so it can be initialized).
+
+\item Write a yylex() function which calls a lexer entry point with the
+lexbuf.  (Hint: each rule is translated to a function of the same
+name.)
+
+\item Bison creates a header file you'll want to include.  Note this
+header file may refer to other types that it doesn't define -- you
+currently must extern them by other means.
+
+\item In your actions, put values of type YYSTYPE in yylval.
+
+\item Define and manipulate int yyline and void yyerror(string)
+appropriately.
+
+\item Make sure the eof actions return a negative integer or you will
+get parse errors.
+
+\end{enumerate}
+
+
+\subsection{The popbison Parser Generator\label{bison}}
+
+We have modified the publicly available Bison program to produce parsers
+written in Popcorn.  That is, popbison is a C program that given a
+parser specification, produces a Popcorn file.  It is a modified version
+of the Bison program which we did not write.  Here is how to use
+popbison.
+
+Use popbison exactly as you would bison except: 
+
+\begin{itemize}
+
+\item Give your files extension .y
+
+\item Result files be {\_}tab.pop and {\_}tab.h
+
+\item Make your header, trailer, and actions Popcorn code.
+
+\item Use the \%union, and \^{} \$ notation as described below.
+
+\end{itemize}
+
+The .h file is suitable for including within a lexer or some other tool.
+However, it does not include any other header files, so if it mentions
+types from other modules, you will have to include them by other means.
+The parser contains all of the tables as well as the parse engine.  It's
+invoked by calling yyparse() which in turn calls yylex() expecting that
+yylex() produces an integer token and a semantic value in yylval.
+
+The type of yylval is specified with the \texttt{\%union} declaration.
+This is \textbf{required} for us (but optional for C-bison.)  The syntax
+for the union declaration does not mention the type -- it becomes
+YYSTYPE.  Note that this union should have as its initial field
+something that can be used at top level for initialization.  For
+instance, the union should not be polymorphic and the first field should
+carry a type (such as int, bool, void, ?struct, etc.) that has a default
+value.
+
+One declares tokens using the \%token $<$id$>$ notation as in bison.
+
+One declares the type of tokens (terminals) and non-terminals using
+\%type $<$field$>$ t1 t2 ... tn where $<$field$>$ is a field of the
+union type, and t1,t2,...,tn are [non-]terminals.
+
+The grammar rules work just as in bison/yacc.  The biggest difference is
+within the actions of the grammar rules.  In particular, \$\$ refers to
+yylval.  Because it's declared to be of type YYSTYPE, anything that goes
+into \$\$ should have this type.  If you use it as an r-value, then you
+probably need to switch on it or use the new union projection (e.g.,
+\$\$.foo).
+
+\$1 \$2 and so forth continue to refer to the semantic elements of the
+rule. They are translated as (yysv[yysvp{\_}offset-i]).$<$field$.$ where
+$<$field$.$ is associated with that particular terminal/non-terminal in
+a \%type declaration. That is, a reference to \$1 will implicitly
+``downcast'' to the ``type'' of the [non-]terminal.
+
+Some new syntax is \^{} \$.  This is essentially translated to
+\^{} YYSTYPE.$<$field$>$ where $<$field$>$ is the field name of the union
+associated with \$\$ (i.e., the rule's left-hand-side.)
+
+So for instance, in the grammar below, for the ``+'' case, we have as
+the action:
+
+%-%\texttt{
+%-%exp : exp exp '+' \{ \$\$ = \^{} \$(\$1 + \$2); \}
+%-%}
+
+\begin{verbatim}
+      exp : exp exp '+' { $$ = ^$($1 + $2); } 
+\end{verbatim}
+
+The \$1 gets the exp value.  Since exp is associated with the foo label
+of the union, this means that the semantic value is cast to ``int'' from
+YYSTYPE.  Similarly for \$2.  The default semantic value would be there
+for the token '+'.  Anyway, because \$1 and \$2 are automatically cast
+to integers, we can add them to produce an integer.  But we can't just
+place the result in \$\$ -- rather, we have to ``cast up'', hence the
+\^{} \$ wrapped around the expression.
+
+%-%\texttt{
+%-%file rpcalc.y
+%-%
+%-%\begin{tabular}{|l|}
+%-%\hline
+%-%\%\{ \\
+%-%extern void print{\_}string(string); \\
+%-%extern int print{\_}int(int); \\
+%-%\%\} \\
+%-%\\
+%-%\%union \{ \\
+%-%~~int    foo; \\
+%-%~~short    x; \\
+%-%\}
+%-%\\
+%-%\%token NUM \\
+%-%\%type <foo> exp NUM \\
+%-%\%type <x> line input \\
+%-%\\
+%-%\%\% /* Grammar rules and actions follow */ \\
+%-%\\
+%-%\begin{tabbing}
+%-%~~~~~~~~~~\=~~~~~~~~~~~~~~~~~~~~\= \kill
+%-%input:    \>/*empty*/           \>\{ \$\$ = \^{} \$(3); \} \\
+%-%          \>| input line        \>\{ \$\$ = \^{} \$(4); \} \\
+%-%;\\
+%-%\\
+%-%line:     \>'$\backslash$n'     \>\{ \$\$ = \^{} \$(6); \} \\
+%-%          \> | exp '$\backslash$n' \>\{ print{\_}string ("RESULT="); \\
+%-%          \>                    \>print{\_}int(\$1); \\
+%-%          \>                    \>\$\$ = \^{} \$(5); \} \\
+%-%;\\
+%-%\\
+%-%exp:      \>NUM                 \>\{ \$\$ = \^{} \$(\$1); \} \\
+%-%          \>| exp exp '+'       \>\{ \$\$ = \^{} \$(\$1 + \$2); \} \\
+%-%          \>| exp exp '-'       \>\{ \$\$ = \^{} \$(\$1 - \$2); \} \\
+%-%          \>| exp exp '*'       \>\{ \$\$ = \^{} \$(\$1 - \$2); \} \\
+%-%;\\
+%-%\%\%
+%-%\end{tabbing}
+%-%
+%-%\\ \hline
+%-%\end{tabular}
+%-%}
+
+\begin{verbatim}
+---file
+rpcalc.y-------------------------------------------------------------- 
+%{ 
+extern void print_string(string); 
+extern int print_int(int); 
+%} 
+
+%union { 
+  int    foo; 
+  short    x; 
+} 
+
+%token NUM 
+%type <foo> exp NUM 
+%type <x> line input 
+
+%% /* Grammar rules and actions follow */ 
+
+input:   /*empty*/      { $$ = ^$(3); } 
+        | input line   { $$ = ^$(4); } 
+; 
+
+line:   '\n'       { $$ = ^$(6); } 
+        | exp '\n' { print_string ("RESULT="); 
+                     print_int($1); 
+                     $$ = ^$(5); } 
+; 
+
+exp:    NUM { $$ = ^$($1); } 
+        | exp exp '+' { $$ = ^$($1 + $2); } 
+        | exp exp '-' { $$ = ^$($1 - $2); } 
+        | exp exp '*' { $$ = ^$($1 - $2); } 
+
+; 
+%% 
+\end{verbatim}
+
+%\printindex
+
+\end{document}

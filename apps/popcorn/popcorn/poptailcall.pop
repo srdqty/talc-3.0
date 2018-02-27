@@ -1,0 +1,86 @@
+
+#include "core.h"
+#include "list.h"
+#include "dict.h"
+#include "id.h"
+#include "xarray.h"
+#include "bitvec.h"
+
+open Core;
+open List;
+open Id;
+
+#include "popil.h"
+
+open Popil;
+
+prefix Poptailcall;
+open Poptailcall;
+
+
+static void make_tailcall(cf_block blk, cf_block retn_blk) {
+
+  // printf("Tail call: %s \n",Id::id_to_string(blk.label));
+  _ x = blk.trans.Call;
+
+  blk.trans = ^.TailCall(^(x.2,x.3,x.4));
+
+  _ num_succ = Xarray::length(blk.succ);
+  _ succ = Xarray::create(num_succ-1,retn_blk);
+
+  for(_ j = 0; j < num_succ; j++) {
+    _ s = Xarray::get(blk.succ,j);
+    if(s != retn_blk)
+      Xarray::add(succ,s);
+  }
+  blk.succ = succ;
+
+  _ num_pred = Xarray::length(retn_blk.pred);
+  _ pred = Xarray::create(num_pred-1,blk);
+  for(_ j = 0; j < num_pred; j++) {
+    _ p = Xarray::get(retn_blk.pred,j);
+    if(p != blk)
+      Xarray::add(pred,p);
+  }
+  retn_blk.pred = pred;
+}
+
+/*
+We introduce tail calls when a function contains a return preceded by a call that has not arguments.  Tails are introduced even when they serve no particular purpose.
+ */
+ void tailcall_fun(cf_function fn) {
+
+  _ blks = fn.blocks;
+  _ num_blks = Xarray::length(blks);
+
+  for(_ i = 0; i < num_blks; i++) {
+    _ blk = Xarray::get(blks,i);
+
+    switch blk.trans {
+    case Retn(x):
+      if(Xarray::length(blk.insts) == 0) {
+	_ num_preds = Xarray::length(blk.pred);
+	for(_ j = 0; j < num_preds; j++) {
+	  _ pred = Xarray::get(blk.pred,j);
+
+	  switch pred.trans {
+	  case Call *(ra,f,ts,as,d):
+	    if((ra == null) && (x==null)
+	       || (ra!=null && x!=null &&
+		   cf_operand_cmp(ra.v,x.v)==0)) {
+	      switch d {
+	      case Known(retn_blk): make_tailcall(pred,retn_blk);
+	      default: ;
+	      }
+	    }
+	  default: ;
+	  }
+	}
+      }
+    default: ;
+    }
+  }
+}
+
+
+

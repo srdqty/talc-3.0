@@ -1,0 +1,213 @@
+// Load an executable and initialize the state of the machine.
+
+// This includes
+// 1. Initializing the memory
+// 2. Loading the text and data segments
+// 3. Initializing the stack: putting command-line arguments and the environment on the stack.
+
+#include "core.h"
+// cloader is the trusted C base that actually knows how to parse ECOFF
+#include "cloader.h"
+#include "mem.h"
+#include "simp.h"
+#include "cstat.h"
+
+#define ECOFF_STYP_TEXT		0x0020
+#define ECOFF_STYP_RDATA	0x0100
+#define ECOFF_STYP_DATA		0x0040
+#define ECOFF_STYP_SDATA	0x0200
+#define ECOFF_STYP_SBSS		0x0400
+#define ECOFF_STYP_BSS		0x0080
+
+#define DEBUG
+
+open Core;
+
+prefix Loader;
+open Loader;
+
+struct initial_state {
+  ptr initial_pc, initial_sp;
+  ptr stack_base,data_base,text_base;
+  word stack_size,data_size,text_size; // In bytes.
+}
+
+void print_seg_info(seg_info segs[]) {
+  for(_ i = 0; i < size(segs); i++) {
+    _ s = segs[i];
+    if(size(s.data) != 0) {
+      _ sname;
+      switch s.kind {
+      case ECOFF_STYP_TEXT:  sname = ".text";
+      case ECOFF_STYP_RDATA: sname = ".rdata";
+      case ECOFF_STYP_DATA:  sname = ".data";
+      case ECOFF_STYP_SDATA: sname = ".sdata";
+      case ECOFF_STYP_SBSS:  sname = ".sbss";
+      case ECOFF_STYP_BSS:   sname = ".bss";
+      default:               sname = ".unknown";
+      }
+      
+      fprintf(tal_stderr,"%x : %s with size %d\n",s.address,sname,4*size(s.data));
+    }
+  }
+}
+
+void load_seg_data(ptr start_addr, word data[]) {
+  _ end_addr = start_addr + (size(data) * 4);
+
+  // Allocate the blocks, then load the data.
+  // Perhaps this should all be done in mem.pop, oh well.
+  Mem::allocate_range(start_addr,end_addr);
+  Mem::wcopy_in(start_addr,data,size(data));
+}
+
+// Takes the command-line arguments passed to the simulated function as its
+// parameter.  args[0] is the name of the executable to simulate.
+// envp is the simulated program's environment.
+initial_state load(string args[], string envp[]) {
+
+  Mem::init(); // Initialize the memory subsystem.
+
+  _ exec_name = args[0];
+  _ exec = load_exec(string_to_Cstring(exec_name));
+  _ segs = exec.segments;
+
+  if(size(segs)==0) FAIL("Failed to load any segments.");
+
+  // printf("Loaded file %s\n", args[0]);
+  // printf("Entry point = %x, Size of data = %d\n",exec.entry,exec.data_size);
+  print_seg_info(segs);
+
+  // Load the data for all the segments into the simulator's memory.
+  for(_ i = 0; i < size(segs); i++) {
+    _ s = segs[i];
+    if(size(s.data)!=0) load_seg_data(s.address,s.data);
+  }
+
+  _ text_size = 0, data_size = 0, stack_size = 0;
+  word text_base = TEXT_BASE, data_base = DATA_BASE, stack_base = STACK_BASE;
+
+  stack_base = stack_base<<4; // Needed because of 32/31 bit problem!
+
+  // We must compute the size of the data segment so that we can
+  // specify where sbrk starts getting more memory.  As a sanity check
+  // we also compute the size of the text segment so that we can be
+  // sure the two do not overlap.
+ 
+  unsigned int max_data_addr = 0;
+  for(_ i = 0; i < size(segs); i++) {
+    _ s = segs[i];
+    if(size(s.data)!=0) {
+      switch s.kind {
+    case ECOFF_STYP_TEXT: 
+      if(text_size != 0) FAIL("This image has two text segements.");
+      text_size = ((s.address + 4*size(s.data)) - text_base) + 128;
+    case ECOFF_STYP_RDATA: 
+      _ end_addr = s.address + 4*size(s.data);
+      if(end_addr > max_data_addr) max_data_addr = end_addr;
+    case ECOFF_STYP_DATA:  ;
+      _ end_addr = s.address + 4*size(s.data);
+      if(end_addr > max_data_addr) max_data_addr = end_addr;
+    case ECOFF_STYP_SDATA: ;
+      _ end_addr = s.address + 4*size(s.data);
+      if(end_addr > max_data_addr) max_data_addr = end_addr;
+    case ECOFF_STYP_SBSS:  FAIL("Don't support SBSS segments.");
+    case ECOFF_STYP_BSS:   FAIL("Don't support BSS segments.");
+    default:               FAIL("Unrecognized kind of section.");
+      }
+    }
+  }
+
+  // data_size = max_data_addr - data_base;
+  data_size = exec.data_size;
+  // Round data size up to a multiple of page size.
+  data_size = ROUND_UP(data_size,PAGE_SIZE);
+
+  Mem::allocate_range(data_base,data_base+data_size);
+
+  if(text_base + text_size >= data_base) {
+    fprintf(tal_stderr,"Text segment and data segment overlap.\n");
+    fprintf(tal_stderr,"%x + %x >= %x\n",text_base,text_size,data_base);
+    FAIL("Overlapping segments.");
+  }
+
+  Mem::mem_break_point = data_base + data_size;
+
+  // Now we push the arguments on the simulator's stack.
+  _ argc = size(args);
+  _ envc = size(envp);
+
+  _ arg_size = 0;
+  for(_ i = 0; i < argc; i++) {
+    arg_size += size(args[i]) + 1; // +1 for null terminator.
+  }
+
+  _ env_size = 0;
+  for(_ i = 0; i < envc; i++) {
+    env_size += size(envp[i]) + 1; // +1 for null terminator
+  }
+  
+  // 1 is for argc value, 4 is for null terminators.
+  stack_size = 4*(1 + 4 + argc + envc) + arg_size + env_size;
+  stack_size = ROUND_UP(stack_size,8); // Make it doubleword aligned.
+  if(stack_size < MIN_STACK_SIZE) stack_size = MIN_STACK_SIZE;
+
+  word stack_top = stack_base - stack_size;
+
+  if(stack_top <= max_data_addr) {
+    fprintf(tal_stderr,"stack and data segement overlap.\n");
+    fprintf(tal_stderr,"stack top = %x, data_max = %x, stack base = %x\n",
+	    stack_top,max_data_addr,stack_base);
+    FAIL("Overlapping segments.(2)");
+  }
+
+  Mem::allocate_range(stack_top,stack_base);
+
+  Mem::w_word(stack_top,argc);
+  
+  _ argv_data = 4*(1 + argc + 1 + envc + 1) + stack_top;
+  _ argv = stack_top + 4*(1);
+  for(_ i = 0; i < argc; i++) {
+    Mem::strcpy_in(argv_data,args[i]);
+    Mem::w_word(argv,argv_data);
+    argv_data += size(args[i]) + 1;
+    argv      += 4;
+  }
+
+  _ envp_data = argv_data; // +4 for null terminator.
+  _ envv = argv + 4;
+
+  for(_ i = 0; i < envc; i++) {
+    Mem::strcpy_in(envp_data,envp[i]);
+    Mem::w_word(envv,envp_data);
+    envp_data += size(envp[i]) + 1;
+    envv      += 4;
+  }
+
+  // Stack is now loaded!!!
+
+  fprintf(tal_stderr,
+	  ".text  : %x + %d = %x\n",text_base,text_size,text_base+text_size);
+  fprintf(tal_stderr,
+	  ".data  : %x + %d = %x\n",data_base,data_size,data_base+data_size);
+  fprintf(tal_stderr,
+	  ".stack : %x + %d = %x\n",stack_top,stack_size,stack_base);
+
+
+#ifdef COLLECT_STATS
+  stat_segment_info(text_size,data_size,stack_size);
+#endif
+
+  // Mem::dump(tal_stdout,stack_top,stack_size/4);
+
+  return ^initial_state { initial_pc = exec.entry,
+			    initial_sp = stack_top,
+			    stack_base = stack_base,
+			    data_base = data_base,
+			    text_base = text_base,
+			    stack_size = stack_size,
+			    data_size = data_size,
+			    text_size = text_size};
+  
+}
+

@@ -1,0 +1,3 @@
+(* invokes the logGC service (for benchmarking) on the given host *)
+fun go(dest) =
+  OnRemote(|logGC|(),dest,getRB(),defaultRoute)

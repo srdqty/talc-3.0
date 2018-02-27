@@ -1,0 +1,76 @@
+// Sparse version of dot product.
+
+#include "poptiming.h"
+#include "core.h"
+open Core;
+
+?struct svec {
+  int pos;
+  int val;
+  svec next;
+}
+
+svec vec2svec(int v[]) {
+  _ sv = null;
+  for(int i=size(v)-1; i >= 0; i--) {
+    if(v[i] != 0) sv = ^svec(i,v[i],sv);
+  }
+
+  return sv;
+}
+
+int dot(svec u,int v []) {
+  int result = 0;
+
+  for(;u!=null; u=u.next)
+    result += u.val * v[u.pos];    
+  return result;
+} 
+
+int pop_main()
+{
+  string s[] = std_args();
+  if (size(s)!=3) 
+    {
+      print_string(s[0]);
+      print_string(": usage: <vec_len> <percent zeroes>");
+      print_newline();
+      return 0;
+    } 
+
+  int vec_len = int_of_string(s[1]);
+  int percent_zeroes = int_of_string(s[2]);
+  int u[] = new_array(vec_len,0);
+  int v[] = new_array(vec_len,0);
+
+  for(int i = 0; i < vec_len; i++) {
+    u[i] = i+1;
+    v[i] = i+1;
+  }
+  
+  int num_zeroes = (percent_zeroes * vec_len) / 100;
+  
+  if(num_zeroes > vec_len || num_zeroes < 0) {
+    printf("Bad percentage %d\n",percent_zeroes);
+    return 1;
+  }
+
+  for(int i = 0; i < num_zeroes; i++) {
+    u[i] = 0;
+  }
+
+  svec su = vec2svec(u);
+
+  _ args = strconcat(s[1],strconcat(" ",s[2]));
+
+  MAIN_TEST("dot_sparse",COMPILER,PLAIN_KIND,args,0,dot(su,v));
+
+  _ result = dot(su,v);
+  printf("vec_len = %d, percent_zeroes = %d, result = %d\n",
+	 vec_len, percent_zeroes, result);
+  return 0;
+}
+
+
+
+

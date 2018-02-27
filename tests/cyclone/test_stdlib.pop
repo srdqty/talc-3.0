@@ -1,0 +1,50 @@
+// test_stdlib.pop
+// Uses simple factorial to test debugging and timer library functions.
+
+#include "core.h"
+open Core;
+
+extern string std_args()[];
+extern int int_time();
+extern void get_input(string);
+extern void print_time(int, int, int);
+
+void pop_main() 
+{
+  int start, stop, j;
+
+  string s[] = std_args();
+  if (size(s)!=2) 
+    {
+      print_string(s[0]);
+      print_string(": usage: <num>");
+      print_newline();
+    } 
+  else 
+    {
+      int i = int_of_string(s[1]);
+
+      start = int_time();
+      print_int(fact(i));
+      get_input("Hit a key...");
+      for(j = 0; j < 10000; j++)
+	fact(i);
+      stop = int_time();
+
+      print_newline();
+      print_time(start, stop, 1);
+    }
+}
+
+int fact(int n) 
+{
+  int a = 1;
+  
+  while (n > 1) 
+    {
+      a = a * n;
+      n--;
+    }
+  return(a); 
+}
+

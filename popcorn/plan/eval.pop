@@ -1,0 +1,110 @@
+/* copyright (c) 1998, Greg Morrisett
+ * eval.pop:  evaluator for the calculator example Popcorn program
+ *   includes the state of the calculator
+ *
+ * imports:
+ *   eqstring               -- from calclib.c
+ *   print_string,print_int -- from stdlib.c
+ *   types operator, exp    -- from parse.pop
+ *   type token -- from lex.c
+ *   peek_token, next_token, print_token -- from lex.c
+ *   
+ * exports:
+ *   int eval(exp)
+ */
+extern bool eqstring(string,string);
+extern void print_string(string);
+extern void print_int(int);
+
+extern union operator {
+  void Plus;
+  void Minus;
+  void Times;
+  void Div;
+  void Semi;
+}
+
+extern union exp {
+  int Number;
+  string Ident;
+  *(string,exp) Assign;
+  *(exp,operator,exp) Compound;
+}
+
+/* used to hold the mapping from identifiers to integers */
+static ?struct state_node {
+  string Ident;
+  int    Value;
+  state_node next;
+}
+
+private state_node state = null;
+
+/* add a new identifier x with value i to the state */
+static state_node add_var(string x,int i) {
+  state_node s = new state_node(x,i,state);
+  state = s;
+  return(s);
+}
+
+/* lookup a variable, returning its node so that the value can be 
+ *   gotten or set.  If the variable is undefined, creates a node
+ *   for it in the state with value 0.
+ */
+static state_node lookup_var_node(string x) {
+  state_node s = state;
+
+  while (s != null) {
+    if (eqstring(s.Ident,x)) break;
+    s = s.next;
+  }
+  if (s == null)
+    s = add_var(x,0);
+  return(s);
+}
+
+/* lookup a variable, defining it if necessary (to value 0).
+ */
+static int lookup_var(string x) {
+  return(lookup_var_node(x).Value);
+}
+
+/* set the value of a variable x to i, defining the variable if necessary.
+ */
+static void set_var(string x,int i) {
+  state_node s = lookup_var_node(x);
+
+  s.Value = i;
+}
+
+/* evaluate the expression returning an integer.  
+ */
+int eval(exp e) {
+
+  switch(e) {
+    case Number(n): return(n);
+    case Ident(x): return(lookup_var(x));
+    case Compound(x):
+      {
+        int i = eval(x.1);
+	int j = eval(x.3);
+
+	switch(x.2) {
+	  case Plus: return(i+j);
+	  case Times: return(i*j);
+	  case Minus: return(i-j);
+	  case Div: return(i / j);
+	  case Semi: return(j);
+	}
+      }
+    case Assign(p):
+      {
+	string x = p.1;
+	int i = eval(p.2);
+
+	set_var(x,i);
+	return(i);
+      }
+   }
+}
+	 

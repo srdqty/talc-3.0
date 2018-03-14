@@ -15,7 +15,7 @@ open Tal;;
 (*** Locations ***)
 
 type tal_loc =
-    Loctop 
+    Loctop
   | Lockind of identifier   (* kind abbrev  - LX *)
   | Loccon of identifier   (* Imported/Exported type label *)
   | Locval of identifier   (* Imported/Exported value label *)
@@ -66,7 +66,7 @@ type verify_error =
   | Ndisjoint_exports of identifier
   | Multiple_exports
   | Con_def_nleq
-  | Intt_nleq of string * identifier 
+  | Intt_nleq of string * identifier
   | Label_requires_type of identifier
   | Label_bad_mode of identifier * mode
   | Fallsthru_unlabelled
@@ -82,7 +82,7 @@ type verify_error =
 exception Talfail;;   (* The verifier could not recover from errors *)
 
 (* stuff that changes infrequently *)
-type ctxt0 = 
+type ctxt0 =
     { ge : ctxt -> verify_error -> unit;
       (* ctxt |- l : k  -- for constructor labels *)
       cheap : (identifier,kind) Dict.dict;
@@ -90,7 +90,7 @@ type ctxt0 =
       vheap : (identifier,con option * mode) Dict.dict;
       (* ctxt |- l = c : k -- for transparent constructor labels *)
       lenv : (identifier,int_con_def) Dict.dict
-    } 
+    }
 and ctxt = {
     ctxt0 : ctxt0;
     loc : tal_loc;
@@ -124,14 +124,14 @@ and ctxt = {
  *   All a in Dom(kappa):  con      |- kappa(a) : k
  *   All l in Dom(lenv):   con.labs |- lenv(l) : k
  *   All r in Dom(gamma):  con      |- gamma(r) : K4byte
- *   |- prop : Kbool 
+ *   |- prop : Kbool
  *
  * NOTE: The tal terms which contain constructors may have free variables
  *       in them.  These free variables belong to Dom(srcdelta) and
  *       Dom(srcdelta) is disjoint from Dom(delta).  Dom(kappa) is a subset
  *       of Dom(srcdelta).  Thus, before finding the kind of a constructor
  *       in a tal term, apply the substitution kappa to map variables in
- *       Dom(srcdelta) to Dom(delta). 
+ *       Dom(srcdelta) to Dom(delta).
  *)
 
 exception Talverify of ctxt * verify_error;;
@@ -139,21 +139,21 @@ exception Talfail;;
 
 let empty_ctxt0 =
   { ge=(fun ctxt ve -> raise (Talverify (ctxt,ve)));
-    cheap=Dict.empty id_compare; 
+    cheap=Dict.empty id_compare;
     vheap=Dict.empty id_compare;
     lenv=Dict.empty id_compare
   }
 let empty_ctxt =
   { ctxt0=empty_ctxt0;
-    loc=Loctop; 
-    vc=""; 
+    loc=Loctop;
+    vc="";
     mode = Abs;
-    delta=Dict.empty id_compare; 
+    delta=Dict.empty id_compare;
     gamma=ms_empty;
     abbrevs=Dict.empty id_compare;
     locals=Dict.empty id_compare;
     prop=pctrue;
-    (* -- LX -- *) 
+    (* -- LX -- *)
     kindpolarity = true;
     kinds=Dict.empty id_compare;
     kindabbrevs= Dict.empty id_compare
@@ -168,7 +168,7 @@ let get_var_map ctxt = ctxt.delta
 let get_value_labels ctxt = ctxt.ctxt0.vheap;;
 
 let get_label_kind ctxt l =
-  try 
+  try
     Dict.lookup ctxt.ctxt0.cheap l
   with Dict.Absent -> generate_error ctxt (Undefined_label l); k4byte
 ;;
@@ -193,7 +193,7 @@ let get_label_con ctxt l =
       Some c -> c
     | None -> ctypeof l
 (* generate_error ctxt (Label_requires_type l); chptr [] None None *)
-   ) 
+   )
   with Dict.Absent ->
     generate_error ctxt (Undefined_label l); chptr [] None None
 ;;
@@ -205,12 +205,12 @@ let get_label_con_opt ctxt l =
 ;;
 
 let get_label_con_mode ctxt l =
-  try 
+  try
     (match Dict.lookup ctxt.ctxt0.vheap l with
     | (Some c,m) -> (c,m)
     | (_,m) -> (ctypeof l,m))
-	(* generate_error ctxt (Label_requires_type l); 
-	(chptr [] None None,m) *) 
+	(* generate_error ctxt (Label_requires_type l);
+	(chptr [] None None,m) *)
   with Dict.Absent ->
     (generate_error ctxt (Undefined_label l); (chptr [] None None,Abs));;
 
@@ -277,23 +277,23 @@ let set_abbrevs ctxt abbrevs = { ctxt with abbrevs = abbrevs }
 
 (* -- LX -- *)
 (* Refine the context for LX, by adding a new abbrev  --
- *   
- * If remove is true, then the identifier v should already be 
+ *
+ * If remove is true, then the identifier v should already be
  * an abstract variable, and should be removed.
  *
- * In either case, the new abbrev may not contain any references to 
- * old abbrevs, and it is substituted through the ctxt and the old 
+ * In either case, the new abbrev may not contain any references to
+ * old abbrevs, and it is substituted through the ctxt and the old
  * abbrevs.
  *
  *)
-let add_abbrev_map ctxt subst v c remove = 
-   try 
+let add_abbrev_map ctxt subst v c remove =
+   try
       begin
-	 let abbrevs = ctxt.abbrevs in 
+	 let abbrevs = ctxt.abbrevs in
 	 (* Make sure freevars of c do not mention any current abbrevs *)
-	 Dict.app_dict (fun v _ -> 
-	    match c.freevars with 
-		Some (kfvs, cfvs) -> if        
+	 Dict.app_dict (fun v _ ->
+	    match c.freevars with
+		Some (kfvs, cfvs) -> if
 		   Set.member cfvs v then
 		   failwith "BUG: new abbrev should not contain references to prev abbrevs"
 	     | None -> ())
@@ -301,14 +301,14 @@ let add_abbrev_map ctxt subst v c remove =
 	 (* remove v from the context *)
 	 let delta = if remove then Dict.delete_present ctxt.delta v else ctxt.delta in
 	 (* subst new abbrev thru old abbrevs *)
-	 let abbrevs = Dict.map_dict subst abbrevs in 
+	 let abbrevs = Dict.map_dict subst abbrevs in
 	 (* add new abbrev *)
 	 let abbrevs = Dict.insert abbrevs v c in
 	 (* subst new abbrev thru rest of ctxt *)
-	 let gamma = ms_map subst ctxt.gamma in       
+	 let gamma = ms_map subst ctxt.gamma in
 	 { ctxt with abbrevs = abbrevs; delta=delta; gamma = gamma }
       end
-with 
+with
 Dict.Absent -> raise (Talverify(ctxt,(Undefined_var v )))
 
 let set_kindabbrevs ctxt abbrevs =
@@ -318,34 +318,34 @@ let set_kindabbrevs ctxt abbrevs =
 let add_kindabbrev ctxt v c =
    let kinds = Dict.delete ctxt.kinds v in
    let abbrevs = Dict.insert ctxt.kindabbrevs v c in
-   let _ = c.kabbrev <- Some v in 
+   let _ = c.kabbrev <- Some v in
    { ctxt with kindabbrevs = abbrevs; kinds = kinds}
 ;;
 
-let add_kindabbrevs ctxt abbrevs' = 
+let add_kindabbrevs ctxt abbrevs' =
   Dict.fold_dict (fun v c ctxt -> add_kindabbrev ctxt v c) abbrevs' ctxt
 ;;
 
 (* -- end LX -- *)
-  
+
 let add_abbrev ctxt v c =
-   if Dict.member ctxt.delta v then 
+   if Dict.member ctxt.delta v then
       failwith ("BUG: adding abbrev " ^ (Identifier.id_to_string v) ^ " already in context")
-   else  
+   else
       let abbrevs = Dict.insert ctxt.abbrevs v c in
-      let _ = c.abbrev <- Some v in 
+      let _ = c.abbrev <- Some v in
       { ctxt with abbrevs = abbrevs}
 	 ;;
 
-let add_abbrevs ctxt abbrevs' = 
+let add_abbrevs ctxt abbrevs' =
   Dict.fold_dict (fun v c ctxt -> add_abbrev ctxt v c) abbrevs' ctxt
 ;;
 
 let set_locals ctxt locals = { ctxt with locals=locals };;
 
-let add_local_subst subst ctxt id1 con = 
+let add_local_subst subst ctxt id1 con =
    (* substitute through all of the other local substitutions *)
-   let locals = Dict.map_dict (fun old -> subst con id1 old) ctxt.locals in 
+   let locals = Dict.map_dict (fun old -> subst con id1 old) ctxt.locals in
    (* add the new substitution to the dictionary *)
    let locals = Dict.insert locals id1 con in
    { ctxt with locals=locals }
@@ -378,9 +378,9 @@ let set_cc ctxt cc = { ctxt with gamma=ms_set_cc ctxt.gamma cc };;
 let restore_cc ctxt = ms_restore_cc ctxt.gamma;;
 let set_cap ctxt con = { ctxt with gamma=ms_set_cap ctxt.gamma con };;
 
-let add_conjunct ctxt c = 
+let add_conjunct ctxt c =
   let p = ctxt.prop in
-  match c.rcon, p.rcon with 
+  match c.rcon, p.rcon with
     Cprim PCtrue,_ -> ctxt
   | _,Cprim PCtrue -> { ctxt with prop=c }
   | _,_ -> { ctxt with prop=cand [c;p] }
@@ -391,20 +391,20 @@ let set_prop ctxt c = { ctxt with prop=c };;
 (* NB:  these really only make a join when we're not processing anything
  * but top-level definitions. I need them in the verifier only to glue
  * together the cheap, vheap, etc. from imports.  *)
-let ctxt0_join c1 c2 = 
+let ctxt0_join c1 c2 =
   { ge = c1.ge;
     cheap = Dict.update c1.cheap c2.cheap;
     vheap = Dict.update c1.vheap c2.vheap;
     lenv = Dict.update c1.lenv c2.lenv
-  } 
+  }
 ;;
 
-let ctxt_join c1 c2 = 
+let ctxt_join c1 c2 =
   { ctxt0 = ctxt0_join c1.ctxt0 c2.ctxt0;
     loc = c1.loc;
     vc = c1.vc;
-    mode = if c1.mode != c2.mode 
-    then failwith "Compiler bug: modes must match on ctxt join." 
+    mode = if c1.mode != c2.mode
+    then failwith "Compiler bug: modes must match on ctxt join."
     else c1.mode;
     delta = Dict.update c1.delta c2.delta;
     gamma = c2.gamma;
@@ -412,15 +412,15 @@ let ctxt_join c1 c2 =
     locals = Dict.update c1.locals c2.locals;
     prop = c2.prop;
     (* -- LX -- *)
-    kindpolarity = 
+    kindpolarity =
      if c1.kindpolarity != c2.kindpolarity
      then failwith "Compiler bug: kindpolarities must match on ctxt join"
      else c1.kindpolarity;
     kinds = Dict.update c1.kinds c2.kinds;
     kindabbrevs = Dict.update c1.kindabbrevs c2.kindabbrevs
     (* -- end LX -- *)
-  } 
-;;      
+  }
+;;
 
 (* ---- LX ---- *)
 let get_kindvars ctxt = ctxt.kinds;;
@@ -432,12 +432,12 @@ let valid_kindvar ctxt i =
    try if Dict.lookup ctxt.kinds i = ctxt.kindpolarity then ()
 	 else generate_error ctxt (Negative_var i); ()
    with Dict.Absent -> generate_error ctxt (Undefined_var i); ()
-let check_kindvar ctxt i = 
+let check_kindvar ctxt i =
    try if Dict.lookup ctxt.kinds i = ctxt.kindpolarity then true
 	 else false
-   with Dict.Absent -> false 
-      
-let reverse_polarity ctxt = 
+   with Dict.Absent -> false
+
+let reverse_polarity ctxt =
    { ctxt with kindpolarity = not ctxt.kindpolarity }
 
 let get_polarity ctxt = ctxt.kindpolarity

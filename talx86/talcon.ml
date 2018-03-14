@@ -16,7 +16,7 @@
  * Type constructors: well formed of kind, nomalise, alpha equality
  * Utilities: unroll, size, stack size, seperate function type
  *)
- 
+
 open Utilities;;
 open Numtypes;;
 open Identifier;;
@@ -29,14 +29,14 @@ let debug s =
 open Talpp
 open Format
 
-let debug2 f = 
-  let fmt = Format.std_formatter in 
-  let o = std_options in 
+let debug2 f =
+  let fmt = Format.std_formatter in
+  let o = std_options in
   Format.pp_open_hvbox fmt 0;
   f fmt o;
   Format.pp_print_newline fmt ();
-  Format.pp_print_flush fmt (); 
-  () 
+  Format.pp_print_flush fmt ();
+  ()
 ;;
 
 
@@ -44,41 +44,41 @@ let debug2 f =
 (* kindwf and check_kind                                                 *)
 (*************************************************************************)
 
-let rec kindwf' ctxt expand k = 
-   match k.rkind with 
+let rec kindwf' ctxt expand k =
+   match k.rkind with
       Karrow (k1,k2) ->
-	 defkind(Karrow (kindwf' (reverse_polarity ctxt) expand k1, 
+	 defkind(Karrow (kindwf' (reverse_polarity ctxt) expand k1,
 			 kindwf' ctxt expand k2))
     | Kprod ks ->
 	 defkind(Kprod (List.map (kindwf' ctxt expand) ks))
     | Ksum ks ->
 	 defkind(Ksum (List.map (kindwf' ctxt expand) ks))
-    | Kvar i -> 
-	 if check_kindvar ctxt i 
+    | Kvar i ->
+	 if check_kindvar ctxt i
 	 then k
-	 else if expand then 
+	 else if expand then
 	    begin
-	       try 
+	       try
 		  let k' = Dict.lookup (get_kindabbrevs ctxt) i in
 		  (*
 		    k.rkind <- k'.rkind;
 		    k.freekindvars <- k'.freekindvars
 		  *) k'
-	       with Dict.Absent -> 
+	       with Dict.Absent ->
 		 (generate_error ctxt (Kindwf(k,"unbound kind variable "^
-					      (id_to_string i))); 
+					      (id_to_string i)));
 		  raise Talfail)
-	    end 
-         else 
+	    end
+         else
 	    (generate_error ctxt (Kindwf(k,"unbound kind variable "^
 					 (id_to_string i))); raise Talfail)
-    | Kmu (ks,j) -> 
-	 let ctxt = List.fold_left (fun ctxt (j,k) -> 
-	    add_kind ctxt j) ctxt ks in 
-	 if List.mem j (List.map fst ks) then 
-	    defkind(Kmu 
+    | Kmu (ks,j) ->
+	 let ctxt = List.fold_left (fun ctxt (j,k) ->
+	    add_kind ctxt j) ctxt ks in
+	 if List.mem j (List.map fst ks) then
+	    defkind(Kmu
 		      (List.map (fun (j,k) -> (j,kindwf' ctxt expand k)) ks,j))
-	 else 
+	 else
 	 (generate_error ctxt (Kindwf(k,"variable "^(id_to_string j)^
 				      " not bound in recursive type"));
 	  raise Talfail)
@@ -103,7 +103,7 @@ let empty_ctxt = ([],[])
 let extend (km,vm) x1 x2 : alphactxt =
    km,((x1,x2)::vm)
 ;;
-let extend_kind (km,vm) x1 x2 : alphactxt = 
+let extend_kind (km,vm) x1 x2 : alphactxt =
    (x1,x2)::km,vm
 ;;
 let rec cmp error c x1 x2 =
@@ -116,7 +116,7 @@ let rec cmp error c x1 x2 =
  	 error ()
       else cmp error c x1 x2
 ;;
-let compare error (k,c) x1 x2 = 
+let compare error (k,c) x1 x2 =
 cmp error c x1 x2
 ;;
 
@@ -139,11 +139,11 @@ let rec kindaeq error ctxt kmap k1 k2 =
   | (Ksum k1s, Ksum k2s) -> kindsaeq error ctxt kmap (Kindeq (k1,k2)) k1s k2s
   | (Kvar i, Kvar j) -> cmp error kmap i j
   | (Kmu (ks1,i), Kmu (ks2,j)) ->
-       if List.length ks1 <> List.length ks2 
+       if List.length ks1 <> List.length ks2
        then error () (*  generate_error ctxt (Kindeq (k1,k2))*)
-       else 
-	  let kmap = List.fold_right2 (fun (j,_) (j2,_) kmap -> (j,j2)::kmap) 
-	     	ks1 ks2 kmap in 
+       else
+	  let kmap = List.fold_right2 (fun (j,_) (j2,_) kmap -> (j,j2)::kmap)
+	     	ks1 ks2 kmap in
 	  List.iter2 (fun (_,k1) (_,k2) -> kindaeq error ctxt kmap k1 k2) ks1 ks2;
 	  cmp error kmap i j
   | (_,_) -> (* generate_error ctxt (Kindeq (k1,k2)) *)
@@ -151,24 +151,24 @@ let rec kindaeq error ctxt kmap k1 k2 =
 and kindsaeq error ctxt kmap ve k1s k2s =
   match k1s,k2s with
     ([],[]) -> ()
-   | (k1::k1s,k2::k2s) -> (kindaeq error ctxt kmap  k1 k2; 
+   | (k1::k1s,k2::k2s) -> (kindaeq error ctxt kmap  k1 k2;
 			     kindsaeq error ctxt kmap ve k1s k2s)
    | (_,_) -> (* generate_error ctxt ve *) error ()
 ;;
 exception NotEq
-let kindeq ctxt k1 k2 = 
-   kindaeq (fun () -> raise NotEq) ctxt [] k1 k2 
+let kindeq ctxt k1 k2 =
+   kindaeq (fun () -> raise NotEq) ctxt [] k1 k2
 
-let rec filter_schema l = 
+let rec filter_schema l =
    match l with [] -> []
-    | ( (j,k)::tl ) -> 
-	 match tl with 
+    | ( (j,k)::tl ) ->
+	 match tl with
 	    [] -> [(j,k)]
-	  | (j2,k2)::_ -> if id_compare j j2 = 0  then 
+	  | (j2,k2)::_ -> if id_compare j j2 = 0  then
 	       try  (kindeq (empty_ctxt) k k2 ;
 		  filter_schema tl)
-	       with _ -> 
-		  ((debug2 (fun fmt o -> 
+	       with _ ->
+		  ((debug2 (fun fmt o ->
 		     print_kind fmt o k;
 		     pp_print_string fmt " =/= ";
 		     print_kind fmt o k2));
@@ -189,7 +189,7 @@ and kindaleq' error ctxt kmap k1 k2 =
   | (Kbyte _,Ktype) -> ()
   | (Kmemi i1,Kmemi i2) when i1=i2 -> ()
   | (Kmemi _,Kmem) -> ()
-  | (Karrow(k1a,k1b),Karrow(k2a,k2b)) -> 
+  | (Karrow(k1a,k1b),Karrow(k2a,k2b)) ->
       (kindaleq error ctxt kmap k2a k1a; kindaleq error ctxt kmap k1b k2b)
   | (Kprod k1s,Kprod k2s) -> kindsaleq error ctxt kmap (Kindleq (k1,k2)) k1s k2s true
   | (Ksum k1s, Ksum k2s) -> kindsaleq error ctxt kmap (Kindleq (k1,k2)) k2s k1s false
@@ -197,9 +197,9 @@ and kindaleq' error ctxt kmap k1 k2 =
 and kindsaleq error ctxt kmap ve k1s k2s prod =
   match k1s,k2s with
     ([],[]) -> ()
-  | (k1::k1s,k2::k2s) -> 
-       ((if prod then kindaleq error ctxt kmap k1 k2 else kindaleq error ctxt kmap k2 k1); 
-	  kindsaleq error ctxt kmap ve k1s k2s prod)	
+  | (k1::k1s,k2::k2s) ->
+       ((if prod then kindaleq error ctxt kmap k1 k2 else kindaleq error ctxt kmap k2 k1);
+	  kindsaleq error ctxt kmap ve k1s k2s prod)
   | (_,_) -> (* generate_error ctxt ve *) error ()
 ;;
 
@@ -209,8 +209,8 @@ and kindsaleq error ctxt kmap ve k1s k2s prod =
  *)
 
 exception NotLeq
-let kindleq ctxt k1 k2 = 
-   kindaleq (fun () -> (* was raise NotLeq *) generate_error ctxt (Kindleq(k1,k2))) ctxt [] k1 k2 
+let kindleq ctxt k1 k2 =
+   kindaleq (fun () -> (* was raise NotLeq *) generate_error ctxt (Kindleq(k1,k2))) ctxt [] k1 k2
 
 (* kindmeet k1 k2:
  *   if the meet of k1 & k2 exists return it
@@ -252,7 +252,7 @@ and kindjoin ctxt k1 k2 =
        karrow (kindmeet ctxt k11 k21)(kindjoin ctxt k12 k22)
   | Kprod k1s,Kprod k2s -> kprod (kindsjoin ctxt (Kindjoin (k1,k2)) k1s k2s)
   | Ksum k1s, Ksum k2s -> ksum (kindsjoin ctxt (Kindjoin (k1,k2)) k1s k2s)
-  | Kmu _, Kmu _ -> kindeq ctxt k1 k2; k1 
+  | Kmu _, Kmu _ -> kindeq ctxt k1 k2; k1
   | _,_ -> generate_error ctxt (Kindjoin (k1,k2)); raise Talfail
 and kindsjoin ctxt ve k1s k2s =
   match k1s,k2s with
@@ -271,16 +271,16 @@ let singleton = Set.singleton id_compare
 let empty_set = Set.empty id_compare
 
 (* add a to the free kind set *)
-let rec combine a (b,c) = 
+let rec combine a (b,c) =
    (Set.union a b, c)
-let mappair f (a1,a2) (b1,b2) = 
+let mappair f (a1,a2) (b1,b2) =
    (f a1 b1, f a2 b2)
-let unions_kind l : identifier Set.set = 
+let unions_kind l : identifier Set.set =
    List.fold_left Set.union empty_set l
-let kdelete s l = 
+let kdelete s l =
    List.fold_left Set.delete s l
 
-let unions (l : (identifier Set.set * identifier Set.set) list) = 
+let unions (l : (identifier Set.set * identifier Set.set) list) =
    List.fold_left (mappair Set.union)(empty_set,empty_set) l
 let cdelete (ks,cs) a = (ks,Set.delete cs a)
 
@@ -288,19 +288,19 @@ let cdelete (ks,cs) a = (ks,Set.delete cs a)
  * field.  No assumptions about well formedness or canonical form.
  *)
 
-let rec rk_freevars (k : rkind) : identifier Set.set = 
-   match k with 
-      (Kbyte _ | Ktype | Kmemi _ | Kmem | Kstack 
+let rec rk_freevars (k : rkind) : identifier Set.set =
+   match k with
+      (Kbyte _ | Ktype | Kmemi _ | Kmem | Kstack
     | Kint | Kbool | Kname | Kcap | Kms )  -> empty_set
     | Karrow (k1, k2) -> Set.union (freevars_kind k1) (freevars_kind k2)
     | Kprod ks -> unions_kind (List.map freevars_kind ks)
     | Ksum ks -> unions_kind (List.map freevars_kind ks)
     | Kvar i -> singleton i
-    | Kmu (ks1,i) -> 
-	 let (js,ks) = List.split ks1 in 
+    | Kmu (ks1,i) ->
+	 let (js,ks) = List.split ks1 in
 	 kdelete (unions_kind (List.map freevars_kind ks)) js
-and freevars_kind (k:kind) = 
-   match k.freekindvars with 
+and freevars_kind (k:kind) =
+   match k.freekindvars with
       None -> let s = rk_freevars k.rkind in k.freekindvars <- Some s; s
     | Some s -> s
 
@@ -313,44 +313,44 @@ and freevars_kind (k:kind) =
 let rec rc_freevars (c : rcon) : (identifier Set.set) * (identifier Set.set) =
   match c with
     Cvar a -> empty_set, singleton a
-  | Clam (v,k,c) -> 
-       let ks,cs = (freevars c) in 
+  | Clam (v,k,c) ->
+       let ks,cs = (freevars c) in
        Set.union ks (freevars_kind k), Set.delete cs v
   | Capp (c1,c2) -> mappair Set.union (freevars c1) (freevars c2)
   | Ctuple cs ->  combine empty_set (unions (List.map freevars cs))
   | Cproj (_,c) ->  combine empty_set ( freevars c)
 (* ---- LX ---- *)
   | Cinj(_,c,k) ->  combine (freevars_kind k) (freevars c)
-  | Ccase(c,a,cs) -> 
+  | Ccase(c,a,cs) ->
        combine empty_set (mappair Set.union (freevars c)
 			       (cdelete (unions (List.map freevars cs)) a))
   | Cfold(k,c) -> combine (freevars_kind k) (freevars c)
-  | Cpr (i,l) -> 
-       let (kset, cset) = 
-	  List.fold_right (fun (j,a,k1,f,k2,c) set -> 
+  | Cpr (i,l) ->
+       let (kset, cset) =
+	  List.fold_right (fun (j,a,k1,f,k2,c) set ->
 	     let kset = (Set.union (freevars_kind k1) (freevars_kind k2)) in
 	     let cset = (mappair Set.union set (freevars c)) in
 	     combine kset cset) l (empty_set, empty_set) in
-       let (kset, cset) = 
-	  List.fold_right (fun (j,a,k1,f,k2,c) (kset,cset) -> 
-	     (Set.delete kset j, Set.delete (Set.delete cset a) f)) l (kset, cset) in 
+       let (kset, cset) =
+	  List.fold_right (fun (j,a,k1,f,k2,c) (kset,cset) ->
+	     (Set.delete kset j, Set.delete (Set.delete cset a) f)) l (kset, cset) in
        (kset, cset)
   | Cvoid k -> freevars_kind k,empty_set
-(* -- end LX -- *) 
+(* -- end LX -- *)
   | Clab _ -> empty_set,empty_set
   | Cprim _ ->  empty_set,empty_set
-  | Crec fs -> 
+  | Crec fs ->
       let s =
  	List.fold_left
-	    (fun (ks,cs) (_,k,c) -> 
+	    (fun (ks,cs) (_,k,c) ->
 	       combine (freevars_kind k) (mappair Set.union (ks,cs) (freevars c)))
 	    (empty_set,empty_set) fs in
       List.fold_left (fun (ks,cs) (x,_,_) -> (ks,Set.delete cs x)) s fs
   | Cforall (v,k,c) -> combine (freevars_kind k) (cdelete (freevars c) v)
-  | Cexist (v,k,c1, c2) -> combine (freevars_kind k) 
+  | Cexist (v,k,c1, c2) -> combine (freevars_kind k)
 	  (cdelete (mappair Set.union (freevars c1) (freevars c2)) v)
 (* machine state *)
-  | Cms ms -> 
+  | Cms ms ->
       let s1 = freevars (ms_get_cap ms)
       in ms_fold_reg (fun r c s -> mappair Set.union s (freevars c)) ms s1
   | Cmsjoin(c1,c2) -> mappair Set.union (freevars c1) (freevars c2)
@@ -375,7 +375,7 @@ let rec rc_freevars (c : rcon) : (identifier Set.set) * (identifier Set.set) =
   | Cname c -> freevars c
   | Cjoin cs -> unions (List.map freevars cs)
   | Ccap d ->
-      Dict.fold_dict 
+      Dict.fold_dict
 	  (fun x (_,c) (ks,s) ->
 	     let fk,fc =  (freevars c) in
 	     (Set.union fk ks, Set.union fc s)) d
@@ -410,32 +410,32 @@ let rec rc_freevars (c : rcon) : (identifier Set.set) * (identifier Set.set) =
 (* End Cyclone *)
   | Csubst(c,s) -> subst_freevars (freevars c) s
   | Cr ci ->
-       (match ci with 
+       (match ci with
 	  RCon c -> freevars c
-	| RKind k -> if (Set.is_empty (freevars_kind k)) 
+	| RKind k -> if (Set.is_empty (freevars_kind k))
 	             then empty_set, empty_set
 	             else failwith "SCW-BUG: What do I do here???"
 	| _ -> empty_set, empty_set )
-  | Ctypeof _ -> empty_set, empty_set      
+  | Ctypeof _ -> empty_set, empty_set
 
 and subst_freevars ((sk,sc) as s) es =
   match es with
     Enil -> s
-  | Es(x,c) -> 
+  | Es(x,c) ->
       if Set.member sc x then
 	 mappair Set.union (cdelete s x ) (freevars c)
       else s
   | Eo(es1,es2) -> subst_freevars (subst_freevars s es1) es2
-and freevars (c : con) : (identifier Set.set) * (identifier Set.set) = 
+and freevars (c : con) : (identifier Set.set) * (identifier Set.set) =
    match c.freevars with
-     None -> let s = rc_freevars c.rcon in 
+     None -> let s = rc_freevars c.rcon in
     c.freevars <- (Some s);  s
    | Some s -> s
 ;;
 
-let is_closed c = 
-   let (k,c) = freevars c in 
-   Set.is_empty k & Set.is_empty c 
+let is_closed c =
+   let (k,c) = freevars c in
+   Set.is_empty k & Set.is_empty c
 
 (*************************************************************************)
 (* Capture avoiding substitution for kinds and  constructors             *)
@@ -474,9 +474,9 @@ let get_kdict ((kd,cd),(ks,cs)) = (kd,ks)
 
 (* do renaming if necessary *)
 let rename_kind j ((kd,ks) as z) =
-   if Dict.member kd j then 
-      (Dict.delete kd j, ks),j 
-   else if Set.member ks j then 
+   if Dict.member kd j then
+      (Dict.delete kd j, ks),j
+   else if Set.member ks j then
       let j' = id_unique j in
       ((Dict.insert kd j (defvarkind j'),ks), j')
    else (z,j)
@@ -495,20 +495,20 @@ let rename1 (x as t) ((((kd,cd) as d),((ks,cs) as s)) as z) =
     (((kd,Dict.delete cd x),s),t)
   else if Set.member cs x then
      let x' = id_unique x in
-     (* as x' is unique, we don't need to add it to the free vars of d even though 
+     (* as x' is unique, we don't need to add it to the free vars of d even though
 	we map x to it. *)
      (((kd,Dict.insert cd x (defvarcon x')),s), x')
   else (z,t)
 ;;
 
-let rename (x,k,c) z = 
-   let (z,x) = rename1 x z in 
+let rename (x,k,c) z =
+   let (z,x) = rename1 x z in
    (z, (x,k,c))
 ;;
 
 (* as above but renaming occurs in the 2 constructors c1 and c2 *)
 let rename2 ((x,k,c1,c2) as t) ((d,s) as z) =
-   let (z,x) = rename1 x z in 
+   let (z,x) = rename1 x z in
    (z, (x,k,c1,c2))
 ;;
 
@@ -522,40 +522,40 @@ let rename_then fk fc p t =
 
 
 (* Given a dict(only for kinds) and a kind actually apply the substitution to the kind    kd - dict from kvars to kinds
-   ks - set of freevars in kinds in dict (so we know when we have to rename) 
+   ks - set of freevars in kinds in dict (so we know when we have to rename)
 *)
-let rec rksubstsa ((kd,ks) as p) kind = 
-   match kind.rkind with 
-      (Kbyte _ | Ktype | Kmemi _ | Kmem  | Kstack 
+let rec rksubstsa ((kd,ks) as p) kind =
+   match kind.rkind with
+      (Kbyte _ | Ktype | Kmemi _ | Kmem  | Kstack
     | Kint | Kbool | Kname | Kcap | Kms)  -> kind
-    | Karrow (k1,k2) -> 
+    | Karrow (k1,k2) ->
 	 defkind(Karrow( ksubstsa p k1, ksubstsa p k2))
     | Kprod ks ->defkind (Kprod (List.map (ksubstsa p) ks))
     | Ksum ks ->defkind (Ksum (List.map (ksubstsa p) ks))
     | Kvar v -> (try Dict.lookup kd v with Dict.Absent -> kind)
     | Kmu (schema,v) ->
-	 let js,ks = List.split schema in 
-	 let z,js,v = List.fold_left 
-	       (fun (p,js,v') j -> let p,jnew = rename_kind j p in 
+	 let js,ks = List.split schema in
+	 let z,js,v = List.fold_left
+	       (fun (p,js,v') j -> let p,jnew = rename_kind j p in
 	       (p,jnew::js, if id_compare j v = 0 then jnew else v')) (p,[],v) js in
-	 let js = List.rev js in 
-	 let ks = List.map (ksubstsa z) ks in 
+	 let js = List.rev js in
+	 let ks = List.map (ksubstsa z) ks in
 	 defkind (Kmu(List.combine js ks, v))
 
 (* Multiple substitutions - check for cutoff otherwise rksubstsa *)
 (* k{d} where s= fv(ran (d)) *)
-and ksubstsa (d,_ as p) k = 
-   match k.freekindvars with 
+and ksubstsa (d,_ as p) k =
+   match k.freekindvars with
       None -> rksubstsa p k
-    | Some kfvs -> 
-	 let aux j k ((d,fvs) as z) = 
+    | Some kfvs ->
+	 let aux j k ((d,fvs) as z) =
 	    if Set.member kfvs j then
 	       (Dict.insert d j k), Set.union fvs (freevars_kind k)
 	    else z in
 	 let d,_ as p =  Dict.fold_dict aux d (Dict.empty id_compare,empty_set) in
 	 if Dict.is_empty d then
 	    k
-	 else 
+	 else
       	    rksubstsa p k
 
 (* Actually do multiple substitutions *)
@@ -563,35 +563,35 @@ and ksubstsa (d,_ as p) k =
 let dcon rc = defcon rc;;
 let wcon rc = wcon rc;;
 
-let rec rcsubstsa (((kd,cd) as d,(kfvs,cfvs) as fvs) as p) con = 
+let rec rcsubstsa (((kd,cd) as d,(kfvs,cfvs) as fvs) as p) con =
   match con.rcon with
     Cvar a ->
       (try Dict.lookup cd a with Dict.Absent -> con)
-  | Clam(x,k,c) -> 
+  | Clam(x,k,c) ->
      let (x',k',c') = rename_then ksubstsa substsa p (x,k,c) in wcon(Clam(x',k',c'))
   | Capp(c1,c2) -> dcon(Capp(substsa p c1, substsa p c2))
   | Ctuple cs -> wcon(Ctuple(List.map (substsa p) cs))
   | Cproj(i,c) -> dcon(Cproj(i,substsa p c))
 (* ---- LX ---- *)
   | Cinj(i,c,k) -> dcon(Cinj(i, substsa p c, ksubstsa (get_kdict p) k))
-  | Ccase(c,a,cs) -> let (p',x) = rename1 a p in 
+  | Ccase(c,a,cs) -> let (p',x) = rename1 a p in
     dcon (Ccase (substsa p c, x, List.map (substsa p') cs))
   | Cfold (k,c) -> dcon(Cfold(ksubstsa (get_kdict p) k, substsa p c))
-  | Cpr (f, l) -> 
+  | Cpr (f, l) ->
        (* Create a new dictionary, possibly renaming the bound kind variables
 	  and bound con variables. *)
-       let (l, (((kd,cd),(ks,cs)) as p))  = 
-	  List.fold_right (fun (j,a,k,f,k',c) (rest,(((kd,cd),(ks,cs)) as p))  -> 
-	     let ((kd,ks), j') = rename_kind j (kd,ks) in 
+       let (l, (((kd,cd),(ks,cs)) as p))  =
+	  List.fold_right (fun (j,a,k,f,k',c) (rest,(((kd,cd),(ks,cs)) as p))  ->
+	     let ((kd,ks), j') = rename_kind j (kd,ks) in
 	     let (p,a') = rename1 a ((kd,cd),(ks,cs)) in
-	     let (p,f') = rename1 f p in 
-	     ((j',a',k,f',k',c)::rest,p)) l ([],p) in 
+	     let (p,f') = rename1 f p in
+	     ((j',a',k,f',k',c)::rest,p)) l ([],p) in
 (*       let l = List.rev l in *)
-       let kp = kd,ks in 
-       let l = List.map (fun  (j,a,k,f,k',c) -> 
+       let kp = kd,ks in
+       let l = List.map (fun  (j,a,k,f,k',c) ->
 	  (j, a, ksubstsa kp k, f, ksubstsa kp k', substsa p c)) l in
-       let f =  (try Dict.lookup cd f with Dict.Absent -> cvar f) in 
-       (match f.rcon with Cvar f -> 
+       let f =  (try Dict.lookup cd f with Dict.Absent -> cvar f) in
+       (match f.rcon with Cvar f ->
 	  dcon(Cpr (f,l))
 	| _ -> failwith "BUG: substitution for bound variable")
   | Cvoid k -> cvoid (ksubstsa (get_kdict p) k)
@@ -602,10 +602,10 @@ let rec rcsubstsa (((kd,cd) as d,(kfvs,cfvs) as fvs) as p) con =
       let g f (p,fs) = let (p',f') = rename f p in (p',f'::fs) in
       let (p',fs') = List.fold_right g fs (p,[]) in
       wcon (Crec (List.map (fun (x',k,c) -> (x',ksubstsa (get_kdict p') k,substsa p' c)) fs'))
-  | Cforall (x,k,c) -> 
+  | Cforall (x,k,c) ->
       let (x',k',c') = rename_then ksubstsa substsa p (x,k,c) in
       wcon(Cforall(x',k',c'))
-  | Cexist (x,k,c1,c2) -> 
+  | Cexist (x,k,c1,c2) ->
       let (p',(x',k',c1',c2')) = rename2 (x,k,c1,c2) p in
       wcon(Cexist(x', ksubstsa (get_kdict p') k', (substsa p' c1'), (substsa p' c2')))
   | Cms ms -> wcon(Cms(ms_map (substsa p) ms))
@@ -632,14 +632,14 @@ let rec rcsubstsa (((kd,cd) as d,(kfvs,cfvs) as fvs) as p) con =
   | Cname c -> wcon (Cname (substsa p c))
   | Ctagof c -> wcon (Ctagof (substsa p c))
   | Cjoin cs -> dcon(Cjoin(List.map (substsa p) cs))
-  | Ccap cap_dict -> 
+  | Ccap cap_dict ->
      (* jgm: we're in big trouble here because it's crucial that
       * we never substitute anything but a Kname variable for a
       * Kname variable.  I don't think this will cause a problem
       * in practice but it's very unsettling. *)
-      let f x (ai,c) d' = 
-	let x' = 
-	  try 
+      let f x (ai,c) d' =
+	let x' =
+	  try
 	    begin
 	       match (Dict.lookup cd x).rcon with
 		Cvar x' -> x'
@@ -671,7 +671,7 @@ let rec rcsubstsa (((kd,cd) as d,(kfvs,cfvs) as fvs) as p) con =
                           holes))
                      t))
   | Ctrgn(c1,Some c2,t) ->
-      wcon(Ctrgn(substsa p c1, Some(substsa p c2), 
+      wcon(Ctrgn(substsa p c1, Some(substsa p c2),
                    List.map
                      (fun (v,labels,holes) ->
                        (v,
@@ -683,77 +683,77 @@ let rec rcsubstsa (((kd,cd) as d,(kfvs,cfvs) as fvs) as p) con =
                           holes))
                      t))
 (* End Cyclone *)
-  | Csubst(c,es) -> 
-      let rec sub_esub (d,fvs as p) es = 
+  | Csubst(c,es) ->
+      let rec sub_esub (d,fvs as p) es =
 	match es with
 	  Enil -> p
-	| Es(x,c) -> 
+	| Es(x,c) ->
 	    let  c' = substsa p c in
 	    let d' = (kd, Dict.insert cd x c') in
 	    let fvs' = mappair Set.union fvs (freevars c') in
-	    (d',fvs') 
+	    (d',fvs')
 	| Eo(es1,es2) -> sub_esub (sub_esub p es2) es1
       in substsa (sub_esub p es) c
-  | Cr ci -> 
-       (match ci with 
+  | Cr ci ->
+       (match ci with
 	  RCon c -> wcon (Cr (RCon (substsa p c)))
 	| _ -> con)
   | Ctypeof _ -> con
-       
+
 (* Multiple substitutions - check for cutoff otherwise rcsubstsa *)
 (* c{d} where s=fv(ran(d)) *)
-and substsa ((kd,cd),_ as p) c = 
+and substsa ((kd,cd),_ as p) c =
   match c.freevars with
     None -> rcsubstsa p c
    | Some (kfvs,cfvs) ->
-	  
-      let auxk x k (((kd,cd),(kfvs2, cfvs2)) as z) = 
+
+      let auxk x k (((kd,cd),(kfvs2, cfvs2)) as z) =
 	 if Set.member kfvs x then
 	  ((Dict.insert kd x k,cd),(Set.union (freevars_kind k) kfvs2,cfvs2))
 	else z in
-      let aux x c (((kd,cd),(kfvs2, cfvs2)) as z) = 
+      let aux x c (((kd,cd),(kfvs2, cfvs2)) as z) =
 	 if Set.member cfvs x then
 	  ((kd,Dict.insert cd x c),mappair Set.union (kfvs2,cfvs2) (freevars c))
 	else z in
-      let p = Dict.fold_dict auxk kd 
-	    ((Dict.empty id_compare,Dict.empty id_compare),(empty_set,empty_set)) in 
+      let p = Dict.fold_dict auxk kd
+	    ((Dict.empty id_compare,Dict.empty id_compare),(empty_set,empty_set)) in
       let (kd,cd),_ as p  = Dict.fold_dict aux cd p in
       if Dict.is_empty kd & Dict.is_empty cd then
 	c
-      else 
+      else
       	rcsubstsa p c
 ;;
 
 (* Fail over function when rcsubsta needs to do renaming *)
 (* c2{x:=c1} where fvs=fv(c1) *)
 let subst12d c1 x fvs c2 =
-   let c =  substsa 
+   let c =  substsa
 	 ((Dict.empty id_compare ,Dict.singleton id_compare x c1),fvs) c2 in
-   c	 
+   c
 
 (* Actually do single substitution *)
 (* con{a:=ca} where fvs=fv(ca) *)
-let rec rcsubsta ca a ((kfvs,cfvs) as fvs:(identifier Set.set) * (identifier Set.set)) con = 
+let rec rcsubsta ca a ((kfvs,cfvs) as fvs:(identifier Set.set) * (identifier Set.set)) con =
   match con.rcon with
     Cvar x ->
       if (id_compare x a)=0 then ca else con
-  | Clam(x,k,c) -> 
+  | Clam(x,k,c) ->
       if (id_compare x a)=0 then con
-      else if Set.member cfvs x then subst12d ca a fvs con 
+      else if Set.member cfvs x then subst12d ca a fvs con
       else wcon(Clam(x,k,substa ca a fvs c))
   | Capp(c1,c2) -> dcon(Capp(substa ca a fvs c1, substa ca a fvs c2))
   | Ctuple cs -> wcon(Ctuple(List.map (substa ca a fvs) cs))
   | Cproj(i,c) -> dcon(Cproj(i,substa ca a fvs c))
 (* ---- LX ---- *)
   | Cinj(i,c,k) -> dcon(Cinj(i, substa ca a fvs c, k))
-  | Ccase( c,x,cs) -> 
+  | Ccase( c,x,cs) ->
        if (id_compare x a) = 0
-       then dcon(Ccase (substa ca a fvs c, x, cs)) 
-       else if Set.member cfvs x then 
+       then dcon(Ccase (substa ca a fvs c, x, cs))
+       else if Set.member cfvs x then
 	  subst12d ca a fvs con
        else dcon (Ccase (substa ca a fvs c, x, List.map (substa ca a fvs) cs))
   | Cfold (k,c) -> dcon(Cfold(k, substa ca a fvs c))
-  | Cpr (j,l) -> subst12d ca a fvs con 
+  | Cpr (j,l) -> subst12d ca a fvs con
        (* immediately fall-over *)
   | Cvoid _ -> con
 (* -- end LX -- *)
@@ -764,13 +764,13 @@ let rec rcsubsta ca a ((kfvs,cfvs) as fvs:(identifier Set.set) * (identifier Set
 	con
       else if List.exists (fun (x,_,_) -> Set.member cfvs x) fs then
 	subst12d ca a fvs con
-      else 
+      else
 	wcon(Crec(List.map (fun (x,k,c) -> (x,k,substa ca a fvs c)) fs))
-  | Cforall (x,k,c) -> 
+  | Cforall (x,k,c) ->
       if (id_compare x a)=0 then con
       else if Set.member cfvs x then subst12d ca a fvs con
       else wcon(Cforall(x,k,substa ca a fvs c))
-  | Cexist (x,k,c1,c2) -> 
+  | Cexist (x,k,c1,c2) ->
       if (id_compare x a)=0 then con
       else if Set.member cfvs x then subst12d ca a fvs con
       else wcon(Cexist(x,k,substa ca a fvs c1,substa ca a fvs c2))
@@ -804,8 +804,8 @@ let rec rcsubsta ca a ((kfvs,cfvs) as fvs:(identifier Set.set) * (identifier Set
       * we never substitute anything but a Kname variable for a
       * Kname variable.  I don't think this will cause a problem
       * in practice but it's very unsettling. *)
-      let f x (ai,c) d' = 
-	let x' = 
+      let f x (ai,c) d' =
+	let x' =
 	  if (id_compare x a)=0 then
 	    begin
 	      match ca.rcon with
@@ -853,12 +853,12 @@ let rec rcsubsta ca a ((kfvs,cfvs) as fvs:(identifier Set.set) * (identifier Set
                      t))
 (* End Cyclone *)
   | Csubst(c,es) -> subst12d ca a fvs con
-  | Cr ci -> 
-       (match ci with 
+  | Cr ci ->
+       (match ci with
 	  RCon c -> wcon (Cr (RCon (substa ca a fvs c)))
 	| _ -> con)
   | Ctypeof _ -> con
-      
+
 (* Single substitution - check for cutoff otherwise rcsubsta *)
 (* c{a:=ca} where fvs=fv(ca) *)
 and substa ca a fvs c =
@@ -867,7 +867,7 @@ and substa ca a fvs c =
   | Some (kfvs,cfvs) ->
        if Set.member cfvs a then
 	  rcsubsta ca a fvs c
-       else 
+       else
  	  c
 ;;
 
@@ -878,15 +878,15 @@ let ksubst ka a k = ksubstsa ((Dict.singleton id_compare a ka),(freevars_kind ka
 
 (* k{d}  -- kind multiple substition *)
 let ksubsts kd k =
-   let aux x c s = Set.union (freevars_kind k) s in 
+   let aux x c s = Set.union (freevars_kind k) s in
    let s = Dict.fold_dict aux kd empty_set in
    ksubstsa (kd,s) k
 
 
 (* an application of ksubsts *)
-let unroll_kind k = 
-   match k.rkind with 
-      Kmu (schema, j) -> 
+let unroll_kind k =
+   match k.rkind with
+      Kmu (schema, j) ->
 	 let body = List.assoc j schema in
 	 let mus = List.map (fun (j,k) -> (j, defkind (Kmu (schema, j)))) schema in
 	 let kd = Dict.inserts (Dict.empty id_compare) mus  in
@@ -894,16 +894,16 @@ let unroll_kind k =
     | _ -> failwith "Unroll applied to non mu"
 
 (* c{a:=ca} -- constructor single substitution *)
-let subst ca a c = 
-   let kfvs,cfvs as fvs = (freevars ca) in 
-   let c = substa ca a fvs  c in 
-   c	 
+let subst ca a c =
+   let kfvs,cfvs as fvs = (freevars ca) in
+   let c = substa ca a fvs  c in
+   c
 ;;
 
 (* c{d} -- constructor multiple substitution *)
 let substs (kd,cd as d) c =
   let aux x c s = mappair Set.union s (freevars c) in
-  let s = Dict.fold_dict (fun j k (ks,cs) -> (Set.union (freevars_kind k) ks,cs)) 
+  let s = Dict.fold_dict (fun j k (ks,cs) -> (Set.union (freevars_kind k) ks,cs))
 	kd (empty_set,empty_set) in
   let s = Dict.fold_dict aux cd s in
   substsa (d,s) c
@@ -922,7 +922,7 @@ let error ctxt c s = generate_error ctxt (Conwf (c,s));;
 
 let km2t4 = karrow kmem k4byte
 
-let primcon_kind ctxt pc = 
+let primcon_kind ctxt pc =
   match pc with
     PCbytes sc -> kbyte sc
   | PCfloat32  -> kbyte Byte4
@@ -935,7 +935,7 @@ let primcon_kind ctxt pc =
 
 let rec con_kind ctxt con =
   match con.rcon with
-    Cvar a -> get_variable_kind ctxt a 
+    Cvar a -> get_variable_kind ctxt a
   | Clam(a,k1,c) -> karrow k1 (con_kind (add_var ctxt a k1) c)
   | Capp(c1,c2) ->
       (match (con_kind ctxt c1).rkind with
@@ -946,38 +946,38 @@ let rec con_kind ctxt con =
       (match (con_kind ctxt c').rkind with
 	Kprod ks ->
 	  (try List.nth ks i
-	  with Failure _ -> 
+	  with Failure _ ->
 	    error ctxt con "Cproj: index out of range"; raise Talfail)
       |	_ -> error ctxt con "Cproj: not a Kprod"; raise Talfail)
   | Cinj(i,c,k) -> k
-  | Ccase(c,a,cs) -> 
-       let k = con_kind ctxt c in 
-       (match k.rkind with 
+  | Ccase(c,a,cs) ->
+       let k = con_kind ctxt c in
+       (match k.rkind with
 	  Ksum ks ->
-	     (try 
-	     	let l = 
-		   List.map2 (fun k c -> 
-		      con_kind (add_var ctxt a k) c) ks cs  in 
-		(match l with 
-		   (hd :: rest) -> 
+	     (try
+	     	let l =
+		   List.map2 (fun k c ->
+		      con_kind (add_var ctxt a k) c) ks cs  in
+		(match l with
+		   (hd :: rest) ->
 		      List.fold_right (kindjoin ctxt) rest hd
 		 | [] -> failwith "Ccase: compiler bug" )
 	     with _ ->  error ctxt con "Ccase: wrong num branches";  raise Talfail)
-	| _ ->     
+	| _ ->
 	     error ctxt con "Ccase: not a Ksum"; raise Talfail)
-  | Cfold (k,c) -> k	  
-  | Cpr (i,l) -> 
-       let schema = List.map (fun (j,a,k,f,k',c) -> (j,k)) l in 
+  | Cfold (k,c) -> k
+  | Cpr (i,l) ->
+       let schema = List.map (fun (j,a,k,f,k',c) -> (j,k)) l in
        let schema = filter_schema schema in
-       let rec getk' l = match l with (j,a,k,f,k',c)::rest -> if 
+       let rec getk' l = match l with (j,a,k,f,k',c)::rest -> if
 	  id_compare f i = 0 then (j,k') else getk' rest
-	| [] -> failwith "Shouldn't get here" in 
-       let (j,k') = getk' l in 
-       
+	| [] -> failwith "Shouldn't get here" in
+       let (j,k') = getk' l in
+
        let mus = List.map (fun (j,k) -> (j, defkind (Kmu (schema, j)))) schema in
        let kd = Dict.inserts (Dict.empty id_compare) mus  in
-       let mu = defkind (Kmu(schema, j)) in 
-       let ret = defkind(Karrow (mu, ksubsts kd k'))in 
+       let mu = defkind (Kmu(schema, j)) in
+       let ret = defkind(Karrow (mu, ksubsts kd k'))in
        ret
   | Cvoid k -> k
 (* -- end LX -- *)
@@ -1039,13 +1039,13 @@ let rec con_kind ctxt con =
   | Csubst(c,s) -> con_kind (subst_kind ctxt s) c
   | Cr _ -> kmem
   (* Everything else is T4 *)
-  | Cforall (_,_,_) | Cexist (_,_,_,_) | Ccode _ | Chptr (_,_,_) | Csing _ 
+  | Cforall (_,_,_) | Cexist (_,_,_,_) | Ccode _ | Chptr (_,_,_) | Csing _
   | Csptr _ -> k4byte
-  | Ctypeof l -> 
+  | Ctypeof l ->
       get_label_con_opt ctxt l;  (* Ensure l is bound! *)
       k4byte
 (* enter the substitution's variables into the context right to left *)
-and subst_kind ctxt s = 
+and subst_kind ctxt s =
   match s with
     Enil -> ctxt
   | Es(x,c) -> add_var ctxt x (con_kind ctxt c)
@@ -1113,16 +1113,16 @@ let expand_abbrevs ctxt c = substs (get_kindabbrevs ctxt, get_abbrevs ctxt) c;;
  * and returns the kind and new constructor.
  *)
 let check ctxt c =
-  let rec ck (ctxt : ctxt) (con : con) = 
+  let rec ck (ctxt : ctxt) (con : con) =
     match con.abbrev with
       Some x -> con_kind ctxt con
-    | _ -> 
+    | _ ->
     let c = con.rcon in
     match c with
-      Cvar a -> 
+      Cvar a ->
 	begin
 	  (*
-	  try 
+	  try
 	    let c = Dict.lookup (get_abbrevs ctxt) a in
 	    con.rcon <- c.rcon;
 	    con.con_state <- c.con_state;
@@ -1132,7 +1132,7 @@ let check ctxt c =
 	    con_kind ctxt c
 	  with Dict.Absent -> *) get_variable_kind ctxt a
 	end
-    | Clam(a,k1,c) -> 
+    | Clam(a,k1,c) ->
 	check_kind ctxt k1;
 	let k2 = ck (add_var ctxt a k1) c in
 	karrow k1 k2
@@ -1141,31 +1141,31 @@ let check ctxt c =
 	let k2 = ck ctxt c2 in
 	begin
 	  match k1.rkind with
-	    Karrow(ka,kb) -> 
+	    Karrow(ka,kb) ->
 	      kindleq ctxt k2 ka; kb
 	  | _ -> error ctxt con "Capp: not a Karrow"; raise Talfail
 	end
     | Ctuple cs ->
 	 (* This case was incorrect in talc-1.5 *)
-	 let ks = List.map (ck ctxt) cs in 
-	 kprod ks 
+	 let ks = List.map (ck ctxt) cs in
+	 kprod ks
     | Cproj(i,c') ->
 	 let k = ck ctxt c' in
 	 begin
 	    match k.rkind with
 	       Kprod ks ->
 	      	  (try (List.nth ks i) with
-		     Failure _ -> error ctxt con "Cproj: index out of range"; 
+		     Failure _ -> error ctxt con "Cproj: index out of range";
 		      	raise Talfail)
 	     | _ -> (error ctxt con "Cproj: not a Kprod"; raise Talfail)
 	end
 (* ---- LX ---- *)
-    | Cinj(i,c',k) -> 
-	 let ki = ck ctxt c' in 
-	 begin 
+    | Cinj(i,c',k) ->
+	 let ki = ck ctxt c' in
+	 begin
 	    check_kind ctxt k;
-	    match k.rkind with 
-	       Ksum ks -> 
+	    match k.rkind with
+	       Ksum ks ->
 		  (try  kindleq ctxt (List.nth ks i) ki;
 		     k
 		  with Failure _ -> error ctxt con "Cinj: index out of range";
@@ -1174,63 +1174,63 @@ let check ctxt c =
 	     | _ -> error ctxt con "Cinj: not a Ksum"; raise Talfail
 	 end
     | Ccase(c,a,cs) ->
-	 let k = ck ctxt c in 
-	 (match k.rkind with 
-	    Ksum ks -> 
-	       let results = 
+	 let k = ck ctxt c in
+	 (match k.rkind with
+	    Ksum ks ->
+	       let results =
 		  try (List.map2 (fun c k ->
 		     ck (add_var ctxt a k) c)) cs ks
 
-		  with Invalid_argument _ -> 
+		  with Invalid_argument _ ->
 		     error ctxt con "Ccase: wrong number of branches in sum";
 		     raise Talfail in
-	       let result = (match results with 
-               	  (hd::rest) -> 
-	     	     List.fold_right (kindjoin ctxt) rest hd (** kindjoin ?? **) 
-	      	|	[] -> error ctxt con "Ccase: no arms in sum";raise Talfail) in 
+	       let result = (match results with
+               	  (hd::rest) ->
+	     	     List.fold_right (kindjoin ctxt) rest hd (** kindjoin ?? **)
+	      	|	[] -> error ctxt con "Ccase: no arms in sum";raise Talfail) in
 	       result
     	  | _ -> error ctxt con "Ccase: not a Ksum"; raise Talfail)
     | Cfold (k,c) ->
 	 (let kunfold = ck ctxt c in
 	 check_kind ctxt k;
-	 match k.rkind with 
-            Kmu(ks,j) -> 
-	       let k' = unroll_kind k in 
+	 match k.rkind with
+            Kmu(ks,j) ->
+	       let k' = unroll_kind k in
                kindleq ctxt kunfold k' ;
 		k
 	   | _ -> error ctxt con "Cfold: not given a Kmu"; raise Talfail)
     | Cpr (i,l) ->
 	 let ctxt = set_verify_ctxt ctxt "cpr well-formedness check" in
-	 let schema = List.map (fun (j,a,k,f,k',c) -> (j,k)) l in 
-	 let schema = filter_schema schema 
+	 let schema = List.map (fun (j,a,k,f,k',c) -> (j,k)) l in
+	 let schema = filter_schema schema
 	 in
-	 let rec getk' l = match l with (j,a,k,f,k',c)::rest -> 
+	 let rec getk' l = match l with (j,a,k,f,k',c)::rest ->
 	    if id_compare f i = 0 then (j,k') else getk' rest
 	  | [] -> error ctxt con "Cpr: var does not appear in kind of recurrence function";
-               raise Talfail in 
+               raise Talfail in
 	 let mus = List.map (fun (j,k) -> (j, defkind (Kmu (schema, j)))) schema in
 	 List.iter (fun (i,k) -> check_kind ctxt k; ()) mus;
 	 let kd = Dict.inserts (Dict.empty id_compare) mus  in
-	 let (j,_) = getk' l in 
-	 let mu = defkind (Kmu(schema, j)) in 
+	 let (j,_) = getk' l in
+	 let mu = defkind (Kmu(schema, j)) in
 	 (* create the context for checking the bodies of the pr
-	  * by adding each kind variable j and con variable f *)  
-	 let innerctxt1 = List.fold_right (fun (j,a,k,f,k',c) ctxt -> 
+	  * by adding each kind variable j and con variable f *)
+	 let innerctxt1 = List.fold_right (fun (j,a,k,f,k',c) ctxt ->
 	    add_kind ctxt j) l ctxt in
 	 let innerctxt = List.fold_right (fun  (j,a,k,f,k',c) ctxt ->
 	    check_kind ctxt k';
-	    (add_var ctxt f (karrow (kvar j) k'))) l innerctxt1 in 
+	    (add_var ctxt f (karrow (kvar j) k'))) l innerctxt1 in
 	 let l = List.map (fun (j,a,k,f,k',c) ->
 	    let rek = ck (add_var innerctxt a k) c in
             kindeq ctxt (ksubsts kd rek) (ksubsts kd k');
-            (j,a,k,f,k',c)) l in 
+            (j,a,k,f,k',c)) l in
 	 let (j,k') = getk' l in
-	 karrow mu (ksubsts kd k') 
+	 karrow mu (ksubsts kd k')
     | Cvoid k ->
-	 (match k.rkind with 
-	    Karrow (_,_) | Kprod _ | Ksum _ | Kvar _ | Kmu (_,_) -> 
+	 (match k.rkind with
+	    Karrow (_,_) | Kprod _ | Ksum _ | Kvar _ | Kmu (_,_) ->
 	       error ctxt con "void: only available at base kinds";
-	       raise Talfail 
+	       raise Talfail
 	  | _ ->  k)
     (* -- end LX -- *)
 
@@ -1238,13 +1238,13 @@ let check ctxt c =
     | Clab l -> let k = get_label_kind ctxt l in k
     | Cprim pc -> primcon_kind ctxt pc
     | Crec fs ->
-	let g ctxt (a,k,_) = 
+	let g ctxt (a,k,_) =
 	   begin
-	      check_kind ctxt k; 
-	      add_var ctxt a k 
+	      check_kind ctxt k;
+	      add_var ctxt a k
 	   end in
 	let ctxt' = List.fold_left g ctxt fs in
-	let check_f (a,k,c) = 
+	let check_f (a,k,c) =
 	  let k' = ck ctxt' c in
 	  kindleq ctxt' k' k in
 	List.iter check_f fs;
@@ -1267,7 +1267,7 @@ let check ctxt c =
 	 * the TLA is a pointer to a tuple, but then what the hell --
 	 * you can't use it if it's not.
 	 *)
-	let ck_dict c = 
+	let ck_dict c =
 	  let k = ck ctxt c in
 	  begin
 	    kindleq ctxt k k4byte
@@ -1275,8 +1275,8 @@ let check ctxt c =
 	ms_app_reg (fun r -> ck_dict) ms;
 	kindleq ctxt (ck ctxt (ms_get_cap ms)) kcap;
  	kms
-    | Cmsjoin(c1,c2) -> 
-	kindleq ctxt (ck ctxt c1) kms; 
+    | Cmsjoin(c1,c2) ->
+	kindleq ctxt (ck ctxt c1) kms;
 	kindleq ctxt (ck ctxt c2) kms; kms
     | Ccode c -> kindleq ctxt (ck ctxt c) kms; k4byte
     | Chptr (is,co,tco) ->
@@ -1285,7 +1285,7 @@ let check ctxt c =
 	  error ctxt con "Chptr: possible pointer tag";
 	(match co with
 	  None -> ()
-	| Some c -> 
+	| Some c ->
 	    let k' = ck ctxt c in
 	    kindleq ctxt k' kmem);
         (match tco with
@@ -1309,7 +1309,7 @@ let check ctxt c =
 	  | c::cs ->
 	      let k = ck ctxt c in
 	      match k.rkind with
-		Kmem -> aux None cs 
+		Kmem -> aux None cs
 	      |	Kmemi i ->
 		  let sz =
 		    match sz with None -> None | Some j -> Some (i+$j) in
@@ -1356,7 +1356,7 @@ let check ctxt c =
 	let k' = ck ctxt c in
 	kindleq ctxt k' kstack;
 	k4byte
-    | Cempty -> 
+    | Cempty ->
 	kstack
     | Ccons(c1,c2) ->
 	let k1 = ck ctxt c1 in
@@ -1364,11 +1364,11 @@ let check ctxt c =
 	(match k1.rkind with
 	  Ktype | Kbyte _ | Kmem | Kmemi _ -> ()
 	| _ -> error ctxt con "Ccons: head must be T or Tm");
- 	kindleq ctxt k2 kstack; 
+ 	kindleq ctxt k2 kstack;
 	kstack
     | Cappend(c1,c2) ->
 	let k1 = ck ctxt c1 in
-	let k2 = ck ctxt c2 in	
+	let k2 = ck ctxt c2 in
 	kindleq ctxt k1 kstack; kindleq ctxt k2 kstack;
 	kstack
 (* arithmetic and logic *)
@@ -1396,7 +1396,7 @@ let check ctxt c =
 	 * in place, we prohibit abbreviations that conflict with a given
 	 * Kname variable in the domain of the dictionary.
 	 *)
-	let f x (ai,c) unit = 
+	let f x (ai,c) unit =
 	  begin
 	    if Dict.member (get_abbrevs ctxt) x then
 	      error ctxt con "abbreviation maps Kname";
@@ -1422,9 +1422,9 @@ let check ctxt c =
 	let id_con_cmp (i1,_) (i2,_) = id_compare i1 i2 in
 	let labels = List.sort id_con_cmp labels in
 	let holes = List.sort id_con_cmp holes in
-	if not (all_unique id_con_cmp holes) 
+	if not (all_unique id_con_cmp holes)
 	then error ctxt con "Duplicate holes in template.";
-	if not (all_unique id_con_cmp labels) 
+	if not (all_unique id_con_cmp labels)
 	then error ctxt con "Duplicate labels in template.";
         List.iter ck_id_con labels;
         List.iter ck_id_con holes;
@@ -1433,7 +1433,7 @@ let check ctxt c =
 	let k1 = ck ctxt c1 in
 	let id_br_templ_cmp (i1,_,_) (i2,_,_) = id_compare i1 i2 in
 	let t = List.sort id_br_templ_cmp t in
-	if not (all_unique id_br_templ_cmp t) then 
+	if not (all_unique id_br_templ_cmp t) then
 	  error ctxt con "Duplicate template pointers in region.";
 	let ck_br_templ (a,labels,holes) =
           let ck_id_con (i,c) =
@@ -1444,12 +1444,12 @@ let check ctxt c =
 	  let id_con_cmp (i1,_) (i2,_) = id_compare i1 i2 in
 	  let labels = List.sort id_con_cmp labels in
 	  let holes = List.sort id_con_cmp holes in
-	  if not (all_unique id_con_cmp holes) 
+	  if not (all_unique id_con_cmp holes)
 	  then error ctxt con "Duplicate holes in code region template.";
-	  if not (all_unique id_con_cmp labels) 
+	  if not (all_unique id_con_cmp labels)
 	  then error ctxt con "Duplicate labels in code region template.";
           List.iter ck_id_con labels;
-          List.iter ck_id_con holes 
+          List.iter ck_id_con holes
 	in
 	List.iter ck_br_templ t;
 	k4byte
@@ -1470,7 +1470,7 @@ let check ctxt c =
  	k4byte
 (* End Cyclone *)
     | Csubst(c,es) ->
-	let rec ck_subst ctxt es = 
+	let rec ck_subst ctxt es =
 	  match es with
 	    Enil -> ctxt
 	  | Es(x,c) -> let k = ck ctxt c in add_var ctxt x k
@@ -1482,15 +1482,15 @@ let check ctxt c =
 	let k = ck ctxt c in
 	k
     | Cr ci ->
-	 (match ci with 
+	 (match ci with
 	    RCon c -> ignore (ck ctxt c)
 	  | _ -> ());
 	 kmem
     | Ctypeof l -> get_label_con_opt ctxt l; k4byte
-    	    
+
   and ck_log ctxt l cs =
     match l with
-      Cadd | Cmuls | Cmulu -> 
+      Cadd | Cmuls | Cmulu ->
       	List.iter (fun c -> kindleq ctxt (ck ctxt c) kint) cs; kint
     | Csub ->
       	(match cs with
@@ -1502,20 +1502,20 @@ let check ctxt c =
     | Cand | Cor ->
       	List.iter (fun c -> kindleq ctxt (ck ctxt c) kbool) cs; kbool
     | Cimp | Ciff ->
-      (match cs with 
-	[c1;c2] -> 
+      (match cs with
+	[c1;c2] ->
 	  kindleq ctxt (ck ctxt c1) kbool;
 	  kindleq ctxt (ck ctxt c2) kbool;
 	  kbool
       |	_ -> error ctxt (clog l cs) "Cimp or Ciff not binary operators";
 	  raise Talfail)
     | Cnot ->
-      	(match cs with 
+      	(match cs with
 	  [c1] -> kindleq ctxt (ck ctxt c1) kbool; kbool
       	| _ ->  error ctxt (clog l cs) "Cnot not unary operator";raise Talfail)
     | Clts | Cltu | Cltes | Clteu ->
       	(match cs with
-	  [c1;c2] -> 
+	  [c1;c2] ->
 	    kindleq ctxt (ck ctxt c1) kint;
 	    kindleq ctxt (ck ctxt c2) kint;
 	    kbool
@@ -1529,7 +1529,7 @@ let check ctxt c =
 let verify_gamma ctxt gamma =
 (*  let ctxt = set_verify_ctxt ctxt "checking machine state" in *)
   let f _ c = let (k,_) = check ctxt c in kindleq ctxt k k4byte in
-  ms_app_reg f gamma; 
+  ms_app_reg f gamma;
   let (k,_) = check ctxt (ms_get_cap gamma) in kindleq ctxt k kcap;
   gamma
 ;;
@@ -1545,12 +1545,12 @@ let verify_gamma ctxt gamma =
 (* JGM: to avoid hair with the capability stuff, I've commented out all
  * of the explicit substitution stuff.
 
-(* Given variable x and explicit substitution es, returns true if x 
+(* Given variable x and explicit substitution es, returns true if x
  * occurs either in the domain of es, or else x occurs free in the
  * co-domain of es.  Used as a heuristic to decide when to rename a
  * bound variable.
  *)
-let rec variable_conflict x es = 
+let rec variable_conflict x es =
   match es with
     Enil -> false
   | Es(y,c') -> ((id_compare x y) = 0) or (Set.member (freevars c') x)
@@ -1561,7 +1561,7 @@ let rec variable_conflict x es =
  * determines whether the substitution will have any effect.  Returns
  * true if the substitution will have no effect.
  *)
-let rec nosubst s es = 
+let rec nosubst s es =
   match es with
     Enil -> true
   | Es(y,c') -> not (Set.member s y)
@@ -1572,15 +1572,15 @@ let rec nosubst s es =
  * occurs then leave the substitution alone to preserve sharing.  In practice,
  * not effective...
  *)
-let trim_subst s es = 
+let trim_subst s es =
   let changed = ref false in
-  let rec trimit s es = 
+  let rec trimit s es =
     match es with
       Enil -> (s,es)
     | Es(x,c) ->
 	if Set.member s x then
 	  (Set.union (Set.delete s x) (freevars c),es)
-	else 
+	else
 	  (changed := true; (s,Enil))
     | Eo(es1,es2) ->
 	let (s,es1) = trimit s es1 in
@@ -1592,11 +1592,11 @@ let trim_subst s es =
   in let (_,es') = trimit s es in
   if (!changed) then es' else es
 
-(* push a substitution down -- used by whcon.  Can probably be 
+(* push a substitution down -- used by whcon.  Can probably be
  * improved a lot.
  *)
-let rec push_subst (c : con) (es : esubst) : con = 
-  if nosubst (freevars c) es then c else 
+let rec push_subst (c : con) (es : esubst) : con =
+  if nosubst (freevars c) es then c else
   match c.rcon with
     Cvar x ->
       (* Look up the variable in the substitution *)
@@ -1604,22 +1604,22 @@ let rec push_subst (c : con) (es : esubst) : con =
 	Enil -> c
       |	Es(y,c') -> if (id_compare x y) = 0 then c' else c
       | Eo(es1,es2) -> push_subst (push_subst c es1) es2)
-  | Clam(x,k,c1) -> 
+  | Clam(x,k,c1) ->
       (* If x occurs in the substitution, rename it.  Could do better
        * when x is in the domain of the substitution by just trimming
        * the substitution, but we expect this to be rare.  Note that
        * Crec, Cforall, and Cexist use the same or similar code.
        *)
-      if variable_conflict x es then 
+      if variable_conflict x es then
 	let x' = id_unique x in
 	let es = Eo(Es(x,defvarcon x'),es) in
 	clam x' k (csubst c1 es)
-      else clam x k (csubst c1 es) 
+      else clam x k (csubst c1 es)
   | Crec(vkcs) ->
-      let rec f vkcs es = 
+      let rec f vkcs es =
 	match vkcs with
 	  [] -> ([],es)
-	| (x,k,c)::rest -> 
+	| (x,k,c)::rest ->
 	    if variable_conflict x es then
 	      let x' = id_unique x in
 	      let es' = Eo(Es(x,defvarcon x'),es) in
@@ -1630,13 +1630,13 @@ let rec push_subst (c : con) (es : esubst) : con =
 	      ((x,k,csubst c es')::rest',es') in
       let vkcs',_ = f vkcs es in crec vkcs'
   | Cforall(x,k,c1) ->
-      if variable_conflict x es then 
+      if variable_conflict x es then
 	let x' = id_unique x in
 	let es = Eo(Es(x,defvarcon x'),es) in
 	cforall x' k (csubst c1 es)
-      else cforall x k (csubst c1 es) 
+      else cforall x k (csubst c1 es)
   | Cexist(x,k,c1,c2) ->
-      if variable_conflict x es then 
+      if variable_conflict x es then
 	let x' = id_unique x in
 	let es = Eo(Es(x,defvarcon x'),es) in
 	cexist x' k (csubst c1 es) (csubst c2 es)
@@ -1653,7 +1653,7 @@ let rec push_subst (c : con) (es : esubst) : con =
   | Chptr(is,co,tco) ->
       let co = match co with None -> None | Some c -> Some (csubst c es) in
       let tco =
- 	match tco with None -> None | Some (c,v) -> Some (csubst c es,v) in 
+ 	match tco with None -> None | Some (c,v) -> Some (csubst c es,v) in
       chptr is co tco
   | Cfield(c,v) -> cfield (csubst c es) v
   | Cprod cs -> cprod(List.map (fun c -> csubst c es) cs)
@@ -1666,7 +1666,7 @@ let rec push_subst (c : con) (es : esubst) : con =
   | Cappend(c1,c2) -> cappend (csubst c1 es) (csubst c2 es)
   (* arithmetic and logic *)
   | Clog (l,cs) -> clog l (List.map (fun c -> csubst c es) cs)
-  | Cif (c1,c2) -> cif (csubst c1 es) (csubst c2 es) 
+  | Cif (c1,c2) -> cif (csubst c1 es) (csubst c2 es)
   (* Cyclone *)
   | Ctmpl(c,copt,xcs1,xcs2) ->
       let f = List.map (fun (x,c) -> (x,csubst c es)) in
@@ -1683,12 +1683,12 @@ let rec push_subst (c : con) (es : esubst) : con =
 
 (* weak-head normalization *)
 let rec whnorm ctxt c =
-  let defcon cs rc = 
+  let defcon cs rc =
     let con = defcon rc in
     con.con_state <- cs;
     con.freevars <- Some(rc_freevars rc);
     con in
-  let copy_con c1 c2 = 
+  let copy_con c1 c2 =
     c1.rcon <- c2.rcon;
     c1.con_state <- c2.con_state;
     c1.freevars <- c2.freevars;
@@ -1704,104 +1704,104 @@ let rec whnorm ctxt c =
    *)
   (* let subst c2 x c3 = push_subst c3 (Es(x,c2)) in *)
   let rec wh (c : con) : con =
-    if c.con_state <> NotNorm then c else  
-    let c' = try hash_find c.rcon with Not_found -> c in 
+    if c.con_state <> NotNorm then c else
+    let c' = try hash_find c.rcon with Not_found -> c in
     if c' != c then (copy_con c (wh c')) else
     match c.rcon with
       Capp(c1,c2) ->
 	begin
 	  wh c1;
 	  match c1.rcon with
-	    Clam(x,k,c3) -> 
+	    Clam(x,k,c3) ->
 (*
 	      debug "lambda";
-	      debug2 
+	      debug2
 		(fun fmt o -> print_con fmt {o with expand_abbrevs=true} c);
 *)
-	      let c' = 
+	      let c' =
 	      	(match c2.rcon with
-		  Cvar y -> 
+		  Cvar y ->
 		    if id_compare x y = 0 then wh c3
 		    else wh (subst c2 x c3)
-		| _ -> 
+		| _ ->
 		    let c4 = (subst c2 x c3) in
 		  (*  debug2 (fun fmt o -> print_con fmt o c4); *)
 		    wh c4) in
 	      copy_con c c'
 	   (* -- LX -- *)
-	   | Cpr (i, l) -> 
-		let c' = 
-		   (match (wh c2).rcon with 
+	   | Cpr (i, l) ->
+		let c' =
+		   (match (wh c2).rcon with
 		      Cfold (k,arg) ->
-			 (match k.rkind with 
+			 (match k.rkind with
 			    Kmu (schema, i2) ->
 			    (* assume that i is equivalent to i2 *)
 			       let js,ks = List.split schema in
-			       let schema2 = List.map (fun (j,a,k,f,k',body) -> (j,k)) l in 
+			       let schema2 = List.map (fun (j,a,k,f,k',body) -> (j,k)) l in
 			       let schema2 = filter_schema schema2 in
-			       let kd = List.fold_right2 
-				     (fun (j,k) j2 kd -> 
+			       let kd = List.fold_right2
+				     (fun (j,k) j2 kd ->
 				     	Dict.insert kd j
 					(* Note, Kmu(schema,j2) should be alpha-equivalent to
-					   Kmu (get_schema l, j), where get_schema is the 
+					   Kmu (get_schema l, j), where get_schema is the
 					   map (fun (j,_,k,_,_,_) -> j,k) l *)
-					   {rkind=Kmu(schema, j2); 
+					   {rkind=Kmu(schema, j2);
 					      freekindvars=k.freekindvars;
 					      kabbrev=Some j2})
-				     schema2 js (Dict.empty id_compare) in 
+				     schema2 js (Dict.empty id_compare) in
 			       let cd = List.fold_right
 				     (fun (j,_,_,f,_,_) cd ->
-				     	Dict.insert cd f { c1 with rcon = Cpr(f,l)}) l 
-				     (Dict.empty id_compare) in 
-			       let rec aux l = match l with (_,a,_,f,_,body)::rest -> 
+				     	Dict.insert cd f { c1 with rcon = Cpr(f,l)}) l
+				     (Dict.empty id_compare) in
+			       let rec aux l = match l with (_,a,_,f,_,body)::rest ->
 				  if id_compare f i = 0 then a,body else aux rest
 			     	| [] -> failwith "BUG: Pr not well-formed" in
-			       let a,body = aux l in 
-			       let cd = Dict.insert cd a arg in 
-			       let ret = wh (substs (kd,cd) body) in 
-(*			       (debug2 (fun fmt o -> 
-				  pp_print_string fmt "after norm of : "; print_con fmt o c; 
+			       let a,body = aux l in
+			       let cd = Dict.insert cd a arg in
+			       let ret = wh (substs (kd,cd) body) in
+(*			       (debug2 (fun fmt o ->
+				  pp_print_string fmt "after norm of : "; print_con fmt o c;
 				  pp_print_string fmt " the result is : ";
 				  print_con fmt o ret)); *)
-			       ret 
+			       ret
 
 			  | _ -> failwith "BUG: cfold not well-formed")
 		    | _ -> c.con_state <- WeakHead;  c) in
 		copy_con c c'
-	   (* -- end LX -- *)	   
+	   (* -- end LX -- *)
 	   | _ -> c.con_state <- WeakHead; c
 	end
     | Cproj(i,c1) ->
 	begin
 	    wh c1;
 	    match c1.rcon with
-	      Ctuple cs -> 
+	      Ctuple cs ->
 		let c' = wh (List.nth cs i) in
 		copy_con c c'
 	    | _ -> c.con_state <- WeakHead; c
 	end
-    (* -- LX -- *)	    
-    | Ccase(c1, a, cs) -> 
+    (* -- LX -- *)
+    | Ccase(c1, a, cs) ->
 	 begin
 	    wh c1;
-	    match c1.rcon with 
+	    match c1.rcon with
 	       Cinj(i,c2,k) ->
 		  let branch = (try List.nth cs i
-		  with Failure _ -> failwith "Ccase not well formed in wh") in 
+		  with Failure _ -> failwith "Ccase not well formed in wh") in
 		  let c' = wh (subst c2 a branch) in
 		  copy_con c c'
 	     | c1 -> c.con_state <- WeakHead; c
 	 end
     (* -- end LX -- *)
     (* Flatten out products *)
-    | Cprod c1s -> 
+    | Cprod c1s ->
 	 List.iter (fun c -> ignore (wh c)) c1s;
-	 let aux acc c1 = 
-	    match c1.rcon with 
-	       Cprod c2 -> List.rev_append c2 acc 
+	 let aux acc c1 =
+	    match c1.rcon with
+	       Cprod c2 -> List.rev_append c2 acc
 	     | _ -> c1 :: acc in
 	 let c' = wcon (Cprod (List.rev (List.fold_left aux [] c1s))) in
-(*	 debug2 (fun fmt o -> 
+(*	 debug2 (fun fmt o ->
 	    pp_print_string fmt "Prod before:";
 	    print_con fmt o c); *)
 	 copy_con c c'
@@ -1820,13 +1820,13 @@ let rec whnorm ctxt c =
 	begin
 	  wh c1;
 	  match c1.rcon with
-	    Cempty -> 
+	    Cempty ->
 	      let c' = wh c2 in
 	      copy_con c c'
-	  | Ccons(f,c1) -> 
+	  | Ccons(f,c1) ->
 	      let c' = wcon (Ccons(f,defcon NotNorm (Cappend(c1,c2)))) in
 	      copy_con c c'
-	  | Cappend(ca,cb) -> 
+	  | Cappend(ca,cb) ->
 	      let c' = wcon (Cappend(ca,defcon NotNorm (Cappend(cb,c2)))) in
 	      wh(copy_con c c')
 	  | c1 -> c.con_state <- WeakHead; c
@@ -1834,16 +1834,16 @@ let rec whnorm ctxt c =
     | Clog (l,cs) ->
 	(* Normalization obeys the following rules:
          * 1. plus,and,or are associative and commutative (see Cjoin below)
-         * 2. mul is assumed binary (no normalization otherwise) and 
+         * 2. mul is assumed binary (no normalization otherwise) and
          *    has normal form const*x when const > 1.
 	 * 3. 0/1/true/false are units for plus/mul/and/or
          * 4. 0*x = 0
          * 5. i*(j*c) = k*c where k = i*j
          * 6. fold other constants that don't overflow for plus/mul/sub/and/or
-	 * 7. fold constants in inequalities: i < j, i <= j, i <# j, i <=# j  
-         * 8. multiplication is distributed over addition: 
+	 * 7. fold constants in inequalities: i < j, i <= j, i <# j, i <=# j
+         * 8. multiplication is distributed over addition:
 	 *    a*(b+c) -> a*b + a*c
-         *) 
+         *)
 	let set_rc    rc = c.rcon <- rc                                      in
 	let set_cs    cs = c.con_state <- cs                                 in
 	let set_fv    fv = c.freevars <- fv                                  in
@@ -1856,11 +1856,11 @@ let rec whnorm ctxt c =
 	  match cs with
 	    [c1;c2] -> set_rc (Clog (Cadd, [c1;cmuls (~-$ i32_1) c2])); wh c;()
 	  | _ -> failwith "whnorm: non-binary subtraction" in
- 
+
 	(* flatten cons *)
 	let f_aux unit_con cs next =
 	  match next.rcon with
-	    Clog (l',cs') -> 
+	    Clog (l',cs') ->
 	      if l = l' then cs' @ cs
 	      else next::cs
 	  | _ ->
@@ -1872,20 +1872,20 @@ let rec whnorm ctxt c =
 	let process_assoc l cs unit_con op =
 	  let cs = flatten unit_con cs in
 	  let separate (consts,others) c =
-	    match c.rcon with 
+	    match c.rcon with
 	      Cprim _ -> (c::consts,others)
 	    | _ -> (consts,c::others) in
 	  let consts,others = List.fold_left separate ([],[]) cs in
-	  let cs = 
+	  let cs =
 	    try (List.fold_left op unit_con consts)::others
 	    with Invalid_argument _ -> consts@others in
 	  begin
 	    match cs with
 	      [] -> set_const unit_con.rcon
 	    | [c] -> set_con c
-	    | c1::((c2::cs') as rest) -> 
-	      	if c1.rcon = unit_con.rcon then 
-		  match cs' with 
+	    | c1::((c2::cs') as rest) ->
+	      	if c1.rcon = unit_con.rcon then
+		  match cs' with
 		    [] -> set_con c2;
 		  | _ -> set_rc (Clog (l,Sort.list (<=) rest))
 	      	else (set_rc (Clog (l,Sort.list (<=) cs)))
@@ -1894,39 +1894,39 @@ let rec whnorm ctxt c =
 	(* constant fold/reorder to const*x *)
 	let rec fold_mul l cs mulop =
 	    match cs with
-	      [{rcon=Cprim (PCint i)};{rcon=Cprim (PCint j)}] -> 
+	      [{rcon=Cprim (PCint i)};{rcon=Cprim (PCint j)}] ->
 		(try set_int (mulop i j) with Invalid_argument _ -> ())
-	    | [({rcon=Cprim (PCint i)} as c1);c2] -> 
+	    | [({rcon=Cprim (PCint i)} as c1);c2] ->
 		if i =$ i32_0 then set_int i32_0
 		else if i =$ i32_1 then set_con c2
-		else 
+		else
 		  (match c2.rcon with
 		    Clog (l',[{rcon=Cprim (PCint j)};c3]) when l' = l ->
 		      (* fold i*(j*c) -> k*c where k = i*j *)
-		      (try 
+		      (try
 			let k = mulop i j in
 			set_con (clog l [pcint k;c3])
 		      with Invalid_argument _ -> ())
-		  | _ -> ())		      
-	    | [c1;({rcon=Cprim (PCint i)} as c2)] -> 
+		  | _ -> ())
+	    | [c1;({rcon=Cprim (PCint i)} as c2)] ->
 		fold_mul l [c2;c1] mulop
 	    | _ -> () in
 
 	(* attempt to distribute mul over add and return true if distributed *)
 	let distribute_mul l cs =
 	  match cs with
-	  | [c1;{rcon=Clog (Cadd,cs')}] -> 
+	  | [c1;{rcon=Clog (Cadd,cs')}] ->
 	      set_rc (Clog (Cadd,List.map (fun c' -> clog l [c1;c']) cs'));
 	      true
-	  | [{rcon=Clog (Cadd,cs')};c2] -> 
+	  | [{rcon=Clog (Cadd,cs')};c2] ->
 	      set_rc (Clog (Cadd,List.map (fun c' -> clog l [c2;c']) cs'));
 	      true
-	  | _ -> false in	      
+	  | _ -> false in
 
         let process_mul l cs mulop =
 	  fold_mul l cs mulop;
 	  match c.rcon with
-	    Clog ((Cmuls | Cmulu) as l,cs) -> 
+	    Clog ((Cmuls | Cmulu) as l,cs) ->
 	      if distribute_mul l cs then (wh c; ())
 	      else ()
 	  | _ -> () in
@@ -1934,11 +1934,11 @@ let rec whnorm ctxt c =
 	(* constant folding inequalities *)
 	let process_ineq l cs int32op =
 	  match cs with
-	    [{rcon=Cprim (PCint i)};{rcon=Cprim (PCint j)}] -> 
+	    [{rcon=Cprim (PCint i)};{rcon=Cprim (PCint j)}] ->
 	      if int32op i j then set_const (Cprim PCtrue)
 	      else set_const (Cprim PCfalse)
 	  | _ -> () in
-		
+
 	(* weakhead normalize constructors *)
 	begin
 	  List.iter (fun c -> wh c; ()) cs;
@@ -1950,7 +1950,7 @@ let rec whnorm ctxt c =
 	    	| _,_ -> invalid_arg "addop" in
 	      process_assoc l cs (pcint (int_to_int32 0)) addop
 	  | Cand ->
-	      let andop c1 c2 = 
+	      let andop c1 c2 =
 	      	match c1.rcon,c2.rcon with
 		  Cprim PCtrue,_  -> c2
 	      	| _,Cprim PCtrue  -> c1
@@ -1959,7 +1959,7 @@ let rec whnorm ctxt c =
 	      	| _,_ -> invalid_arg "andop" in
 	      process_assoc l cs pctrue andop
 	  | Cor ->
-	      let orop c1 c2 = 
+	      let orop c1 c2 =
 	      	match c1.rcon,c2.rcon with
 		  Cprim PCfalse,_ -> c2
 	      	| _,Cprim PCfalse -> c1
@@ -1967,14 +1967,14 @@ let rec whnorm ctxt c =
 	      	| _,Cprim PCtrue  -> pctrue
 	      	| _,_ -> invalid_arg "orop" in
 	      process_assoc l cs pcfalse orop
-	  | Cmuls -> process_mul l cs signed_mul32_over 
+	  | Cmuls -> process_mul l cs signed_mul32_over
 	  | Cmulu -> process_mul l cs unsigned_mul32_over
 	  | Csub  -> process_sub cs
 	  | Clts  -> process_ineq l cs (<$)
 	  | Cltes -> process_ineq l cs (<=$)
 	  | Cltu  -> process_ineq l cs (unsigned_lt32)
 	  | Clteu -> process_ineq l cs (unsigned_lte32)
-	  | _ -> ()); (* no reductions for other operators *) 
+	  | _ -> ()); (* no reductions for other operators *)
 	  c
 	end
     | Cjoin cs ->
@@ -1985,18 +1985,18 @@ let rec whnorm ctxt c =
 	 * single dictionary, raising an exception if a name is duplicated.
 	 * Equality is very conservative here and will require the
 	 * constructors to be essentially syntactically equal using
-	 * this "normal form".  Of course, we've probably broken 
+	 * this "normal form".  Of course, we've probably broken
 	 * confluence....*)
-	(* first, recursively weak-head normalize the constructors, 
+	(* first, recursively weak-head normalize the constructors,
 	 * pull out the nested dictionaries and merge them so they
 	 * can be placed at the beginning.
 	 *)
-	let rec f (cs,d) c = 
+	let rec f (cs,d) c =
 	  begin
 	    wh c;
 	    match c.rcon with
-	      Cjoin cs' -> List.fold_left f (cs,d) cs' 
-	    | Ccap d' -> 
+	      Cjoin cs' -> List.fold_left f (cs,d) cs'
+	    | Ccap d' ->
 		let g x info d = Dict.insert_new d x info in
 		let d = Dict.fold_dict g d' d in (cs,d)
 	    | _ -> (c::cs,d)
@@ -2008,17 +2008,17 @@ let rec whnorm ctxt c =
 	 * constraints ensure that if we have a dictionary in a join, then
 	 * it's at the beginning of the list. *)
 	(match cs,Dict.is_empty d with
-	  [],true -> 
+	  [],true ->
 	    copy_con c cempty_cap
 	| [],false ->
 	    let dcon = wcon(Ccap d) in
 	    copy_con c dcon
-	| [c'],true -> 
+	| [c'],true ->
 	    copy_con c c'
 	| cs,true ->
 	    let c' = wcon(Cjoin cs) in
 	    copy_con c c'
-	| cs,false -> 
+	| cs,false ->
 	    let dcon = wcon(Ccap d) in
 	    let c' = wcon(Cjoin(dcon::cs)) in
 	    copy_con c c')
@@ -2034,32 +2034,32 @@ let rec whnorm ctxt c =
 (***********************************************************************)
 let fail ctxt c s = (error ctxt c s ; raise Talfail)
 
-let dchptr ctxt c = 
+let dchptr ctxt c =
    match (whnorm ctxt c).rcon with
      Chptr (x,y,z) -> (x,y,z)
    | _ -> fail ctxt c "expecting Chptr"
 ;;
-let dcons ctxt c = 
+let dcons ctxt c =
    match (whnorm ctxt c).rcon with
      Ccons(hd,tl) -> (hd,tl)
    | _ -> fail ctxt c "expecting Ccons"
 ;;
-let dsptr ctxt c = 
+let dsptr ctxt c =
    match (whnorm ctxt c).rcon with
      Csptr c -> c
    | _ -> fail ctxt c "expecting Csptr"
 ;;
-let dexist ctxt c = 
+let dexist ctxt c =
    match (whnorm ctxt c).rcon with
      Cexist (v,k,c1,c2) -> (v,k,c1,c2)
    | _ -> fail ctxt c "expecting Cexist"
 ;;
-let dforall ctxt c = 
+let dforall ctxt c =
    match (whnorm ctxt c).rcon with
      Cforall (v,k,c) -> (v,k,c)
    | _ -> fail ctxt c "expecting Cforall"
 ;;
-let dprod ctxt c = 
+let dprod ctxt c =
    match (whnorm ctxt c).rcon with
      Cprod cs -> cs
    | _ -> fail ctxt c "expecting Cprod"
@@ -2074,55 +2074,55 @@ let dif ctxt c =
     Cif (c1,c2) -> (c1,c2)
   | _ -> fail ctxt c "expecting Cif"
 ;;
-let dname ctxt c = 
+let dname ctxt c =
    match (whnorm ctxt c).rcon with
      Cname c -> c
    | _ -> fail ctxt c "expecting Cname"
 ;;
-let dvar ctxt c = 
+let dvar ctxt c =
    match (whnorm ctxt c).rcon with
      Cvar x -> x
    | _ -> fail ctxt c "expecting Cvar"
 ;;
-let dsum ctxt c = 
+let dsum ctxt c =
    match (whnorm ctxt c).rcon with
      Csum cs -> cs
    | _ -> fail ctxt c "expecting Csum"
 ;;
-let dint ctxt c = 
+let dint ctxt c =
    match (whnorm ctxt c).rcon with
      Cprim (PCint i) -> i
    | _ -> fail ctxt c "expecting Cprim (PCint i)"
 ;;
-let dcode ctxt c = 
+let dcode ctxt c =
    match (whnorm ctxt c).rcon with
      Ccode c -> c
    | _ -> fail ctxt c "expecting Ccode"
 ;;
-let dms ctxt c = 
+let dms ctxt c =
   match (whnorm ctxt c).rcon with
     Cms ms -> ms
   | _ -> fail ctxt c "expecting Cms"
 ;;
 let dcodems ctxt c = dms ctxt (dcode ctxt c)
 ;;
-let darray ctxt c = 
+let darray ctxt c =
    match (whnorm ctxt c).rcon with
      Carray (cs,ce) -> (cs,ce)
    | _ -> fail ctxt c "expecting Carray"
 ;;
-let dfield ctxt c = 
+let dfield ctxt c =
    match (whnorm ctxt c).rcon with
      Cfield (c,v) -> (c,v)
    | _ -> fail ctxt c "expecting Cfield"
 ;;
-let dsing ctxt c = 
+let dsing ctxt c =
    match (whnorm ctxt c).rcon with
      Csing c -> c
    | _ -> fail ctxt c "expecting Csing"
 ;;
-let dr ctxt c  = 
-   match (whnorm ctxt c).rcon with 
+let dr ctxt c  =
+   match (whnorm ctxt c).rcon with
       Cr c -> c
     | _ -> fail ctxt c "expecting Cr"
 ;;
@@ -2138,7 +2138,7 @@ let dcodems_or_label ctxt c =
       |	_ -> fail ctxt c "expecting Cms")
   | _ -> fail ctxt c "expecting Ccode"
 ;;
-      
+
 
 (* Full normalisation *)
 let normalize ctxt c =
@@ -2179,7 +2179,7 @@ let normalize ctxt c =
       	| Ccons (c1,c2) -> norm c1; norm c2
       	| Cappend (c1,c2) -> norm c1; norm c2
 	(* arithmetic and logic *)
-	| Clog (l,cs) -> List.iter norm cs 
+	| Clog (l,cs) -> List.iter norm cs
 	| Cif (c1,c2) -> norm c1; norm c2
 	(* alias stuff *)
 	| Cname c -> norm c
@@ -2199,7 +2199,7 @@ let normalize ctxt c =
             begin
               norm c1;
               (match c2_opt with
-	      |	None -> () 
+	      |	None -> ()
 	      |	Some c2 -> norm c2);
               List.iter
                 (fun (_,labels,holes) ->
@@ -2211,13 +2211,13 @@ let normalize ctxt c =
             end
 (* End Cyclone *)
 	| Csubst _ -> failwith "substitution found in whnormal form"
-	| Cr ci -> (match ci with 
+	| Cr ci -> (match ci with
 	     RCon c -> norm c
 	   | _ -> ())
 	| Ctypeof _ -> ()
       in
       aux (whnorm ctxt c).rcon; c.con_state <- Normalized
-    end in    
+    end in
   norm c; c
 ;;
 
@@ -2246,12 +2246,12 @@ let check_whnorm ctxt c : kind * con =
  * c1. If a y is absent from the list then it is free in c2.
  * Note that type variables cannot be blindly compared as they may map to
  * different variables or may be bound in c1 but free in c2 or vice versa.
- * 
+ *
  * JGM:  I got rid of the kind context because it was never used.
  *)
 
 (* compare two constructors up to alpha-equivalence *)
-let rec aeq error ctxt  ((kmap,cmap) as varmap) c1 c2 = 
+let rec aeq error ctxt  ((kmap,cmap) as varmap) c1 c2 =
   if varmap=([],[]) & c1 == c2 then () else
   begin
   match c1.rcon,c2.rcon with
@@ -2266,34 +2266,34 @@ let rec aeq error ctxt  ((kmap,cmap) as varmap) c1 c2 =
   | (Cproj(i1,c1),Cproj(i2,c2)) ->
       if i1 = i2 then aeq error ctxt varmap c1 c2 else error ()
   (* ---- LX ---- *)
-  | (Cinj(i1,c1,k1), Cinj(i2,c2,k2)) -> 
+  | (Cinj(i1,c1,k1), Cinj(i2,c2,k2)) ->
        kindaeq error ctxt kmap k1 k2;
        if i1 = i2 then aeq error ctxt varmap c1 c2 else error ()
   | (Ccase (c1,a1,cs1), Ccase (c2,a2,cs2)) ->
        (aeq error ctxt varmap c1 c2;
        try List.iter2 (aeq error ctxt (extend varmap a1 a2)) cs1 cs2
        with Invalid_argument _ -> error ())
-  | (Cfold (k1,c1), Cfold (k2,c2)) -> 
+  | (Cfold (k1,c1), Cfold (k2,c2)) ->
        kindaeq error ctxt kmap k1 k2;
        aeq error ctxt varmap c1 c2
-  | Cpr (i1,l1), Cpr (i2,l2) -> 
-       (try 
+  | Cpr (i1,l1), Cpr (i2,l2) ->
+       (try
        if List.length l1 <> List.length l2 then error ()
-       else 
-	  let (kmap,cmap) as varmap = List.fold_right2 
-	     (fun (j1,a1,k1,f1,k1',c1)(j2,a2,k2,f2,k2',c2) varmap -> 
-		let varmap = extend_kind varmap j1 j2 in 
-		extend varmap f1 f2) l1 l2 varmap  in 
+       else
+	  let (kmap,cmap) as varmap = List.fold_right2
+	     (fun (j1,a1,k1,f1,k1',c1)(j2,a2,k2,f2,k2',c2) varmap ->
+		let varmap = extend_kind varmap j1 j2 in
+		extend varmap f1 f2) l1 l2 varmap  in
 	  compare error varmap i1 i2;
-	  List.iter2 
+	  List.iter2
 	     (fun (j1,a1,k1,f1,k1',c1) (j2,a2,k2,f2,k2',c2) ->
-		kindaeq error ctxt kmap k1 k2; 
+		kindaeq error ctxt kmap k1 k2;
 		kindaeq error ctxt kmap k1' k2';
 	  	aeq error ctxt (extend varmap a1 a2) c1 c2) l1 l2
        with
-	  e -> ((debug2 (fun fmt o -> 
+	  e -> ((debug2 (fun fmt o ->
 	     pp_print_string fmt "Cprs not aeq";
-	     print_con fmt o c1; 
+	     print_con fmt o c1;
 	     pp_print_string fmt " and ";
 	     print_con fmt o c2));
 		  raise e))
@@ -2302,9 +2302,9 @@ let rec aeq error ctxt  ((kmap,cmap) as varmap) c1 c2 =
   (* -- end LX -- *)
   | (Clab l1,Clab l2) -> if (id_compare l1 l2)<>0 then error ()
   | (Cprim pc1,Cprim pc2) -> if pc1 <> pc2 then error ()
-  | (Crec fs1,Crec fs2) -> 
-      let varmap2 = 
-	List.fold_right2 
+  | (Crec fs1,Crec fs2) ->
+      let varmap2 =
+	List.fold_right2
 	  (fun (x1,k1,_) (x2,k2,_) varmap ->
 	     (kindaeq error ctxt kmap k1 k2; extend varmap x1 x2))
 	  fs1 fs2 varmap in
@@ -2317,11 +2317,11 @@ let rec aeq error ctxt  ((kmap,cmap) as varmap) c1 c2 =
       let varmap = extend varmap x1 x2 in
       aeq error ctxt varmap c1 c2;
       aeq error ctxt varmap c1' c2'
-  | (Cms ms1,Cms ms2) -> 
+  | (Cms ms1,Cms ms2) ->
       (try
 	ms_app_reg (fun r c1 -> aeq error ctxt varmap c1 (ms_get_reg ms2 r)) ms1;
 	ms_app_reg (fun r _ -> ms_get_reg ms1 r) ms2;
-	if not (fpstack_equal (ms_get_fpstack ms1) (ms_get_fpstack ms2)) then 
+	if not (fpstack_equal (ms_get_fpstack ms1) (ms_get_fpstack ms2)) then
 	  error ();
 	aeq error ctxt varmap (ms_get_cap ms1) (ms_get_cap ms2)
       with Dict.Absent -> error())
@@ -2368,9 +2368,9 @@ let rec aeq error ctxt  ((kmap,cmap) as varmap) c1 c2 =
   | Cjoin cs1,Cjoin cs2 -> aeqs error ctxt varmap cs1 cs2
   | Ccap d1,Ccap d2 ->
       begin
-	try 
-	  Dict.app_dict 
-	    (fun x (ai1,c1) -> 
+	try
+	  Dict.app_dict
+	    (fun x (ai1,c1) ->
 	      let (ai2,c2) = Dict.lookup d2 x in
 	      if ai1 <> ai2 then error();
 	      aeq error ctxt varmap c1 c2) d1;
@@ -2420,18 +2420,18 @@ let rec aeq error ctxt  ((kmap,cmap) as varmap) c1 c2 =
           with Invalid_argument _ -> error()
         in
 	let br_templ_eq (i1,l1,h1) (i2,l2,h2) =
-	  if i1=i2 then 
+	  if i1=i2 then
 	    (id_con_list_eq l1 l2;
 	     id_con_list_eq h1 h2)
 	  else error ()
 	in
-	try 
+	try
 	  List.iter2 br_templ_eq t1 t2
 	with Invalid_argument _ -> error()
-      end      
+      end
 (* End Cyclone *)
   | Csubst(c1,es1),Csubst(c2,es2) ->
-      let rec aeq_subst es1 es2 varmap = 
+      let rec aeq_subst es1 es2 varmap =
 	match es1,es2 with
 	  Enil,Enil -> varmap
 	| Es(x1,c1),Es(x2,c2) ->
@@ -2442,12 +2442,12 @@ let rec aeq error ctxt  ((kmap,cmap) as varmap) c1 c2 =
       in aeq error ctxt (aeq_subst es1 es2 varmap) c1 c2
   | Cr ci1,Cr ci2 ->
        (match ci1,ci2 with
-	  RCon c1, RCon c2 -> 
+	  RCon c1, RCon c2 ->
 	     aeq error ctxt empty_ctxt c1 c2
-	| RKind k1, RKind k2 -> 
+	| RKind k1, RKind k2 ->
 	     kindaeq error ctxt [] k1 k2
 	| RLabel l1, RLabel l2 ->
-	     if not (id_compare l1 l2  == 0) 
+	     if not (id_compare l1 l2  == 0)
 	     then error()
 	| _,_ -> error ())
   | (Ctypeof l1,Ctypeof l2) -> if (id_compare l1 l2)<>0 then error ()
@@ -2478,9 +2478,9 @@ let eqcon ctxt c1 c2 =
     try
       let ctxt' = error_handler ctxt eqerror' in
       aeqcon eqerror ctxt' c1 c2
-    with NotEq -> 
+    with NotEq ->
       let c1 = normalize ctxt c1
-      and c2 = normalize ctxt c2 in 
+      and c2 = normalize ctxt c2 in
       aeqcon (dieerror ctxt c1 c2) ctxt c1 c2
 *)
 ;;
@@ -2492,10 +2492,10 @@ let alphaeqcon ctxt c1 c2 = aeqcon (dieerror ctxt c1 c2) ctxt c1 c2
 (*************************************************************************)
 (* given a variable x of kind Kname, look it up in the current capability
  * to get its alias info and type. *)
-let get_name ctxt x = 
+let get_name ctxt x =
   let cap = whnorm ctxt (get_cap ctxt) in
   let err () = generate_error ctxt (Bad_Name x); raise Talfail in
-  let d = 
+  let d =
     match cap.rcon with
       Ccap d -> d
     | Cjoin (c::cs) ->
@@ -2514,33 +2514,33 @@ let get_name_type  ctxt x = snd(get_name ctxt x);;
 (* change the alias info and type information associated with a given
  * name.  Checks to see that the name is already in the capability.
  *)
-let change_name ctxt x p = 
+let change_name ctxt x p =
   let cap = whnorm ctxt (get_cap ctxt) in
   let err () = generate_error ctxt (Bad_Name x); raise Talfail in
   let check d = try Dict.lookup d x with Dict.Absent -> err() in
-  let cap' = 
+  let cap' =
     match cap.rcon with
       Ccap d -> check d; wcon(Ccap(Dict.insert d x p))
     | Cjoin (c::cs) ->
 	begin
 	  match c.rcon with
-	    Ccap d -> 
+	    Ccap d ->
 	      check d; wcon(Cjoin((wcon(Ccap(Dict.insert d x p)))::cs))
 	  | _ -> err()
 	end
     | _ -> err() in
   set_cap ctxt cap'
-;;  
+;;
 
 (* insert the alias info and type information associated with a given
  * name.  Checks to see that the name is not already in the capability.
  *)
-let add_name ctxt x p = 
+let add_name ctxt x p =
   let cap = whnorm ctxt (get_cap ctxt) in
   let err () = generate_error ctxt (Bad_Name x); raise Talfail in
   let other () = cjoin [ccap (Dict.insert (Dict.empty id_compare) x p);cap] in
-  try 
-  let cap' = 
+  try
+  let cap' =
     match cap.rcon with
       Ccap d -> wcon(Ccap(Dict.insert_new d x p))
     | Cjoin (c::cs) ->
@@ -2552,25 +2552,25 @@ let add_name ctxt x p =
     | _ -> other() in
   set_cap ctxt cap'
   with Dict.Present -> err()
-;;  
+;;
 
 (* remove a name from the current capability *)
-let remove_name ctxt x = 
+let remove_name ctxt x =
   let cap = whnorm ctxt (get_cap ctxt) in
   let err () = generate_error ctxt (Bad_Name x); raise Talfail in
-  try 
-  let cap' = 
+  try
+  let cap' =
     match cap.rcon with
-      Ccap d -> 
+      Ccap d ->
 	let d' = Dict.delete_present d x in
 	if Dict.is_empty d' then cempty_cap
 	else wcon(Ccap(d'))
     | Cjoin (c::cs) ->
 	begin
 	  match c.rcon with
-	    Ccap d -> 
+	    Ccap d ->
 	      let d' = Dict.delete_present d x in
-	      if Dict.is_empty d' then 
+	      if Dict.is_empty d' then
 		begin
 		  match cs with
 		    [] -> cempty_cap
@@ -2585,11 +2585,11 @@ let remove_name ctxt x =
   with Dict.Absent -> err()
 
 (* change a name from unique to may alias *)
-let forgetunique ctxt x = 
+let forgetunique ctxt x =
   let (ai,c) = get_name ctxt x in
   match ai with
     Unique -> change_name ctxt x (MayAlias,c)
-  | _ -> 
+  | _ ->
       (error ctxt (wcon (Cvar x)) "Forgetunique:  name is not unique";
        raise Talfail)
 ;;
@@ -2622,23 +2622,23 @@ type salphactxt = (identifier*identifier) list * (identifier*identifier*ac) list
 
 let sempty_ctxt : salphactxt = ([],[]);;
 let sextend_eq old dir x1 x2 : salphactxt =
-  if id_compare x1 x2 == 0 
-  then old 
+  if id_compare x1 x2 == 0
+  then old
   else let (km,vm) = old in
-  if dir 
-  then (km,(x1,x2,ACeq)::vm) 
+  if dir
+  then (km,(x1,x2,ACeq)::vm)
   else (km,(x2,x1,ACeq)::vm)
 ;;
 let sextend_lt old dir x1 x2 : salphactxt =
   if id_compare x1 x2 == 0
   then old
   else let (km,vm) = old in
-  if dir 
-  then (km,(x1,x2,AClt)::vm) 
+  if dir
+  then (km,(x1,x2,AClt)::vm)
   else (km,(x2,x1,ACgt)::vm)
 ;;
 
-let sextend_kind (km,vm) dir x1 x2 : salphactxt = 
+let sextend_kind (km,vm) dir x1 x2 : salphactxt =
    if dir then (x1,x2)::km,vm else (x2,x1)::km,vm
 
 let rec compare error (km,vm) dir x1 x2 =
@@ -2685,13 +2685,13 @@ let try_aeq error ctxt (kmap, cmap) dir c1 c2 =
   if dir then aeq error ctxt varmap c1 c2 else aeq error ctxt varmap c2 c1
 ;;
 
-let kindaeq_d dir error ctxt (kmap,cmap) c1 c2 = 
+let kindaeq_d dir error ctxt (kmap,cmap) c1 c2 =
    if dir then kindaeq error ctxt kmap c1 c2 else kindaeq error ctxt kmap c2 c1
 
-let kindaleq_d dir error ctxt (kmap,cmap) c1 c2 = 
+let kindaleq_d dir error ctxt (kmap,cmap) c1 c2 =
    if dir then kindaleq error ctxt kmap c1 c2 else kindaleq error ctxt kmap c2 c1
 
-(* calculates the size (in bytes) of values who have type c *)	
+(* calculates the size (in bytes) of values who have type c *)
 let rec sizeof ctxt c =
   match (con_kind ctxt c).rkind with
     Kbyte s -> scale_to_int32 s
@@ -2711,7 +2711,7 @@ let rec sizeof ctxt c =
  *)
 let rec leqc error ctxt1 ctxt2 ((kmap, cmap) as varmap) dir exactsize c1 c2 =
   let leqc' = leqc error ctxt1 ctxt2 varmap dir exactsize in
-  let leqc_extend v1 k1 v2 k2 = 
+  let leqc_extend v1 k1 v2 k2 =
     let ctxt1' = add_var ctxt1 v1 k1 in
     let ctxt2' = add_var ctxt2 v2 k2 in
     let varmap' = sextend_eq varmap dir v1 v2 in
@@ -2728,23 +2728,23 @@ let rec leqc error ctxt1 ctxt2 ((kmap, cmap) as varmap) dir exactsize c1 c2 =
       kindaeq_d' k1 k2;
       leqc_extend' v1 k1 v2 k2 c1 c2
   | Capp (c11,c12),Capp (c21,c22) ->
-      leqc' c11 c21; 
+      leqc' c11 c21;
       try_aeq' c12 c22
   | Ctuple cs1,Ctuple cs2 ->
       (try List.iter2 leqc' cs1 cs2
       with Invalid_argument _ -> error ())
-  | Cproj (i1,c1),Cproj (i2,c2) -> 
+  | Cproj (i1,c1),Cproj (i2,c2) ->
       if i1=i2 then leqc' c1 c2 else error ()
 (* ---- LX ---- *)
 (* Only alpha-equivalence at this point *)
-  | (Cinj _, Cinj _) -> 
-       try_aeq' c1 c2 
-  | (Ccase _, Ccase _) ->
-       try_aeq' c1 c2 
-  | (Cfold _, Cfold _) -> 
+  | (Cinj _, Cinj _) ->
        try_aeq' c1 c2
-  | (Cpr _, Cpr _) -> 
-      try_aeq' c1 c2 
+  | (Ccase _, Ccase _) ->
+       try_aeq' c1 c2
+  | (Cfold _, Cfold _) ->
+       try_aeq' c1 c2
+  | (Cpr _, Cpr _) ->
+      try_aeq' c1 c2
   | (Cvoid k1, Cvoid k2) ->
        kindaeq_d' k1 k2
 (* -- end LX -- *)
@@ -2762,12 +2762,12 @@ let rec leqc error ctxt1 ctxt2 ((kmap, cmap) as varmap) dir exactsize c1 c2 =
       (try try_aeq eqerror ctxt1 varmap dir c1 c2
       with NotEq ->
 	try
-	  let aux (vm,ctxt1,ctxt2) (x1,k1,_) (x2,k2,_) = 
+	  let aux (vm,ctxt1,ctxt2) (x1,k1,_) (x2,k2,_) =
 	    (sextend_lt vm dir x1 x2,
 	     add_var ctxt1 x1 k1,
 	     add_var ctxt2 x2 k2)
 	  in
-	  let (varmap,ctxt1,ctxt2) = 
+	  let (varmap,ctxt1,ctxt2) =
 	    List.fold_left2 aux (varmap,ctxt1,ctxt2) fs1 fs2 in
 	  let kindaleq_d' = kindaleq_d dir error ctxt1 varmap in
 	  let leqc' = leqc error ctxt1 ctxt2 varmap dir exactsize in
@@ -2811,9 +2811,9 @@ let rec leqc error ctxt1 ctxt2 ((kmap, cmap) as varmap) dir exactsize c1 c2 =
   | Csum _,Csum [] ->
       if exactsize then kindaleq_d' (con_kind ctxt1 c1) (con_kind ctxt2 c2)
   | Csum cs1,Csum (c2::_ as cs2) ->
-      let sz = 
-	match (con_kind ctxt2 c2).rkind with 
-	  Kmemi i -> Some i 
+      let sz =
+	match (con_kind ctxt2 c2).rkind with
+	  Kmemi i -> Some i
 	| _ -> None in
       let rec aux1 sz cs1 cs2 =
 	match cs2 with
@@ -2862,11 +2862,11 @@ let rec leqc error ctxt1 ctxt2 ((kmap, cmap) as varmap) dir exactsize c1 c2 =
   | Csing {rcon=Cprim (PCint i)},Chptr (is,_,None) ->
       if not (mem i is) then error ()
   | Csptr c1,Csptr c2 -> leqc error ctxt1 ctxt2 varmap dir false c1 c2
-  | Csptr c1,Cprim (PCbytes Byte4) -> () 
+  | Csptr c1,Cprim (PCbytes Byte4) -> ()
   | Cempty,Cempty -> ()
   | Ccons (c11,c12),Ccons (c21,c22) ->
       (* We special case for junk on the stack. *)
-      let is_junk_con c = 
+      let is_junk_con c =
 	match c.rcon with
 	| Cprim(PCjunkbytes sc)  -> Some (scale_to_int32 sc)
 	| Cprim(PCjunk i) -> Some i
@@ -2879,11 +2879,11 @@ let rec leqc error ctxt1 ctxt2 ((kmap, cmap) as varmap) dir exactsize c1 c2 =
       (match (con_size c11, is_junk_con c21) with
       |	(Some i1, Some i2) ->
 	  if i1 =$ i2 then leqc' c12 c22 else
-	  if i1 < i2 then  leqc' c12 (ccons (pcjunk (i2 -$ i1)) c22) 
+	  if i1 < i2 then  leqc' c12 (ccons (pcjunk (i2 -$ i1)) c22)
 	  else             leqc' (ccons (pcjunk (i1 -$ i2)) c12) c22
       |	_ -> (leqc error ctxt1 ctxt2 varmap dir true c11 c21;
 	      leqc' c12 c22))
-  | Cappend (c11,c12),Cappend (c21,c22) -> 
+  | Cappend (c11,c12),Cappend (c21,c22) ->
       leqc error ctxt1 ctxt2 varmap dir true c11 c21;
       leqc' c12 c22
   (* arithmetic and logic *)
@@ -2895,12 +2895,12 @@ let rec leqc error ctxt1 ctxt2 ((kmap, cmap) as varmap) dir exactsize c1 c2 =
 	let ctxt = error_handler ctxt1 (fun _ _ -> raise NotEq) in
 	(fun c1 c2 ->
  	  try try_aeq error ctxt1 varmap dir c1 c2; true
-	  with NotEq -> false) 
+	  with NotEq -> false)
       in
       let rec belongs c cs cs_original =
 	match cs with
 	  [] -> error ()
-	| c'::cs' -> 
+	| c'::cs' ->
 	    if try_catch_aeq c c' then ()
 	    else belongs c cs' cs_original in
       let rec includes cs1 cs2 =
@@ -2911,7 +2911,7 @@ let rec leqc error ctxt1 ctxt2 ((kmap, cmap) as varmap) dir exactsize c1 c2 =
 	match l1,l2 with
 	  Cand,Cand -> includes cs2 cs1
 	| Cand,_ -> includes [c2] cs1
-	| _,Cand -> includes cs2 [c1] 
+	| _,Cand -> includes cs2 [c1]
 	| _,_ -> try_aeq error ctxt1 varmap dir c1 c2
       end
   | Cif (c1,c1'), Cif (c2,c2') ->
@@ -2937,16 +2937,16 @@ let rec leqc error ctxt1 ctxt2 ((kmap, cmap) as varmap) dir exactsize c1 c2 =
 	try
 	  List.iter2 leqc' cs1 cs2
 	with Invalid_argument _ -> error ()
-      else 
-	let rec iter rcs1 rcs2 = 
+      else
+	let rec iter rcs1 rcs2 =
 	  match rcs1,rcs2 with
 	    _,[] -> ()
-	  | c1::rest1,c2::rest2 -> 
+	  | c1::rest1,c2::rest2 ->
 	      begin
-		try 
+		try
 		  let ctxt1' = error_handler ctxt1 eqerror' in
 		  let ctxt2' = error_handler ctxt2 eqerror' in
-		  leqc eqerror ctxt1' ctxt2' varmap dir exactsize c1 c2; 
+		  leqc eqerror ctxt1' ctxt2' varmap dir exactsize c1 c2;
 		  iter rest1 rest2
 		with _ -> iter rest1 rcs2
 	      end
@@ -2956,9 +2956,9 @@ let rec leqc error ctxt1 ctxt2 ((kmap, cmap) as varmap) dir exactsize c1 c2 =
   (* Dave: or if c2 is the empty capability *)
   | Cjoin cs1,_ ->
       if exactsize then error () else
-      let rec iter rcs1 = 
+      let rec iter rcs1 =
 	  match rcs1 with
-	  | c1::rest1 -> 
+	  | c1::rest1 ->
 	      begin
 		try
 		  let ctxt1' = error_handler ctxt1 eqerror' in
@@ -2968,13 +2968,13 @@ let rec leqc error ctxt1 ctxt2 ((kmap, cmap) as varmap) dir exactsize c1 c2 =
 	      end
 	  | [] -> error() in
       (match c2.rcon with
-	Ccap d -> 
+	Ccap d ->
 	  if Dict.is_empty d then ()
-	  else iter cs1 
+	  else iter cs1
       |	_ -> iter cs1)
-  | Ccap d1,Ccap d2 -> 
-      let aux x (ai2,c2) = 
-	try 
+  | Ccap d1,Ccap d2 ->
+      let aux x (ai2,c2) =
+	try
 	  let (ai1,c1) = Dict.lookup d1 x in
 	  if ai1 <> ai2 then error();
 	  leqc error ctxt1 ctxt2 varmap dir false c1 c2
@@ -2993,7 +2993,7 @@ let rec leqc error ctxt1 ctxt2 ((kmap, cmap) as varmap) dir exactsize c1 c2 =
         | Some c12,Some c22 ->
             leqc error ctxt1 ctxt2 varmap dir false c12 c22
         | _ -> error ());
-	(* We reorder holes and labels here.  
+	(* We reorder holes and labels here.
 	   XXX - Would be better if they were maintained in sorted order. *)
 	let id_con_cmp (i1,_) (i2,_) = id_compare i1 i2 in
 	let l1 = List.sort id_con_cmp l1 in
@@ -3024,7 +3024,7 @@ let rec leqc error ctxt1 ctxt2 ((kmap, cmap) as varmap) dir exactsize c1 c2 =
 	| (Some c12,Some c22) ->
 	    leqc error ctxt2 ctxt1 varmap (not dir) false c22 c12
 	| (_,_) -> error ());
-	
+
 	let id_con_list_leq l1 l2 =
           try
             List.iter2
@@ -3036,7 +3036,7 @@ let rec leqc error ctxt1 ctxt2 ((kmap, cmap) as varmap) dir exactsize c1 c2 =
           with Invalid_argument _ -> error()
 	in
 	let br_templ_leq (i1,l1,h1) (i2,l2,h2) =
-	  if i1=i2 then 
+	  if i1=i2 then
 	    let id_con_cmp (i1,_) (i2,_) = id_compare i1 i2 in
 	    let l1 = List.sort id_con_cmp l1 in
 	    let l2 = List.sort id_con_cmp l2 in
@@ -3049,17 +3049,17 @@ let rec leqc error ctxt1 ctxt2 ((kmap, cmap) as varmap) dir exactsize c1 c2 =
 	let br_templ_cmp (i1,_,_) (i2,_,_) = id_compare i1 i2 in
 	let t1 = List.sort br_templ_cmp t1 in
 	let t2 = List.sort br_templ_cmp t2 in
-	try 
+	try
 	  List.iter2 br_templ_leq t1 t2
-	with Invalid_argument _ -> error()      
+	with Invalid_argument _ -> error()
       end
 (* End Cyclone *)
-  | Csubst _,Csubst _ -> 
+  | Csubst _,Csubst _ ->
       try_aeq' c1 c2
-  | (Cr _, Cr _) -> 
+  | (Cr _, Cr _) ->
        try_aeq' c1 c2
-  | Ctypeof l1,Ctypeof l2 -> 
-      if (id_compare l1 l2) <> 0 then error () else () 
+  | Ctypeof l1,Ctypeof l2 ->
+      if (id_compare l1 l2) <> 0 then error () else ()
   | _,_ -> error ()
 and leqms error ctxt1 ctxt2 varmap dir ms1 ms2 =
    let aux r c2 =
@@ -3092,10 +3092,10 @@ and fpstack_leq' ctxt fps1 fps2 =
 
 let leqc_norm error ctxt c1 c2 =
   if c1 != c2 then
-    let c1 = normalize ctxt c1 
+    let c1 = normalize ctxt c1
     and c2 = normalize ctxt c2 in
     leqc (error c1 c2) ctxt ctxt empty_ctxt true false c1 c2
-  else () 
+  else ()
 ;;
 
 let leqcon ctxt c1 c2 =
@@ -3103,7 +3103,7 @@ let leqcon ctxt c1 c2 =
     leqc_norm error ctxt c1 c2
 ;;
 
-let machine_state_leq ctxt gamma1 gamma2 = 
+let machine_state_leq ctxt gamma1 gamma2 =
   let error r c1 c2 () = generate_error ctxt (Msnleq (r,c1,c2)) in
   let check1 r c2 =
     try
@@ -3170,7 +3170,7 @@ let split_arithmetic ctxt c =
   match c.rcon with
     Cprim (PCint i) -> (i,[])
   | Cvar _ -> (i32_0,[c])
-  | Clog (Cadd,cs) -> 
+  | Clog (Cadd,cs) ->
       let rec get_const cs =
 	match cs with
 	  [] -> (i32_0,[])
@@ -3198,8 +3198,8 @@ let from_union ctxt c =
     Chptr (is,Some c,tco) -> chptr is (Some (aux c)) tco
   | _ -> c
 ;;
-    
-(* unroll a recursive type 
+
+(* unroll a recursive type
    no explicit substitutions though
 *)
 let rec unroll_rec exact ctxt c =
@@ -3209,7 +3209,7 @@ let rec unroll_rec exact ctxt c =
       match c1.rcon with
 	Crec [(v,k,c2)] ->  subst c v c2 (* csubst c2 (Es(v,c)) *)
       |	Crec fs ->
-	   (* 
+	   (*
 	  let aux (es,n) (v,_,_) =
 	    let uc = if n=i then c else defcon (Cproj (n,c1)) in
 	    (Eo(Es(v,uc),es),n+1) in
@@ -3257,7 +3257,7 @@ let rec sizeof_stack ctxt c =
    variables *)
 let rec separate_fun_type ctxt c =
   match (whnorm ctxt c).rcon with
-    Cforall (v,k,c) -> 
+    Cforall (v,k,c) ->
       let (vks, prop, mstate) = separate_fun_type ctxt c in
       ((v,k) :: vks, prop, mstate)
   | Cif (c1,{rcon=Ccode mstate}) -> ([], c1, mstate)
@@ -3269,7 +3269,7 @@ let rec separate_fun_type ctxt c =
 (* Field/Stack Slot Utilities                                            *)
 (*************************************************************************)
 
-	  
+
 (* JGM's attempt to decode what is going on here -- why we need something
  * this complicated is beyond me.
  *
@@ -3280,7 +3280,7 @@ let rec separate_fun_type ctxt c =
  * always None.)  This returns a triple where the first component is an
  * "update" function which when given a constructor to go at position
  * offset yields the same type but with that field changed.  The second
- * component is the actual field type.  The third component is the 
+ * component is the actual field type.  The third component is the
  * "left over" offset?  Perhaps the actual depth of the thing.
  *)
 
@@ -3290,10 +3290,10 @@ let rec separate_fun_type ctxt c =
    If sizeopt is Some j then return a list of cons that have total size j,
      beginning at the offset.
 
-   The offset returned is the leftover portion if the position is not 
-   at an object boundary. (For example if the offset is to the 
+   The offset returned is the leftover portion if the position is not
+   at an object boundary. (For example if the offset is to the
    middle of an array, the array is returned, plus the part into the middle.)
- 
+
    Dave: sizeopt is an optional size for the object at offset that is being retrieved
 *)
 
@@ -3312,7 +3312,7 @@ let rec get_rest_stack ctxt c sz =
     (raise NoSizeCheck)
   else
     (let c = whnorm ctxt c in
-     match c.rcon with 
+     match c.rcon with
        Ccons (c1,c2) ->
 	let sz1 = sizeof ctxt c1 in
 	let hd,tl = get_rest_stack ctxt c2 (sz-$sz1) in
@@ -3331,7 +3331,7 @@ let rec get_rest_cs ctxt cs sz =
 	let sz1 = sizeof ctxt c in
 	let hd,tl = get_rest_cs ctxt cs (sz -$ sz1) in
 	(c::hd,tl))
-    
+
 let rec get_mem_offset_p ctxt c offset gms =
   let c = whnorm ctxt c in
   match c.rcon with
@@ -3343,7 +3343,7 @@ let rec get_mem_offset_p ctxt c offset gms =
 	 match gms with
 	   ReturnRest -> (id, [ccons c1 c2], i32_0, false)
 	 | ReturnCon  -> ((fun c -> ccons c c2), [c1], i32_0, false)
-	 | CheckSize sz -> 
+	 | CheckSize sz ->
 	     let ctxt = size_check_ctxt ctxt in
 	     (try
 	       let sz1 = sizeof ctxt c1 in
@@ -3360,10 +3360,10 @@ let rec get_mem_offset_p ctxt c offset gms =
 	  ((fun c -> ccons c c2), [c1], offset, false)
    | _ ->
       (id,[c],offset,false)
-   
+
 and get_mem_offset_l ctxt cs offset gms =
    match cs with
-      [] -> 
+      [] ->
 	(match gms with
 	  ReturnRest -> ((fun c -> [c]), [cprod []], i32_0, false)
       	| _ -> (generate_error ctxt (Bad_offset offset); raise Talfail))
@@ -3387,7 +3387,7 @@ and get_mem_offset_l ctxt cs offset gms =
 	       ((fun c' -> c::(f c')),cons,i,checked)
       	    else
 	       ((fun c -> c::cs), [c], offset, false)
-	       
+
 
 let get_mem_offset ctxt cs offset =
   let (f,c,i,_) = get_mem_offset_p ctxt cs offset ReturnCon in
@@ -3407,7 +3407,7 @@ let get_mem_offset_checked ctxt cs offset sz =
     (f,c,check)
 ;;
 
-let get_mem_from_offset ctxt cs offset = 
+let get_mem_from_offset ctxt cs offset =
    let (f,c,i,_) = get_mem_offset_p ctxt cs offset ReturnRest in
   if i <>$ i32_0 then
     (generate_error ctxt (Bad_offset i); raise Talfail)
@@ -3417,11 +3417,11 @@ let get_mem_from_offset ctxt cs offset =
     | _ -> failwith "Talcon.get_mem_from_offset: should return single con")
 ;;
 
-let get_mem_offset_p_checked ctxt c offset sz = 
+let get_mem_offset_p_checked ctxt c offset sz =
   get_mem_offset_p ctxt c offset (CheckSize sz)
 ;;
 
-let get_mem_offset_p ctxt c offset = 
+let get_mem_offset_p ctxt c offset =
   let (f,cs,i,_) = get_mem_offset_p ctxt c offset ReturnCon in
   match cs with
     [c] -> (f,c,i)
@@ -3429,7 +3429,7 @@ let get_mem_offset_p ctxt c offset =
 ;;
 
 (* verify that the stack constructor c1 is a tail of stack constructor c2.
- * assumes c1,c2 normalized and returns a function, which when given a 
+ * assumes c1,c2 normalized and returns a function, which when given a
  * mutated version of c1, generates the corresponding mutated version of c2.
  * (see assign_simple_path below).  That is, we verify that there exists
  * a c3 such that Cappend(c1,c3) = c2 and return a function which maps
@@ -3445,9 +3445,9 @@ let verify_stack_tail ctxt c1 c2 =
     try
       leqcon ctxt' c2 c1; (* Dan: It should be okay for c1 to be a super-type *)
       id
-    with Tryrest -> 
+    with Tryrest ->
       (match (whnorm ctxt c2).rcon with
-	Ccons(ca,cb) -> 
+	Ccons(ca,cb) ->
 	  let f = aux cb in (fun c -> ccons ca (f c))
       | Cappend(ca,cb) ->
 	  let f = aux cb in (fun c -> defcon(Cappend(ca,f c)))

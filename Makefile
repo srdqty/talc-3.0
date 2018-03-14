@@ -8,7 +8,7 @@
 #
 # Next major cleanup by Dan in Version 1.36 -- retrieve earlier version for
 # kml-related targets.
-# THIS FILE NOW RELIES VERY HEAVILY ON GNUMAKE! 
+# THIS FILE NOW RELIES VERY HEAVILY ON GNUMAKE!
 # DG 12 Jan 99
 
 # Now in Version 1.37 we can compile to native.	 To do native profiling, must
@@ -19,7 +19,7 @@
 #################### Configuration
 # N.B. Requires MASM 6.11 and Visual C++ to build the runtime
 
-# note: native/profile combination is not supported under Windows as of 
+# note: native/profile combination is not supported under Windows as of
 #	ocaml version 2.01
 ifdef NATIVE
 OCAMLC	= ocamlopt$(OPT)
@@ -77,7 +77,7 @@ OCAMLLEX  = ocamllex
 OCAMLYACC = ocamlyacc -v
 COMPFLAGS = $(INCLUDES) $(FLAGS)
 ifndef NATIVE
-LINKFLAGS = -custom $(COMPFLAGS) 
+LINKFLAGS = -custom $(COMPFLAGS)
 endif
 TARGETDIR = build
 
@@ -129,8 +129,8 @@ COMPUTIL_BASE = identifier
 UTIL	 = $(addprefix util/,	  $(addsuffix .$(OBJSUFF), $(UTIL_BASE)))
 COMPUTIL = $(addprefix computil/, $(addsuffix .$(OBJSUFF), $(COMPUTIL_BASE)))
 
-$(TARGETDIR)/util.$(LIBSUFF):  $(UTIL) $(COMPUTIL) 
-	$(OCAMLC) $(LINKFLAGS) -a -o $@ $^ 
+$(TARGETDIR)/util.$(LIBSUFF):  $(UTIL) $(COMPUTIL)
+	$(OCAMLC) $(LINKFLAGS) -a -o $@ $^
 
 ################### Gcd
  # this is the top-level directory, but we don't include talc.ml since it
@@ -141,7 +141,7 @@ GCD_BASE = lineno gcdfec gcdfe gcd
 GCDLIB = $(addprefix toplevel/, $(addsuffix .$(OBJSUFF), $(GCD_BASE)))
 
 $(TARGETDIR)/gcd.$(LIBSUFF): $(GCDLIB)
-	$(OCAMLC) $(LINKFLAGS) -a -o $@ $^ 
+	$(OCAMLC) $(LINKFLAGS) -a -o $@ $^
 
 #################### Tal
 
@@ -150,7 +150,7 @@ TALLIB_BASE = tal talctxt talpp talout
 TALLIB = $(addprefix talx86/, $(addsuffix .$(OBJSUFF), $(TALLIB_BASE)))
 
 $(TARGETDIR)/tal.$(LIBSUFF): $(TALLIB)
-	$(OCAMLC) $(LINKFLAGS) -a -o $@ $^ 
+	$(OCAMLC) $(LINKFLAGS) -a -o $@ $^
 
 #################### Talcomp
 
@@ -163,7 +163,7 @@ TALCOMPLIB_BASE = objfile talcon disobjfile cyclone talbin talbinout talparser \
 TALCOMPLIB = $(addprefix talx86/, $(addsuffix .$(OBJSUFF), $(TALCOMPLIB_BASE)))
 
 $(TARGETDIR)/talcomp.$(LIBSUFF): $(TALCOMPLIB)
-	$(OCAMLC) $(LINKFLAGS) -a -o $@ $^ 
+	$(OCAMLC) $(LINKFLAGS) -a -o $@ $^
 
 #################### C support
 
@@ -184,7 +184,7 @@ runtime/dynlink.$(O): runtime/dynlink.c
 # name conflicts
 ifdef NATIVE
 ifdef WINDIR
-runtime/dynlinklib.$(A): 
+runtime/dynlinklib.$(A):
 	$(MAKE) NATIVE= runtime/dynlinklib.$(A)
 else
 runtime/dynlinklib.$(A): $(OCAMLIB) $(CFILES) runtime/dynlinklib.$(O) runtime/dynlink.$(O)
@@ -207,7 +207,7 @@ GENCOBJS = $(addprefix $(TARGETDIR)/, $(addsuffix .$(LIBSUFF), \
 #################### genCinit.exe
 
 $(TARGETDIR)/genCinit.exe: $(CFILES) $(GENCOBJS)
-	$(OCAMLC) $(LINKFLAGS) -o $@ $^ 
+	$(OCAMLC) $(LINKFLAGS) -o $@ $^
 
 
 #**#
@@ -228,7 +228,7 @@ TALCOBJS = $(addprefix $(TARGETDIR)/, $(addsuffix .$(LIBSUFF), \
 talc: $(TARGETDIR)/talc.exe
 
 $(TARGETDIR)/talc.exe: $(CFILES) $(TALCOBJS)
-	$(OCAMLC) $(LINKFLAGS) -o $@ $^ 
+	$(OCAMLC) $(LINKFLAGS) -o $@ $^
 
 #################### Popcorn
 
@@ -243,7 +243,7 @@ POPOBJS = $(addprefix $(TARGETDIR)/, $(addsuffix .$(LIBSUFF), util tal gcd talco
 popcorn: $(TARGETDIR)/popcorn.exe
 
 $(TARGETDIR)/popcorn.exe: $(CFILES) $(POPOBJS)
-	$(OCAMLC) $(LINKFLAGS) -o $@ $^ 
+	$(OCAMLC) $(LINKFLAGS) -o $@ $^
 
 GENPATCH_BASE = poperr popsyntax popparse poplex poptype popdynpatch \
   poppeep popcomptypes popcompenv popdyntrans popgenpatch
@@ -252,7 +252,7 @@ GENPATCH_OBJS = $(addprefix $(TARGETDIR)/, $(addsuffix .$(LIBSUFF), util tal gcd
 	  $(addprefix popcorn/, $(addsuffix .$(OBJSUFF), $(GENPATCH_BASE)))
 
 $(TARGETDIR)/popgenpatch.exe: $(CFILES) $(GENPATCH_OBJS)
-	$(OCAMLC) $(LINKFLAGS) -o $@ $^ 
+	$(OCAMLC) $(LINKFLAGS) -o $@ $^
 
 
 #################### Scheme
@@ -264,8 +264,8 @@ SCHEMEOBJS= $(addprefix $(TARGETDIR)/, $(addsuffix .$(LIBSUFF), util tal gcd)) \
 
 scheme: $(TARGETDIR)/scheme.exe
 
-$(TARGETDIR)/scheme.exe: $(SCHEMEOBJS) 
-	$(OCAMLC) $(LINKFLAGS) -o $@ $^ 
+$(TARGETDIR)/scheme.exe: $(SCHEMEOBJS)
+	$(OCAMLC) $(LINKFLAGS) -o $@ $^
 
 #################### Runtimes
 
@@ -279,7 +279,7 @@ WIN_BASE = tal_start $(WIN_BASE_OBJS)
 # tal_sockets only works for Linux (for now)
 ifdef WINDIR
 RUNTIME_BASE = $(WIN_BASE)
-else           
+else
 RUNTIME_BASE = $(WIN_BASE) tal_sockets
 endif
 
@@ -291,7 +291,7 @@ runtime: $(RUNTIME) runtime/stdlibnew.$(O) runtime/prelude.$(O)	runtime/preluden
 	$(MAKE) -C popcorn/lib
 
 runtime/stdlibnew.$(O): runtime/stdlib.$(O)
-	cp runtime/stdlib.$(O) runtime/stdlibnew.$(O) 
+	cp runtime/stdlib.$(O) runtime/stdlibnew.$(O)
 
 runtime/gc.a: runtime/$(LINUX_GC)
 	cp $< $@
@@ -317,7 +317,7 @@ computil/ocamldep.cmo: computil/ocamldep.ml
 	$(OCAMLC) -c $<
 
 $(TARGETDIR)/ocamldep.exe: computil/ocamldep.cmo
-	$(OCAMLC) $(LINKFLAGS) -o $@ $^ 
+	$(OCAMLC) $(LINKFLAGS) -o $@ $^
 
 # special rules for these, since they don't match the template rule
 runtime/tal_start.c: runtime/tal_start.tmpl runtime/tal.tali $(TARGETDIR)/genCinit.exe
@@ -332,10 +332,10 @@ runtime/tal_start_nomain.c: runtime/tal_start_nomain.tmpl runtime/tal.tali $(TAR
 # Templates
 
 %.ml: %.mll
-	$(OCAMLLEX) $< 
+	$(OCAMLLEX) $<
 
 %.ml %.mli: %.mly
-	$(OCAMLYACC) $< 
+	$(OCAMLYACC) $<
 
 %.cmi: %.mli
 	$(OCAMLI) -c $(COMPFLAGS) $<
@@ -344,7 +344,7 @@ runtime/tal_start_nomain.c: runtime/tal_start_nomain.tmpl runtime/tal.tali $(TAR
 	$(OCAMLC) -c $(COMPFLAGS) $<
 
 %.obj: %.asm
-	$(ASM) /Fo$@ /c $< 
+	$(ASM) /Fo$@ /c $<
 
 %.obj: %.tal $(TARGETDIR)/talc.exe
 	$(TARGETDIR)/talc.exe -c --coff $<

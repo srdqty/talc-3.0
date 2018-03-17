@@ -450,7 +450,7 @@ array tal_select(array Read_fds,
   int num_fds = -1;
   struct intlist *y;
   fd_set readfds;
-  void **a;
+  int *a;
   array retval = GC_malloc(sizeof(struct arr_internal));
 
   if ((Write_fds != 0) || (Except_fds != 0))
@@ -489,12 +489,19 @@ array tal_select(array Read_fds,
       y = z;
       retval->size++;
     }
-  a = GC_malloc(retval->size * 4);
+  /* sizeof(int) used to be hardcoded to 4...
+    the retval data type does not store the size of each element so this
+    might lead to a bug later when indexing into the array...
+    The original code was already buggy since it hardcoded 4 and then later
+    indexed into a void**. Perhaps a lot of this code will be broken on 64-bit
+    systems...
+  */
+  a = GC_malloc(retval->size * sizeof(int));
   retval->elts = a;
 
   /* fill array with values in list */
   for(i =0; i < retval->size; i++) {
-    (int) a[i] = y->val;
+    a[i] = y->val;
     y = y->next;
   }
   return retval;

@@ -4,10 +4,10 @@
 (**********************************************************************)
 
 (* x86tal.mli
- * 
+ *
  * This is a fairly complete specification of the abstract syntax for
  * a typed version of 32-bit (flat-model) iNTEL 80386, Pentium, Pentium Pro,
- * and/or Pentium II assembly language.  
+ * and/or Pentium II assembly language.
  *
  * TODO:  1. floating point
  *
@@ -53,14 +53,14 @@ type reg_part = RPe | RPx | RPh | RPl;;
 (* Kinds *)
 
 (* Kbyte <= Ktype, Kmemi <= Kmem *)
-type rkind = 
+type rkind =
     Kbyte of scale	  (* describes types of 8/16/32/64 bit values *)
   | Ktype   		  (* describes types of all values *)
   | Kmemi of int32        (* types for memory of size i *)
   | Kmem                  (* types for memory or heap blocks *)
   | Kstack  		  (* describes types of the stack & pointers into it *)
   | Kint                  (* integer kind *)
-  | Kbool                 (* boolean kind *) 
+  | Kbool                 (* boolean kind *)
   | Karrow of kind * kind (* functions from constructors to constructors *)
   | Kprod of kind list    (* tuples of constructors *)
   | Kname                 (* "names" used for alias information *)
@@ -69,17 +69,17 @@ type rkind =
 (* ----- LX kinds ----- *)
   | Ksum of kind list
   | Kvar of identifier
-  | Kmu of kmu_schema * identifier 
+  | Kmu of kmu_schema * identifier
 (* ----- end LX ----- *)
 
 (* LX *)
-and kmu_schema = (identifier * kind) list 
+and kmu_schema = (identifier * kind) list
 and kind =
-   { 
+   {
    mutable rkind : rkind;                           (* the raw kind *)
    mutable freekindvars : identifier Set.set option; (* free kind vars *)
    mutable kabbrev : identifier option   (* is this con an abbreviation *)
- } 
+ }
 ;;
 
 (* helper functions for creating kinds *)
@@ -111,7 +111,7 @@ let k4byte = kbyte Byte4;; (* 32 bit values *)
 (* Type Constructors *)
 
 (* primitive constructors *)
-type primcon = 
+type primcon =
     PCbytes of scale      (* : Kbyte s *)
   | PCfloat32             (* : Kbyte Byte4 *)
   | PCfloat64             (* : Kbyte Byte8 *)
@@ -137,7 +137,7 @@ type log =
   | Cnot  (* logical not *)
   | Clts  (* signed less than *)
   | Cltu  (* unsigned less than *)
-  | Cltes (* signed less than or equal to *)  
+  | Cltes (* signed less than or equal to *)
   | Clteu (* unsigned less than or equal to *)
 
 (* alias information *)
@@ -149,7 +149,7 @@ type fpstack = fpreg * fpreg * fpreg * fpreg * fpreg * fpreg * fpreg * fpreg
 ;;
 
 type con_state = NotNorm | Normalized | WeakHead;;
-type rcon = 
+type rcon =
 (* the language portion of con's *)
     Cvar of identifier
   | Clam of identifier * kind * con
@@ -170,7 +170,7 @@ type rcon =
   | Crec of (identifier * kind * con) list
   | Cforall of identifier * kind * con
   | Cexist of identifier * kind * con * con (* E[i:k such that c1].c2 *)
-  | Ccode of con 
+  | Ccode of con
   | Cms of machine_state
   | Cmsjoin of con * con
   | Chptr of int32 list*con option*(con*variance) option
@@ -207,13 +207,13 @@ type rcon =
   | Ctypeof of identifier
 
 and esubst = Enil | Es of identifier * con | Eo of esubst * esubst
-and con = 
+and con =
   { mutable rcon     : rcon;   (* "raw" constructor *)
     mutable con_state : con_state;
     mutable freevars : (identifier Set.set * identifier Set.set) option;
-    mutable hash : int; 
+    mutable hash : int;
     mutable abbrev : identifier option   (* is this con an abbreviation *)
-  } 
+  }
 (* free kind and con vars of rcon *)
 
 and machine_state = {
@@ -238,8 +238,8 @@ and ccinfo =
 and rep_item = RCon of con | RKind of kind | RLabel of identifier
 
 (* floating point registers and stack *)
-let get_fpreg fps i = 
-  let (a,b,c,d,e,f,g,h) = fps in 
+let get_fpreg fps i =
+  let (a,b,c,d,e,f,g,h) = fps in
   match i with
     0 -> a
   | 1 -> b
@@ -251,8 +251,8 @@ let get_fpreg fps i =
   | 7 -> h
   | _ -> invalid_arg "get_fpreg: bad reg"; a
 ;;
-let set_fpreg fps i fpr = 
-  let (a,b,c,d,e,f,g,h) = fps in 
+let set_fpreg fps i fpr =
+  let (a,b,c,d,e,f,g,h) = fps in
   match i with
     0 -> (fpr,b,c,d,e,f,g,h)
   | 1 -> (a,fpr,c,d,e,f,g,h)
@@ -265,7 +265,7 @@ let set_fpreg fps i fpr =
   | _ -> invalid_arg "set_fpreg: bad reg"; fps
 ;;
 
-let fpstack_empty = 
+let fpstack_empty =
   (FPempty,FPempty,FPempty,FPempty,FPempty,FPempty,FPempty,FPempty)
 ;;
 
@@ -275,9 +275,9 @@ let fpstack_isfull_reg  fps i = get_fpreg fps i = FPfull;;
 
 let fpstack_equal fps1 fps2   = fps1 = fps2;;
 
-let fpstack_leq fps1 fps2 = 
+let fpstack_leq fps1 fps2 =
   let rec aux i =
-    if i < 8 then 
+    if i < 8 then
       let st1 = get_fpreg fps1 i in
       let st2 = get_fpreg fps2 i in
       if st2 = FPany then aux (i+1)
@@ -287,7 +287,7 @@ aux 0
 ;;
 
 let fpstack_get_fpreg fps i =
-  if 0 <= i && i <=7 then get_fpreg fps i 
+  if 0 <= i && i <=7 then get_fpreg fps i
   else invalid_arg ("fpstack_get_fpreg: arg = " ^ string_of_int i)
 
 let fpstack_set_fpreg fps i fpr =
@@ -299,16 +299,16 @@ let fpstack_create i =
   if 0 < i && i <= 8 then
     let rec aux fps j =
       if j < 0 then fps
-      else aux (set_fpreg fps j FPfull) (j-1) 
+      else aux (set_fpreg fps j FPfull) (j-1)
     in
     aux fpstack_empty (i-1)
   else
-    invalid_arg 
+    invalid_arg
       ("fpstack_create: cannot create stack with height "^string_of_int i)
 ;;
 
 (* initialize fp register, i must be in the range 0..7 *)
-let fpstack_init_reg fps i = 
+let fpstack_init_reg fps i =
   if 0 <= i && i <= 7 then set_fpreg fps i FPfull
   else invalid_arg ("fpstack_init_reg: cannot initialize reg"^string_of_int i)
 ;;
@@ -318,12 +318,12 @@ let fpstack_hide_reg fps i =
   else invalid_arg ("fpstack_hide_reg: cannot hide reg"^string_of_int i)
 
 (* initialize fp register, i must be in the range 0..7 *)
-let fpstack_free_reg fps i = 
+let fpstack_free_reg fps i =
   if 0 <= i && i <= 7 then set_fpreg fps i FPempty
   else invalid_arg ("fpstack_free_reg: cannot free reg"^string_of_int i)
 ;;
 
-(* true if ST(i) a valid reference in the fp stack *) 
+(* true if ST(i) a valid reference in the fp stack *)
 let fpstack_inrange fps i = get_fpreg fps i = FPfull;;
 
 (* The following check overflow/underflow and raise FPstack_error "overflow"
@@ -338,17 +338,17 @@ let fpstack_inrange fps i = get_fpreg fps i = FPfull;;
  * top pointer is empty.  Here we check to see if the start position of the
  * top pointer is empty.  This way, we can pop the last element and move
  * the pointer to a position where it points to an empty slot.)
- * 
+ *
  * Negative numbers push; Positive numbers pop
  * Argument index must be in the range -2..2
  *)
-let fpstack_adjust error fps i = 
+let fpstack_adjust error fps i =
   let overflow  () = error "overflow"; fps  in
   let underflow () = error "underflow"; fps in
   let (a,b,c,d,e,f,g,h) = fps in
   match i with
     0  -> fps
-  | -1 -> 
+  | -1 ->
       if h = FPfull then overflow()
       else (FPfull,a,b,c,d,e,f,g)
   | -2 ->
@@ -357,18 +357,18 @@ let fpstack_adjust error fps i =
   | 1  ->
       if a = FPempty then underflow()
       else (b,c,d,e,f,g,h,FPempty)
-  | 2  -> 
+  | 2  ->
       if a = FPempty or b = FPempty then underflow()
       else (c,d,e,f,g,h,FPempty,FPempty)
   | _ -> invalid_arg ("fpstack_adjust: cannot adjust by"^string_of_int i)
 ;;
 
-(* Bump the top-of-stack pointer by a max of 2 in either direction.  
+(* Bump the top-of-stack pointer by a max of 2 in either direction.
  * Has the effect of rotating empty or filled stack slots with respect to
  * the top of the stack.
  * Positive int arguments rotate in the direction of popping, negative in the
- * direction of pushing. 
- * Do *not* fill or empty stack slots while rotating.  
+ * direction of pushing.
+ * Do *not* fill or empty stack slots while rotating.
  * Do *not* check for overflow or underflow.
  *)
 let fpstack_rotate fps i =
@@ -392,22 +392,22 @@ let comb2 i i1 i2 = (comb i (comb i1 i2));;
 let combine2 i i1 i2 = (comb2 i i1 i2) land 0x1fffffff;;
 let comb3 i i1 i2 i3 = (comb i (comb2 i i1 i2));;
 let combine3 i i1 i2 i3 = (comb i (comb i1 (comb i2 i3))) land 0x1fffffff;;
-let combine4 i i1 i2 i3 i4 = 
+let combine4 i i1 i2 i3 i4 =
   (comb i (comb i1 (comb i2 (comb i3 i4)))) land 0x1fffffff;;
-let combine6 i i1 i2 i3 i4 i5 i6 = 
+let combine6 i i1 i2 i3 i4 i5 i6 =
   (comb i (comb3 (comb2 i1 i2 i3)  i4 i5 i6)) land 0x1fffffff;;
 
 let hash_id = Hashtbl.hash;;
 let hash_log = Hashtbl.hash;;
 
-let hash_scale sc = 
+let hash_scale sc =
   match sc with
   | Byte1 -> 1
   | Byte2 -> 2
   | Byte4 -> 3
   | Byte8 -> 4
 
-let hash_primcon pc = 
+let hash_primcon pc =
   match pc with
   | PCbytes sc -> hash_scale sc
   | PCjunk i -> combine 9 (int32_to_int i)
@@ -418,37 +418,37 @@ let hash_primcon pc =
   | PCfloat32 -> 18
   | PCfloat64 -> 19
 
-let rec rcon_hash r = 
+let rec rcon_hash r =
   match r with
     Cvar x -> combine1 1 (hash_id x)
   | Clam(x,k,c) -> combine2 2 (hash_id x) c.hash
   | Capp(c1,c2) -> combine2 3 c1.hash c2.hash
   | Ctuple(cs) -> hash_con_list 4 cs
   | Cproj(i,c) -> combine2 5 i c.hash
-  | Cinj(i,c,k) -> combine2 6 i c.hash 
-  | Ccase(c,x,cs) -> combine2 (hash_con_list 7 cs) c.hash (hash_id x) 
+  | Cinj(i,c,k) -> combine2 6 i c.hash
+  | Ccase(c,x,cs) -> combine2 (hash_con_list 7 cs) c.hash (hash_id x)
   | Cfold(k,c) -> combine1 8 c.hash
-  | Cpr(x,ys) -> 
-      List.fold_left (fun i (x,y,k1,z,k2,c) -> 
+  | Cpr(x,ys) ->
+      List.fold_left (fun i (x,y,k1,z,k2,c) ->
 	combine4 i (hash_id x) (hash_id y) (hash_id z)
 	   c.hash) (combine1 9 (hash_id x)) ys
-  | Cvoid k -> 10 
+  | Cvoid k -> 10
   | Clab x -> combine1 11 (hash_id x)
   | Cprim pc -> combine1 12 (hash_primcon pc)
-  | Crec xkcs -> 
-      List.fold_left 
+  | Crec xkcs ->
+      List.fold_left
 	(fun i (x,k,c) -> combine2 i (hash_id x) c.hash) 13 xkcs
   | Cforall(x,k,c) -> combine2 14 (hash_id x) c.hash
   | Cexist(x,k,c1,c2) -> combine3 15 (hash_id x) c1.hash c2.hash
   | Ccode c -> combine1 16 c.hash
   | Cms ms -> combine1 17 (hash_ms ms)
   | Cmsjoin(c1,c2) -> combine2 18 c1.hash c2.hash
-  | Chptr(is,copt,cvopt) -> 
+  | Chptr(is,copt,cvopt) ->
       combine2 (List.fold_left (fun i j -> combine i (int32_to_int j)) 19 is)
 	(match copt with None -> 0 | Some c -> c.hash)
-	(match cvopt with None -> 0 | 
+	(match cvopt with None -> 0 |
 	Some (c,v) -> c.hash)
-  | Cfield(c,v) -> combine1 20 c.hash 
+  | Cfield(c,v) -> combine1 20 c.hash
   | Cprod cs -> hash_con_list 21 cs
   | Csum cs -> hash_con_list 22 cs
   | Carray(c1,c2) -> combine2 23 c1.hash c2.hash
@@ -460,35 +460,35 @@ let rec rcon_hash r =
   | Clog(log,cs) -> hash_con_list (combine 29 (hash_log log)) cs
   | Cif(c1,c2) -> combine2 30 c1.hash c2.hash
   | Cname c -> combine1 31 c.hash
-  | Ccap d -> 
+  | Ccap d ->
       Dict.fold_dict (fun x (ai,c) i -> combine2 i (hash_id x) c.hash) d 32
   | Cjoin cs -> hash_con_list 33 cs
   | Ctagof c -> combine1 34 c.hash
-  | Ctmpl(c,copt,xs,ys) -> 
+  | Ctmpl(c,copt,xs,ys) ->
       let f = List.fold_left (fun i (x,c) -> combine2 i (hash_id x) c.hash) in
       f (f (combine2 35 c.hash (match copt with None -> 0 | Some c -> c.hash))
 	   xs) ys
   | Ctptr x -> combine1 36 (hash_id x)
-  | Ctrgn(c,copt,xs) -> 
+  | Ctrgn(c,copt,xs) ->
       combine2 37 c.hash (match copt with None -> 0 | Some c -> c.hash)
   | Csubst(c,e) -> combine1 38 c.hash
   (* SCW -- I sure hope I did Cr right! *)
   | Cr ci ->
-       (match ci with 
+       (match ci with
 	  RCon c -> combine1 39 c.hash
 	| RKind k -> 40
 	| RLabel l -> combine1 41 (hash_id l))
   | Ctypeof l -> combine 42 (hash_id l)
-and hash_con_list i cs = 
-  match cs with 
+and hash_con_list i cs =
+  match cs with
     [] -> i
   | c1::rest -> hash_con_list (combine i c1.hash) rest
-and hash_copt c = 
+and hash_copt c =
   match c with
     None -> 0
   | Some c -> c.hash
-and hash_ms ms = 
-  combine (hash_copt ms.ms_eax) (hash_copt ms.ms_esp) 
+and hash_ms ms =
+  combine (hash_copt ms.ms_eax) (hash_copt ms.ms_esp)
 (*
   combine3
    (combine2 (hash_copt ms.ms_eax) (hash_copt ms.ms_ebx) (hash_copt ms.ms_ecx))
@@ -504,7 +504,7 @@ and hash_ms ms =
 let rcon_hash r = 0
 *)
 
-let prim_string pc = 
+let prim_string pc =
   match pc with
     PCbytes Byte1 -> "b1"
   | PCbytes Byte2 -> "b2"
@@ -521,7 +521,7 @@ let prim_string pc =
   | PCtrue -> "true"
   | PCfalse -> "false"
 
-let rcon_string r = 
+let rcon_string r =
   match r with
     Cvar x -> "var("^(id_to_string x)^")"
   | Clam(x,k,c) -> "lam"
@@ -565,17 +565,17 @@ let rcon_string r =
   | Ctypeof _ -> "typeof"
 ;;
 
-let rec rcon_equal r1 r2 = 
+let rec rcon_equal r1 r2 =
   match r1,r2 with
     Cvar x,Cvar y -> id_eq x y
-  | Clam(x1,k1,c1),Clam(x2,k2,c2) -> 
+  | Clam(x1,k1,c1),Clam(x2,k2,c2) ->
       c1 == c2 && (id_eq x1 x2) && (kind_eq k1 k2)
   | Capp(c1a,c1b),Capp(c2a,c2b) ->
       c1a == c2a && c1b == c2b
   | Ctuple cs1,Ctuple cs2 -> equal_cons cs1 cs2
   | Cproj(i1,c1),Cproj(i2,c2) -> i1 = i2 && c1 == c2
   | Cinj(i1,c1,k1),Cinj(i2,c2,k2) -> i1 = i2 && c1 == c2 && (kind_eq k1 k2)
-  | Ccase(c1,x1,cs1),Ccase(c2,x2,cs2) -> 
+  | Ccase(c1,x1,cs1),Ccase(c2,x2,cs2) ->
       c1 == c2 && (id_eq x1 x2) && (equal_cons cs1 cs2)
   | Cfold(k1,c1),Cfold(k2,c2) -> c1 == c2 && (kind_eq k1 k2)
   | Cpr _,Cpr _ -> false
@@ -583,20 +583,20 @@ let rec rcon_equal r1 r2 =
   | Clab x,Clab y -> id_eq x y
   | Cprim pc1,Cprim pc2 -> pc1 = pc2
   | Crec vkcs1,Crec vkcs2 ->
-      let rec loop vkcs1 vkcs2 = 
+      let rec loop vkcs1 vkcs2 =
 	match vkcs1,vkcs2 with
 	  [],[] -> true
 	| (x1,k1,c1)::r1,(x2,k2,c2)::r2 ->
 	    c1 == c2 && (kind_eq k1 k2) && (id_eq x1 x2) && loop r1 r2
 	| _, _ -> false
       in loop vkcs1 vkcs2
-  | Cforall(x1,k1,c1),Cforall(x2,k2,c2) -> 
+  | Cforall(x1,k1,c1),Cforall(x2,k2,c2) ->
       c1 == c2 && (id_eq x1 x2) && (kind_eq k1 k2)
   | Cexist(x1,k1,c11,c12),Cexist(x2,k2,c21,c22) ->
       c11 = c21 && c12 == c22 && (id_eq x1 x2) && (kind_eq k1 k2)
   | Ccode c1,Ccode c2 -> c1 == c2
-  | Cms ms1,Cms ms2 -> 
-      let cmpopt copt1 copt2 = 
+  | Cms ms1,Cms ms2 ->
+      let cmpopt copt1 copt2 =
 	match copt1,copt2 with
 	  None,None -> true
 	| Some c1,Some c2 -> c1 == c2
@@ -626,11 +626,11 @@ let rec rcon_equal r1 r2 =
 	None,None -> true
       |	Some(c1,v1),Some(c2,v2) -> c1 == c2 && v1 == v2
       |	_,_ -> false) &&
-      let rec loop is1 is2 = 
+      let rec loop is1 is2 =
 	match is1, is2 with
 	  [],[] -> true
 	| i1::is1,i2::is2 -> i1 = i2 && (loop is1 is2)
-	| _,_ -> false 
+	| _,_ -> false
       in loop is1 is2
   | Cfield(c1,v1),Cfield(c2,v2) -> c1 == c2 && v1 == v2
   | Cprod cs1,Cprod cs2 -> equal_cons cs1 cs2
@@ -644,9 +644,9 @@ let rec rcon_equal r1 r2 =
   | Clog(l1,cs1), Clog(l2,cs2) -> (l1 = l2) && (equal_cons cs1 cs2)
   | Cif(c11,c12),Cif(c21,c22) -> c11 == c21 && c12 == c22
   | Cname c1,Cname c2 -> c1 == c2
-  | Ccap d1,Ccap d2 -> 
-      Dict.fold_dict 
-	(fun x c b -> b && (Dict.member d2 x) && ((Dict.lookup d2 x) == c)) 
+  | Ccap d1,Ccap d2 ->
+      Dict.fold_dict
+	(fun x c b -> b && (Dict.member d2 x) && ((Dict.lookup d2 x) == c))
 	d1 (Dict.fold_dict (fun x _ b -> b && Dict.member d1 x) d2 true)
   | Cjoin cs1,Cjoin cs2 -> equal_cons cs1 cs2
   | Ctagof c1,Ctagof c2 -> c1 == c2
@@ -658,12 +658,12 @@ let rec rcon_equal r1 r2 =
   | Ctypeof l1,Ctypeof l2 -> id_eq l1 l2
   | _,_ -> false
 and id_eq x y = (id_compare x y) = 0
-and equal_cons cs1 cs2 = 
+and equal_cons cs1 cs2 =
   match cs1,cs2 with
     [],[] -> true
   | c1::cs1,c2::cs2 -> c1 == c2 && (equal_cons cs1 cs2)
   | _,_ -> false
-and kind_eq k1 k2 = 
+and kind_eq k1 k2 =
   match k1.rkind,k2.rkind with
     Kbyte s1,Kbyte s2 -> s1 = s2
   | Ktype,Ktype -> true
@@ -679,12 +679,12 @@ and kind_eq k1 k2 =
   | Kms,Kms -> true
   | Ksum ks1,Ksum ks2 -> kinds_eq ks1 ks2
   | Kvar x1,Kvar x2 -> id_eq x1 x2
-  | Kmu (sc1,x1), Kmu (sc2,x2) -> 
-      (id_eq x1 x2) && 
-      let rec sc_eq sc1 sc2 = 
+  | Kmu (sc1,x1), Kmu (sc2,x2) ->
+      (id_eq x1 x2) &&
+      let rec sc_eq sc1 sc2 =
 	match sc1, sc2 with
 	  [],[] -> true
-	| (x1,k1)::t1,(x2,k2)::t2 -> 
+	| (x1,k1)::t1,(x2,k2)::t2 ->
 	    (id_eq x1 x2) && (kind_eq k1 k2) && (sc_eq t1 t2)
 	| _,_ -> false
       in sc_eq sc1 sc2
@@ -696,10 +696,10 @@ and kinds_eq k1s k2s =
   | _,_ -> false
 ;;
 
-module ConHash = 
+module ConHash =
   Hashtbl.Make(
-  struct 
-    type t = rcon 
+  struct
+    type t = rcon
     let equal = rcon_equal
     let hash = rcon_hash
   end)
@@ -709,7 +709,7 @@ module ConHash =
 let initial_con_hash_table_size = 101;;
 let con_hash_table : con ConHash.t =
   ConHash.create initial_con_hash_table_size;;
-let hash_clear() = 
+let hash_clear() =
   begin
     ConHash.clear con_hash_table
   end;;
@@ -717,23 +717,23 @@ let hash_find = ConHash.find con_hash_table;;
 let hash_mem = ConHash.mem con_hash_table;;
 let hash_add = ConHash.add con_hash_table;;
 let defcon rc =
-  try 
-    hash_find rc 
-  with Not_found -> 
-    let con = { rcon = rc; con_state = NotNorm; freevars = None; 
+  try
+    hash_find rc
+  with Not_found ->
+    let con = { rcon = rc; con_state = NotNorm; freevars = None;
 		abbrev = None; hash = rcon_hash rc
 	      }
     in hash_add rc con; con
 ;;
 let empty_id_set = Set.empty id_compare;;
 let empty_freevars = Some(empty_id_set,empty_id_set);;
-let prcon rc = 
-  let con = defcon rc in 
+let prcon rc =
+  let con = defcon rc in
   con.con_state <- Normalized;
   con.freevars <- empty_freevars;
   con
 ;;
-let wcon rc = 
+let wcon rc =
   let con = defcon rc in
   con.con_state <- WeakHead;
   con
@@ -763,11 +763,11 @@ let ms_empty =
     ms_cc=CCnoinfo; ms_save_cc=CCnoinfo; ms_cap=cempty_cap }
 ;;
 let ms_map f ms =
-  let mapopt copt = 
+  let mapopt copt =
     match copt with
       None -> None
     | Some c -> Some(f c)
-  in 
+  in
   { ms_eax = mapopt ms.ms_eax; ms_ebx = mapopt ms.ms_ebx;
     ms_ecx = mapopt ms.ms_ecx; ms_edx = mapopt ms.ms_edx;
     ms_esi = mapopt ms.ms_esi; ms_edi = mapopt ms.ms_edi;
@@ -776,12 +776,12 @@ let ms_map f ms =
     ms_cc = ccinfo_map f ms.ms_cc;
     ms_save_cc = ccinfo_map f ms.ms_save_cc;
     ms_cap = f ms.ms_cap
-  } 
+  }
 ;;
 let ms_get_cap ms = ms.ms_cap
 ;;
 let ms_app f ms =
-  let app copt = 
+  let app copt =
     match copt with
       None -> ()
     | Some c -> f c in
@@ -790,8 +790,8 @@ let ms_app f ms =
   f (ms_get_cap ms);
   ccinfo_app f ms.ms_cc
 ;;
-let ms_get_reg ms r = 
-  let copt = 
+let ms_get_reg ms r =
+  let copt =
     match r with
       Eax -> ms.ms_eax
     | Ebx -> ms.ms_ebx
@@ -806,7 +806,7 @@ let ms_get_reg ms r =
     None -> raise Dict.Absent
   | Some c -> c
 ;;
-let ms_set_reg ms r c = 
+let ms_set_reg ms r c =
   match r with
     Eax -> {ms with ms_eax = (Some c)}
   | Ebx -> {ms with ms_ebx = (Some c)}
@@ -818,10 +818,10 @@ let ms_set_reg ms r c =
   | Esp -> {ms with ms_esp = (Some c)}
   | _ -> failwith "virtual registers unimplemented"
 ;;
-let ms_set_regs ms rcs = 
+let ms_set_regs ms rcs =
   List.fold_left (fun ms (r,c) -> ms_set_reg ms r c) ms rcs
 ;;
-let ms_del_reg ms r = 
+let ms_del_reg ms r =
   match r with
     Eax -> {ms with ms_eax = None}
   | Ebx -> {ms with ms_ebx = None}
@@ -835,29 +835,29 @@ let ms_del_reg ms r =
 ;;
 let ms_del_regs ms rl = List.fold_left ms_del_reg ms rl
 ;;
-let ms_map_reg f ms = 
-  let mapopt copt = 
+let ms_map_reg f ms =
+  let mapopt copt =
     match copt with
       None -> None
     | Some c -> Some(f c)
-  in 
-  { ms with 
+  in
+  { ms with
     ms_eax = mapopt ms.ms_eax; ms_ebx = mapopt ms.ms_ebx;
     ms_ecx = mapopt ms.ms_ecx; ms_edx = mapopt ms.ms_edx;
     ms_esi = mapopt ms.ms_esi; ms_edi = mapopt ms.ms_edi;
     ms_ebp = mapopt ms.ms_ebp; ms_esp = mapopt ms.ms_esp;
-  } 
+  }
 ;;
-let ms_app_reg f ms = 
-  let app r copt = 
+let ms_app_reg f ms =
+  let app r copt =
     match copt with
       None -> ()
     | Some c -> f r c;() in
   app Eax ms.ms_eax; app Ebx ms.ms_ebx; app Ecx ms.ms_ecx; app Edx ms.ms_edx;
   app Esi ms.ms_esi; app Edi ms.ms_edi; app Ebp ms.ms_ebp; app Esp ms.ms_esp
 ;;
-let ms_fold_reg f ms a = 
-  let fopt r copt a = 
+let ms_fold_reg f ms a =
+  let fopt r copt a =
     match copt with
       None -> a
     | Some c -> f r c a in
@@ -886,8 +886,8 @@ let ms_set_cap ms c = { ms with ms_cap=c} ;;
  * are joined.  The latter is the only one that concerns me as it means
  * that for sure ms_join is not idempotent...
  *)
-let ms_join ms1 ms2 = 
-  let jopt copt1 copt2 = 
+let ms_join ms1 ms2 =
+  let jopt copt1 copt2 =
     match copt2 with
       None -> copt1
     | Some _ -> copt2 in
@@ -899,11 +899,11 @@ let ms_join ms1 ms2 =
   let edi = jopt ms1.ms_edi ms2.ms_edi in
   let ebp = jopt ms1.ms_ebp ms2.ms_ebp in
   let esp = jopt ms1.ms_esp ms2.ms_esp in
-  let fps = 
-    if fpstack_isempty ms2.ms_fpstack then ms1.ms_fpstack 
+  let fps =
+    if fpstack_isempty ms2.ms_fpstack then ms1.ms_fpstack
     else ms2.ms_fpstack in
   let cc = match ms2.ms_cc with CCnoinfo -> ms1.ms_cc | _ -> ms2.ms_cc in
-  let save_cc = 
+  let save_cc =
     match ms2.ms_save_cc with CCnoinfo -> ms1.ms_save_cc | _ -> ms2.ms_save_cc
   in let cap = defcon(Cjoin [ms1.ms_cap;ms2.ms_cap]) in
   { ms_eax = eax; ms_ebx = ebx; ms_ecx = ecx; ms_edx = edx;
@@ -912,7 +912,7 @@ let ms_join ms1 ms2 =
     ms_cc      = cc;
     ms_save_cc = save_cc;
     ms_cap     = cap
-  } 
+  }
 
 let pcbytes s = prcon (Cprim (PCbytes s));;
 let cbyte8 = pcbytes Byte8;;
@@ -928,7 +928,7 @@ let pcjunk4  = prcon (Cprim (PCjunkbytes Byte4));;
 let pcjunkbytes sc  = prcon (Cprim (PCjunkbytes sc));;
 let pcint  i = prcon (Cprim (PCint i));;
 let pctrue   = prcon (Cprim PCtrue);;
-let pcfalse  = prcon (Cprim PCfalse);; 
+let pcfalse  = prcon (Cprim PCfalse);;
 
 let cvar v =
   let con = defcon (Cvar v) in
@@ -960,9 +960,9 @@ let cmsjoin c1 c2 = defcon (Cmsjoin(c1,c2));;
 let ccode c = wcon (Ccode c);;
 let ccode_ms ms = ccode (cms ms);;
 let ccode_l rcs = ccode_ms (ms_set_regs ms_empty rcs);;
-let ccode_l_fps rcs fps = 
+let ccode_l_fps rcs fps =
   ccode_ms (ms_set_fpstack (ms_set_regs ms_empty rcs) fps);;
-let ccode_l_cap rcs cap = 
+let ccode_l_cap rcs cap =
   ccode_ms (ms_set_cap (ms_set_regs ms_empty rcs) cap);;
 let ccode_l_cap_fps rcs cap fps =
   ccode_ms (ms_set_fpstack (ms_set_cap (ms_set_regs ms_empty rcs) cap) fps);;
@@ -1008,7 +1008,7 @@ let cmulu i c2 = clog Cmulu [pcint i;c2];;
 let cand cs = clog Cand cs;;
 let cor cs = clog Cor cs;;
 let cnot c1 = clog Cnot [c1];;
-let cimplies c1 c2 = clog Cimp [c1;c2] 
+let cimplies c1 c2 = clog Cimp [c1;c2]
 let ciff c1 c2 = clog Ciff [c1;c2]
 let clts c1 c2 = clog Clts [c1;c2]
 let cltu c1 c2 = clog Cltu [c1;c2]
@@ -1032,9 +1032,9 @@ let is_non_pointer_integer i =
 let rec cap_get_name con id =
   match con.rcon with
     Ccap d -> (try Some (Dict.lookup d id) with Dict.Absent -> None)
-  | Cjoin cs -> 
+  | Cjoin cs ->
       begin
-	let rec loop cs = 
+	let rec loop cs =
 	  match cs with
 	    [] -> None
 	  | hd::tl -> (match cap_get_name hd id with None -> loop tl | x -> x)
@@ -1044,15 +1044,15 @@ let rec cap_get_name con id =
   | _ -> None
 ;;
 
-let rec cap_factor con : 
+let rec cap_factor con :
     ((identifier,alias_info*con) Dict.dict option) * (con list)=
   match con.rcon with
     Ccap d -> (Some d,[])
   | Cjoin cs ->
       begin
 	let fcs = List.map cap_factor cs in
-	let gen (d1,cs1) (d2,cs2) = 
-	  let d' = 
+	let gen (d1,cs1) (d2,cs2) =
+	  let d' =
 	    match (d1,d2) with
 	      (Some d1,Some d2) -> Some (Dict.update d1 d2)
 	    | (Some d1,_) -> Some d1
@@ -1079,7 +1079,7 @@ let cap_set_name con id info =
   | Cvar _ -> Some (cjoin [ccap (Dict.singleton id_compare id info);con])
   |  _ -> None
 ;;
-    
+
 (**********************************************************************)
 (* Instructions *)
 type annotate = (* Added by Dan *)
@@ -1125,12 +1125,12 @@ type genop =
   | Prjr of reg coerce * int32 * (scale * reg) option
   | Prjl of identifier coerce * int32 * (scale * reg) option
 
-type condition = 
+type condition =
     Above | AboveEq | Below | BelowEq | Eq | Greater | GreaterEq | Less
   | LessEq | NotEq | NotOverflow | NotSign | Overflow | ParityEven
   | ParityOdd | Sign
 
-let negate_condition c = 
+let negate_condition c =
   match c with
     Above -> BelowEq
   | AboveEq -> Below
@@ -1157,17 +1157,17 @@ type arithsr = Rcl | Rcr | Rol | Ror | Sal | Sar | Shl | Shr
 
 type conv = Cbw | Cdq | Cwd | Cwde;;
 
-type mallocarg = 
+type mallocarg =
     Mbytes of scale
   | Mprod of mallocarg list
   | Mbytearray of scale * int32;;
 
 (* Operations that never take arguments *)
-type fpnoargs = 
-    F2xm1 | Fabs | Fchs | Fclex | Fnclex | Fcompp | Fucompp | Fcos | Fdecstp 
-  | Fincstp | Finit | Fninit  | Fld1 | Fldz | Fldpi | Fldl2e | Fldl2t 
-  | Fldlg2 | Fldln2 | Fnop | Fpatan | Fprem | Fprem1 | Fptan | Frndint 
-  | Fscale | Fsin | Fsincos | Fsqrt | Ftst | Fwait | Fxam | Fxtract 
+type fpnoargs =
+    F2xm1 | Fabs | Fchs | Fclex | Fnclex | Fcompp | Fucompp | Fcos | Fdecstp
+  | Fincstp | Finit | Fninit  | Fld1 | Fldz | Fldpi | Fldl2e | Fldl2t
+  | Fldlg2 | Fldln2 | Fnop | Fpatan | Fprem | Fprem1 | Fptan | Frndint
+  | Fscale | Fsin | Fsincos | Fsqrt | Ftst | Fwait | Fxam | Fxtract
   | Fyl2x | Fyl2xp1
 
 (* Floating point instruction argument configurations *)
@@ -1175,7 +1175,7 @@ type fpargs =
     FPstack of int           (* ST(i) *)
   | FPstack2 of bool * int   (* true => ST, ST(i); false => ST(i),ST *)
   | FPgenop of scale * genop (* Explicit memory or register operand *)
-    
+
 (* Operations that take arguments *)
 type fpsomeargs =
 (* generic binary instructions *)
@@ -1193,14 +1193,14 @@ type fpsomeargs =
   | Fcomi | Fcomip | Fucomi | Fucomip
 (* Store Status Word *)
   | Fstsw | Fnstsw
-(* unimplemented: 
+(* unimplemented:
    (* Load and store control word *)
    | Fldcw | Fstcw | Fnstcw
    (* Load environment state *)
-   | Fldenv | Fldenvw | Fldenvd 
+   | Fldenv | Fldenvw | Fldenvd
    | Fstenv | Fstenvw | Fstenvd | Fnstenv | Fnstenvw | Fnstenvd
    (* Restore and Save coprocessor state: *)
-   | Frstor | Frstorw | Frstord 
+   | Frstor | Frstorw | Frstord
    | Fsave | Fsavew | Fsaved | Fnsave | Fnsavew | Fnsaved
    (* Other *)
    | Fbstp
@@ -1209,7 +1209,7 @@ type fpsomeargs =
 (* This is a subset of the x86 32-bit instructions that we might want to
  * cover.  Does not include floating-point support yet.
  *)
-type instruction = 
+type instruction =
     ArithBin of arithbin * genop * genop
 	                        (* binary arithmetic operation *)
   | ArithUn of arithun * genop  (* unary arithmetic operation *)
@@ -1262,21 +1262,21 @@ type instruction =
   | Test of genop * genop   	(* test *)
   | Xchg of genop * reg         (* exchange *)
 (* operations specific to x86tal *)
-  | Coerce of genop coerce 
+  | Coerce of genop coerce
     (* coerce an object.  The object's location is a "path" off of a register*)
   | CoerceName of identifier coerce
     (* coerce an object indirectly through a name *)
   | Comment of string
-  | Fallthru of con list  
-    (* only valid when preceeding a label L.  effectively, 
+  | Fallthru of con list
+    (* only valid when preceeding a label L.  effectively,
      * a jmp L[c1,...,cn]. *)
   | Malloc of identifier * int32 * (mallocarg option)
     (* Malloc(x,i,m) allocates an object of i bytes returning the pointer
      * in eax, and wrecking all other registers but ebx.  Upon return,
      * x is added as a Unique pointer to an object described by mallocarg.
      * If the mallocarg is not present, then we assume a tuple of 32-bit
-     * words (i.e., i/4).  Upon return, eax has type Cname(x) so that 
-     * it may be initialized.  
+     * words (i.e., i/4).  Upon return, eax has type Cname(x) so that
+     * it may be initialized.
      *)
   | Proof of (identifier * con list) list
     (* a list of proof rules that coerce the context *)
@@ -1286,8 +1286,8 @@ type instruction =
     (* mov to and from a stack slot *)
   | Nameobj of identifier * genop
     (* genop specifies a value in a register or memory.  We introduce
-     * a new Kname (identifier) and replace the type of the object with 
-     * Cname(identifier).  The identifier is assigned MayAlias in the 
+     * a new Kname (identifier) and replace the type of the object with
+     * Cname(identifier).  The identifier is assigned MayAlias in the
      * capability.   Used to refine the type of something where we may
      * make multiple copies of it.
      *)
@@ -1297,7 +1297,7 @@ type instruction =
       * coerced to the type that the capability assigns x.
       *)
   | RemoveName of identifier
-     (* Removes the name from the current capability. Note that Cname(x) 
+     (* Removes the name from the current capability. Note that Cname(x)
       * will still be a valid constructor -- you just won't be able to do
       * much with it.  *)
 (* Floating Point Instructions *)
@@ -1315,9 +1315,9 @@ type instruction =
   | CgForget of identifier * identifier
   | CgEnd of reg
 (* LX Instructions *)
-  | Letprod of identifier list * con 
+  | Letprod of identifier list * con
   | Letroll of identifier * con
-  | Vcase of int32 * con * identifier * genop coerce 
+  | Vcase of int32 * con * identifier * genop coerce
 (* end LX *)
 
 (* Notes on incompleteness:
@@ -1383,12 +1383,12 @@ type tal_int =
 type tal_int_type = {
     it_cons : int_con list;
     it_vals : (identifier * con) list
-  } 
+  }
 ;;
 
 type con_block = (identifier * kind * con);;
 
-type tal_imp = 
+type tal_imp =
     { imp_abbrevs : con_abbrev vector;
       imp_kindabbrevs : kind_abbrev vector; (* LX *)
       con_blocks : con_block vector;
@@ -1397,10 +1397,10 @@ type tal_imp =
 (* Cyclone *)
       templates : template vector
 (* End Cyclone *)
-    } 
+    }
 ;;
 
-type int_ref = 
+type int_ref =
     Int_filename of string
   | Int_data of string * tal_int
 
@@ -1410,13 +1410,13 @@ type tal_pre_mod =
     { import_refs : int_ref vector;
       export_refs : int_ref vector;
       pre_imp     : tal_imp;
-    } 
+    }
 
 type tal_mod =
     { imports : tal_int vector;
       exports : tal_int vector;
       imp     : tal_imp;
-    } 
+    }
 
 (* Return true if instruction has no run-time significance *)
 let is_virtual_instruction i =

@@ -4,7 +4,7 @@
 	_begin_TAL
 
 
-	TAL_IMPORT	pop_runtime.tali
+	TAL_IMPORT	../pop_runtime.tali
 	TAL_IMPORT	poploader_i.tali
 
 	TAL_EXPORT	poploader_e.tali

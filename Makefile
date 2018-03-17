@@ -237,7 +237,6 @@ POPCORN_BASE = poperr popsyntax popparse poplex poptype poppeep \
                popdynpatch popcorn
 
 POPOBJS = $(addprefix $(TARGETDIR)/, $(addsuffix .$(LIBSUFF), util tal gcd talcomp)) \
-	  $(addprefix talx86/, objfile.$(OBJSUFF)) \
 	  $(addprefix popcorn/, $(addsuffix .$(OBJSUFF), $(POPCORN_BASE)))
 
 popcorn: $(TARGETDIR)/popcorn.exe
@@ -288,7 +287,9 @@ RUNTIME_LIBS = gc.$(A) objlib.$(A) dynlinklib.$(A)
 RUNTIME=$(addprefix runtime/, $(RUNTIME_LIBS) $(addsuffix .$(O), $(RUNTIME_BASE)))
 
 runtime: $(RUNTIME) runtime/stdlibnew.$(O) runtime/prelude.$(O)	runtime/preludenew.$(O) runtime/preludeprof.$(O) $(TARGETDIR)/genCinit.exe
-	$(MAKE) -C popcorn/lib
+	$(MAKE) -C popcorn/lib \
+		TALC=../../${TARGETDIR}/talc.exe \
+		POPCORN=../../${TARGETDIR}/popcorn.exe
 
 runtime/stdlibnew.$(O): runtime/stdlib.$(O)
 	cp runtime/stdlib.$(O) runtime/stdlibnew.$(O)
@@ -322,11 +323,11 @@ $(TARGETDIR)/ocamldep.exe: computil/ocamldep.cmo
 # special rules for these, since they don't match the template rule
 runtime/tal_start.c: runtime/tal_start.tmpl runtime/tal.tali $(TARGETDIR)/genCinit.exe
 	cp $< $@
-	genCinit.exe --no-string-def --no-rep-def runtime/tal.tali >> $@
+	${TARGETDIR}/genCinit.exe --no-string-def --no-rep-def runtime/tal.tali >> $@
 
 runtime/tal_start_nomain.c: runtime/tal_start_nomain.tmpl runtime/tal.tali $(TARGETDIR)/genCinit.exe
 	cp $< $@
-	genCinit.exe --no-string-def --no-rep-def runtime/tal.tali >> $@
+	${TARGETDIR}/genCinit.exe --no-string-def --no-rep-def runtime/tal.tali >> $@
 
 ######################################################################
 # Templates
@@ -363,7 +364,7 @@ runtime/tal_start_nomain.c: runtime/tal_start_nomain.tmpl runtime/tal.tali $(TAR
 
 %.c: %.tmpl %.tali $(TARGETDIR)/genCinit.exe
 	cp $< $@
-	genCinit.exe --no-string-def --no-rep-def $(@:.c=.tali) >> $@
+	${TARGETDIR}/genCinit.exe --no-string-def --no-rep-def $(@:.c=.tali) >> $@
 
 ######################################################################
 

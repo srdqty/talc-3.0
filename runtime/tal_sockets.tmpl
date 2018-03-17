@@ -16,7 +16,7 @@ void *GC_malloc(int size);
 #define ADDR_INET 3
 #define ADDR_NULL 1
 
-/* todo 
+/* todo
  *   - strings being sent . . .
  *   - remove files
  *   - interrupt thing
@@ -44,7 +44,7 @@ static void *mk_pair() {
 static char *inaddr_to_dot(int addr)
 {
   char *str = (char *) GC_malloc(20);
-  
+
   sprintf(str, "%u.%u.%u.%u",
           addr&0xff, (addr&0xffff)>>8, (addr&0xffffff)>>16, (addr>>24)&0xff);
 
@@ -58,7 +58,7 @@ string tal_inaddr_to_dot(int addr)
 
 static void error_exit(char *msg)
 {
-  fprintf(stderr, msg);
+  fputs(msg, stderr);
   fprintf(stderr, "\n");
   exit(255);
 }
@@ -66,7 +66,7 @@ static int socket_domain_table[] = { PF_UNIX, PF_INET };
 static int socket_type_table[] = {SOCK_STREAM, SOCK_DGRAM, SOCK_RAW, SOCK_SEQPACKET};
 
 /*
- *   file_descr * string * int * int * int -> int 
+ *   file_descr * string * int * int * int -> int
  *     tal_recv fd buff ofs len reads len characters from descriptor fd,
  *     storing them in string buff, starting at position ofs in string
  *     buff. Return ...
@@ -86,7 +86,7 @@ int tal_recv(int fd, string buff, int ofs, int len)
   if (i < -1) {			/* this shouldn't happen */
     fprintf(stderr, "tal_recv(): unexpected return value from read()\n");
     exit(255);
-  } else				
+  } else
     return i;
 }
 
@@ -109,13 +109,13 @@ int tal_sendto(int fd, string s, Cyclone_union sock_addr)
   if ((int) sock_addr == ADDR_NULL) {	/* void union fields numbered 1..1 */
     printf("Error tal_sendto: NULL not supported\n"); /* NULL */
     exit(255);
-  } else 
+  } else
     switch (sock_addr->tag) {
     case ADDR_UNIX:
       bzero(&saddr_un, sizeof(saddr_un));
       saddr_un.sun_family = AF_UNIX;
       strcpy(saddr_un.sun_path, string_to_Cstring(sock_addr->val));
-      
+
       /* calculate length of saddr_un */
       len = sizeof(unsigned short) +     /* sa_family_t */
 	strlen(saddr_un.sun_path)  +     /* path name */
@@ -127,7 +127,7 @@ int tal_sendto(int fd, string s, Cyclone_union sock_addr)
       saddr_in.sin_family      = AF_INET;
       saddr_in.sin_addr.s_addr = (int) ((void **)sock_addr->val)[0];
       saddr_in.sin_port        = htons((int) ((void **)sock_addr->val)[1]);
-      
+
       /* calculate length of saddr_in (equal to sizeof(SA) */
       len = sizeof(SA);
       return sendto(fd, s->chars, s->size, 0, &saddr_in, len);
@@ -260,18 +260,18 @@ void *tal_accept(int fd)
   void **pair1 = mk_pair();
   void **pair2 = mk_pair();
   void **pair3 = mk_pair();
-  
+
   sa_len = sizeof(SA);
   retcode = accept(fd, &sa, &sa_len);
-  
+
   if (retcode < 0)
     if (errno != EINTR)
       error_exit("Error in call to tal_accept");
   /* printf("tal_accept: %d (len:%d)\n", retcode, sa_len); */
-  
+
   pair1[0] = (void *) retcode;
   pair1[1] = pair2;
-  
+
   /*
    * Cyclone is implemented so that the PF_UNIX has the value 1, while
    * PF_INET has the value 2.  This *happens* to be the same for Unix,
@@ -308,7 +308,7 @@ void tal_bind(int sockfd, Cyclone_union sock_addr) {
 
   struct sockaddr_un saddr_un;
   struct sockaddr_in saddr_in;
-  
+
   if ((int) sock_addr == ADDR_NULL) {	/* void union fields numbered 1..1 */
     printf("Error tal_bind: NULL not supported\n"); /* NULL */
     exit(255);
@@ -331,7 +331,7 @@ void tal_bind(int sockfd, Cyclone_union sock_addr) {
 
 	/* NOTE: is setsockopt() really needed ??? */
 	setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &i, sizeof(i));
-        
+
 	retcode = bind(sockfd, &saddr_in, sizeof(saddr_in));
 	break;
       }
@@ -347,7 +347,7 @@ void tal_bind(int sockfd, Cyclone_union sock_addr) {
 #ifdef DEBUG
     printf("tal_bind: %d\n", retcode);
 #endif
-  
+
   return;
 }
 
@@ -360,14 +360,14 @@ void tal_bind(int sockfd, Cyclone_union sock_addr) {
 void tal_listen(int fd, int backlog) {
 
   int retcode = listen(fd, backlog);
-  
+
   if (retcode < 0)
     error_exit("Error in call to tal_listen()");
-  
+
 #ifdef DEBUG
   printf("tal_listen: %d\n", retcode);
 #endif
-  
+
   return;
 }
 
@@ -377,7 +377,7 @@ void tal_listen(int fd, int backlog) {
  *  Connect a socket to an address
  */
 void tal_connect(int sockfd, Cyclone_union sock_addr) {
-  
+
   int retcode = -1;
   struct sockaddr_un saddr_un;
   struct sockaddr_in saddr_in;
@@ -391,26 +391,26 @@ void tal_connect(int sockfd, Cyclone_union sock_addr) {
       bzero(&saddr_un, sizeof(saddr_un));
       saddr_un.sun_family = AF_UNIX;
       strcpy(saddr_un.sun_path,string_to_Cstring(sock_addr->val));
-      
+
       retcode = connect(sockfd, (SA *) &saddr_un, sizeof(saddr_un));
       break;
     case ADDR_INET:
       {
 	int addr = (int)((void **)sock_addr->val)[0];
 	int port = (int)((void **)sock_addr->val)[1];
-	
+
 	bzero(&saddr_in, sizeof(saddr_in));
 	saddr_in.sin_port        = htons(port);
 	saddr_in.sin_addr.s_addr = addr;
 	saddr_in.sin_family      = AF_INET;
-	
+
 	retcode = connect(sockfd, (SA *) &saddr_in, sizeof(saddr_in));
 	break;
       }
     }
   if (retcode == -1)
     error_exit("Error in call to tal_connect()");
-  
+
 #ifdef DEBUG
   printf("tal_connect: %d\n", retcode);
 #endif
@@ -450,7 +450,7 @@ array tal_select(array Read_fds,
   int num_fds = -1;
   struct intlist *y;
   fd_set readfds;
-  void **a;
+  int *a;
   array retval = GC_malloc(sizeof(struct arr_internal));
 
   if ((Write_fds != 0) || (Except_fds != 0))
@@ -464,20 +464,20 @@ array tal_select(array Read_fds,
   FD_ZERO(&readfds);
   for (i = 0; i < Read_fds->size; i++)
     FD_SET((int) ((int *)Read_fds->elts)[i], &readfds);
-  
+
   /* perform select (blocking I/O) */
   num_fds = select (15, &readfds, 0, 0, 0);
 
   if (num_fds == -1)
     error_exit("Error in call to select()");
-  
+
   /* check for errors */
   if (num_fds == -1)
     if (errno != EINTR)
       exit(1);
   if (num_fds <= 0)
     error_exit("Select error");
-  
+
   /* create list of fds that were set by the select */
   retval->size = 0;
   y = NULL;
@@ -489,12 +489,19 @@ array tal_select(array Read_fds,
       y = z;
       retval->size++;
     }
-  a = GC_malloc(retval->size * 4);
+  /* sizeof(int) used to be hardcoded to 4...
+    the retval data type does not store the size of each element so this
+    might lead to a bug later when indexing into the array...
+    The original code was already buggy since it hardcoded 4 and then later
+    indexed into a void**. Perhaps a lot of this code will be broken on 64-bit
+    systems...
+  */
+  a = GC_malloc(retval->size * sizeof(int));
   retval->elts = a;
 
   /* fill array with values in list */
   for(i =0; i < retval->size; i++) {
-    (int) a[i] = y->val;
+    a[i] = y->val;
     y = y->next;
   }
   return retval;
@@ -514,28 +521,28 @@ struct intlist * tal_select(struct intlist *Read_fds,
   int num_fds = -1;
   struct intlist *x, *y;
   fd_set readfds;
-  
+
   if ((Write_fds != 0) || (Except_fds != 0))
     error_exit("tal_select not yet implemented for write and exceptions");
 
   FD_ZERO(&readfds);
-  
+
   for (x = Read_fds; x != NULL; x = x->next)
     FD_SET(x->val, &readfds);
-  
+
   num_fds = select (15, &readfds, 0, 0, 0);
-  
+
   if (num_fds == -1)
     if (errno != EINTR)
       exit(1);
   if (num_fds <= 0)
     error_exit("Select error");
-  
+
   y = NULL;
   for (x = Read_fds; x != NULL; x = x->next)
     if (FD_ISSET(x->val, &readfds)) {
       struct intlist *z = (struct intlist *) GC_malloc(sizeof(struct intlist));
-      
+
       z->val = x->val;
       z->next = y;
       y = z;
@@ -548,7 +555,7 @@ struct intlist * tal_select(struct intlist *Read_fds,
 void * tal_gethostname()
 {
   char name[100];
-  
+
   if (gethostname(name, 100) == -1)
     error_exit("Error calling gethostname()\n");
 
@@ -581,18 +588,18 @@ void print_sockaddr(Cyclone_union sock_addr)
   }
   else {
     switch (sock_addr->tag) {	/* non-void union fields numbered 2..3 */
-    case ADDR_UNIX: 
+    case ADDR_UNIX:
       printf("ADDR_UNIX \"%s\"\n", string_to_Cstring((string)sock_addr->val));
       break;
     case ADDR_INET: {
       int addr = (int) ((void **)sock_addr->val)[0];
       int port = (int) ((void **)sock_addr->val)[1];
-      
-      printf("ADDR_INET: (addr: %s) (port: %d)\n", 
+
+      printf("ADDR_INET: (addr: %s) (port: %d)\n",
 	     inaddr_to_dot(addr), port);
       break;
     }
-    default: 
+    default:
       printf("Error in print_sockaddr: %d %d\n",
 	     (int) sock_addr, sock_addr->tag);
       error_exit("");

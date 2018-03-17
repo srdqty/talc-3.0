@@ -593,7 +593,7 @@ let rec rcon_equal r1 r2 =
   | Cforall(x1,k1,c1),Cforall(x2,k2,c2) ->
       c1 == c2 && (id_eq x1 x2) && (kind_eq k1 k2)
   | Cexist(x1,k1,c11,c12),Cexist(x2,k2,c21,c22) ->
-      c11 = c21 && c12 == c22 && (id_eq x1 x2) && (kind_eq k1 k2)
+      c11 == c21 && c12 == c22 && (id_eq x1 x2) && (kind_eq k1 k2)
   | Ccode c1,Ccode c2 -> c1 == c2
   | Cms ms1,Cms ms2 ->
       let cmpopt copt1 copt2 =

@@ -2464,7 +2464,6 @@ let aeqcon error ctxt c1 c2 =
     (* could set c1 == c2 and force more sharing *)
 ;;
 
-exception NotEq
 let eqerror () = raise NotEq
 let eqerror' _ _ = raise NotEq
 let dieerror ctxt c1 c2 () = generate_error ctxt (Neqcon (c1,c2))

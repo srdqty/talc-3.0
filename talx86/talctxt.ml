@@ -135,7 +135,6 @@ and ctxt = {
  *)
 
 exception Talverify of ctxt * verify_error;;
-exception Talfail;;
 
 let empty_ctxt0 =
   { ge=(fun ctxt ve -> raise (Talverify (ctxt,ve)));

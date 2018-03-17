@@ -321,11 +321,11 @@ $(TARGETDIR)/ocamldep.exe: computil/ocamldep.cmo
 # special rules for these, since they don't match the template rule
 runtime/tal_start.c: runtime/tal_start.tmpl runtime/tal.tali $(TARGETDIR)/genCinit.exe
 	cp $< $@
-	./build/genCinit.exe --no-string-def --no-rep-def runtime/tal.tali >> $@
+	${TARGETDIR}/genCinit.exe --no-string-def --no-rep-def runtime/tal.tali >> $@
 
 runtime/tal_start_nomain.c: runtime/tal_start_nomain.tmpl runtime/tal.tali $(TARGETDIR)/genCinit.exe
 	cp $< $@
-	./build/genCinit.exe --no-string-def --no-rep-def runtime/tal.tali >> $@
+	${TARGETDIR}/genCinit.exe --no-string-def --no-rep-def runtime/tal.tali >> $@
 
 ######################################################################
 # Templates
@@ -362,7 +362,7 @@ runtime/tal_start_nomain.c: runtime/tal_start_nomain.tmpl runtime/tal.tali $(TAR
 
 %.c: %.tmpl %.tali $(TARGETDIR)/genCinit.exe
 	cp $< $@
-	./build/genCinit.exe --no-string-def --no-rep-def $(@:.c=.tali) >> $@
+	${TARGETDIR}/genCinit.exe --no-string-def --no-rep-def $(@:.c=.tali) >> $@
 
 ######################################################################
 

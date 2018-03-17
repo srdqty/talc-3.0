@@ -237,7 +237,6 @@ POPCORN_BASE = poperr popsyntax popparse poplex poptype poppeep \
                popdynpatch popcorn
 
 POPOBJS = $(addprefix $(TARGETDIR)/, $(addsuffix .$(LIBSUFF), util tal gcd talcomp)) \
-	  $(addprefix talx86/, objfile.$(OBJSUFF)) \
 	  $(addprefix popcorn/, $(addsuffix .$(OBJSUFF), $(POPCORN_BASE)))
 
 popcorn: $(TARGETDIR)/popcorn.exe

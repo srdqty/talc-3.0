@@ -58,7 +58,7 @@ string tal_inaddr_to_dot(int addr)
 
 static void error_exit(char *msg)
 {
-  fprintf(stderr, msg);
+  fputs(msg, stderr);
   fprintf(stderr, "\n");
   exit(255);
 }

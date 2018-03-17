@@ -287,7 +287,9 @@ RUNTIME_LIBS = gc.$(A) objlib.$(A) dynlinklib.$(A)
 RUNTIME=$(addprefix runtime/, $(RUNTIME_LIBS) $(addsuffix .$(O), $(RUNTIME_BASE)))
 
 runtime: $(RUNTIME) runtime/stdlibnew.$(O) runtime/prelude.$(O)	runtime/preludenew.$(O) runtime/preludeprof.$(O) $(TARGETDIR)/genCinit.exe
-	$(MAKE) -C popcorn/lib TALC=../../${TARGETDIR}/talc.exe
+	$(MAKE) -C popcorn/lib \
+		TALC=../../${TARGETDIR}/talc.exe \
+		POPCORN=../../${TARGETDIR}/popcorn.exe
 
 runtime/stdlibnew.$(O): runtime/stdlib.$(O)
 	cp runtime/stdlib.$(O) runtime/stdlibnew.$(O)
